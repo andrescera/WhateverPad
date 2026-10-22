@@ -87,7 +87,7 @@ static int request(const char *raw, size_t rawlen, char *out, int max)
 static int get(const char *method, const char *path, char *out, int max)
 {
     char raw[512];
-    int n = snprintf(raw, sizeof raw, "%s %s HTTP/1.1\r\nHost: 192.168.1.50:8095\r\nX-AnyPad: 1\r\n\r\n",
+    int n = snprintf(raw, sizeof raw, "%s %s HTTP/1.1\r\nHost: 192.168.1.50:8095\r\nX-WhateverPad: 1\r\n\r\n",
                      method, path);
     return request(raw, (size_t)n, out, max);
 }
@@ -152,7 +152,7 @@ int main(void)
     printf("the page\n");
     get("GET", "/", out, sizeof out);
     CHECK(strncmp(out, "HTTP/1.1 200", 12) == 0);
-    CHECK(strstr(out, "<title>AnyPad PS5</title>") != NULL);
+    CHECK(strstr(out, "<title>WhateverPad PS5</title>") != NULL);
 
     printf("pairing from the page, then the pad in the state\n");
     get("POST", "/api/pair", out, sizeof out);
@@ -214,7 +214,7 @@ int main(void)
     get("POST", "/api/ps?slot=2", out, sizeof out);
     CHECK(strncmp(out, "HTTP/1.1 404", 12) == 0 && g_ps_calls == 2);
     g_ps_result = 1;
-    get_with("POST /api/ps?slot=1 HTTP/1.1\r\nHost: 10.0.0.1\r\n\r\n", out, sizeof out);   /* no X-AnyPad header */
+    get_with("POST /api/ps?slot=1 HTTP/1.1\r\nHost: 10.0.0.1\r\n\r\n", out, sizeof out);   /* no X-WhateverPad header */
     CHECK(strncmp(out, "HTTP/1.1 403", 12) == 0 && g_ps_calls == 2);
 
     printf("forgetting the pad\n");
@@ -250,7 +250,7 @@ int main(void)
     get_with("POST /api/stop HTTP/1.1\r\nHost: 192.168.1.50:8095\r\n\r\n", out, sizeof out);
     CHECK(strncmp(out, "HTTP/1.1 403", 12) == 0 && stop == 0);
     /* DNS rebinding: the browser's Host is the attacker's name */
-    get_with("GET /api/state HTTP/1.1\r\nHost: evil.example.com\r\nX-AnyPad: 1\r\n\r\n", out, sizeof out);
+    get_with("GET /api/state HTTP/1.1\r\nHost: evil.example.com\r\nX-WhateverPad: 1\r\n\r\n", out, sizeof out);
     CHECK(strncmp(out, "HTTP/1.1 400", 12) == 0);
     get_with("GET / HTTP/1.1\r\n\r\n", out, sizeof out);          /* no Host at all */
     CHECK(strncmp(out, "HTTP/1.1 400", 12) == 0);
@@ -287,8 +287,8 @@ int main(void)
     printf("random and mutated requests (under the sanitizers when run with make fuzz)\n");
     {
         static const char *seeds[] = {
-            "GET /api/state HTTP/1.1\r\nHost: 10.0.0.1\r\nX-AnyPad: 1\r\n\r\n",
-            "POST /api/forget?addr=06:05:04:03:02:01 HTTP/1.1\r\nHost: 10.0.0.1\r\nX-AnyPad: 1\r\n\r\n",
+            "GET /api/state HTTP/1.1\r\nHost: 10.0.0.1\r\nX-WhateverPad: 1\r\n\r\n",
+            "POST /api/forget?addr=06:05:04:03:02:01 HTTP/1.1\r\nHost: 10.0.0.1\r\nX-WhateverPad: 1\r\n\r\n",
             "GET /api/log HTTP/1.1\r\nHost: localhost:8095\r\n\r\n",
         };
         unsigned seed = 99;

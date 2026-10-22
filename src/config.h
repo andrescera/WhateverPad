@@ -1,4 +1,4 @@
-/* /data/anypad/config.ini: the few things worth changing.
+/* /data/whateverpad/config.ini: the few things worth changing.
  *
  *   menu_combo   = options+l2+r2      buttons held to open the menu on the console
  *   menu_hold_ms = 1500                how long they are held (500..5000)
@@ -7,8 +7,8 @@
  * right options create touchpad. At least two. The PS button cannot be read.
  * Lines starting with # are comments. A line that is not understood is
  * reported and skipped; the defaults stand for anything missing or wrong. */
-#ifndef ANYPAD_CONFIG_H
-#define ANYPAD_CONFIG_H
+#ifndef WHATEVERPAD_CONFIG_H
+#define WHATEVERPAD_CONFIG_H
 
 #include "pad.h"
 
@@ -17,13 +17,13 @@
 typedef struct {
     uint32_t menu_combo;
     int menu_hold_ms;
-} anypad_config;
+} whateverpad_config;
 
-void config_defaults(anypad_config *c);
+void config_defaults(whateverpad_config *c);
 
 /* Reads `path`. Returns the number of lines not understood; a missing file
  * is not an error (returns 0, defaults kept). */
-int config_load(anypad_config *c, const char *path);
+int config_load(whateverpad_config *c, const char *path);
 
 /* "options+l2+r2" -> mask. Returns 0 if a name is unknown or fewer than two
  * buttons are named. */
@@ -40,7 +40,7 @@ void config_combo_keys(uint32_t mask, char *out, size_t max);
 
 /* «Configure PS»: a button combination chosen by the user that stands for
  * the PS button, per controller model (vid:pid), for controllers whose own
- * PS / Home button is missing or not read. Kept in /data/anypad/ps_combos.txt,
+ * PS / Home button is missing or not read. Kept in /data/whateverpad/ps_combos.txt,
  * one line per model: "057e:2009 l1+l2+options". One to three buttons. */
 #define PSCOMBO_MODELS 16
 #define PSCOMBO_MAX_BUTTONS 3

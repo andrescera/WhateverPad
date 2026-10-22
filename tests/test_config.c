@@ -11,7 +11,7 @@ static int g_fail;
 
 static void test_config(void)
 {
-    anypad_config c;
+    whateverpad_config c;
     uint32_t m;
     char text[96];
     FILE *f;

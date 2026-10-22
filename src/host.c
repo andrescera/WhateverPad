@@ -205,7 +205,7 @@ static void db_load(host_t *h)
     h->ndb = 0;
     if (!f) return;
     if (fread(r, 1, 8, f) != 8 || memcmp(r, DB_MAGIC, 8) != 0) {
-        log_line("store: %s is not a AnyPad PS5 store, ignored", h->db_path);
+        log_line("store: %s is not a WhateverPad PS5 store, ignored", h->db_path);
         fclose(f);
         return;
     }
@@ -2397,12 +2397,12 @@ static void chip_report(host_t *h)
  *     changed it meanwhile. */
 static int setup(host_t *h)
 {
-    /* Connection Request (bit 3) is left out. AnyPad never waits for calls:
-     * every pad of a session is called by AnyPad. And a call that reached
-     * AnyPad never reached the system: a DualSense switched off and on again
-     * calls the console, AnyPad took the call and nobody answered it, and the
+    /* Connection Request (bit 3) is left out. WhateverPad never waits for calls:
+     * every pad of a session is called by WhateverPad. And a call that reached
+     * WhateverPad never reached the system: a DualSense switched off and on again
+     * calls the console, WhateverPad took the call and nobody answered it, and the
      * DualSense stayed blinking blue (the pause for the system did not help:
-     * the logs show the call waiting for AnyPad's reads at the end of every
+     * the logs show the call waiting for WhateverPad's reads at the end of every
      * pause, 15 times in a row). */
     unsigned char mask[8] = { 0xF7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F };
     static const unsigned char one[1] = { 1 };

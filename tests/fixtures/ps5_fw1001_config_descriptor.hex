@@ -1,5 +1,5 @@
 # Configuration descriptor of the PS5's Bluetooth chip (MediaTek 0e8d:3603),
-# read from a PS5 fat on firmware 10.01 by AnyPad PS5 0.3.3 on 3 October 2026
+# read from a PS5 fat on firmware 10.01 by WhateverPad PS5 0.3.3 on 3 October 2026
 # (the 'diag: cfg[...]' lines of its log). 474 bytes, hexadecimal.
 # The test checks the endpoint picker against this real descriptor.
 09 02 da 01 05 01 08 a0 32 08 0b 00 03 e0 01 01 04 09 04 00 00 05 e0 01

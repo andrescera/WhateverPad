@@ -1,6 +1,6 @@
 /* Controllers we have no hardware for, emulated as their makers and the
  * projects that studied them describe them, against the real host stack:
- * does AnyPad find them, link them and read them? */
+ * does WhateverPad find them, link them and read them? */
 #include "sim.h"
 #include "../src/host.h"
 #include "../src/util.h"

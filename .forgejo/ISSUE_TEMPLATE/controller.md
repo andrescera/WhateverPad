@@ -10,7 +10,7 @@ labels:
 
 **Console:** model (fat / slim / Pro), firmware, jailbreak, and the `chip:` line of the log
 
-**AnyPad version:**
+**WhateverPad version:**
 
 **What happens** (does it pair, connect, move, does the PS button work, rumble):
 

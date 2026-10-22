@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds AnyPad PS5 without installing anything: the official PS5 payload SDK
+# Builds WhateverPad PS5 without installing anything: the official PS5 payload SDK
 # (the release zip, unpacked) mounted read-only into a container with clang 18
-# and lld 18 for linux/amd64. The ELF is dist/AnyPad-PS5-<version>.elf, with the
+# and lld 18 for linux/amd64. The ELF is dist/WhateverPad-PS5-<version>.elf, with the
 # version from src/version.h, and a .sha256 beside it.
 #
 #   tools/build-elf-docker.sh /path/to/ps5-payload-sdk [image]
@@ -10,16 +10,16 @@
 # made from:  FROM ubuntu:24.04 / RUN apt-get update && apt-get install -y clang-18 lld-18
 set -e
 SDK="${1:?usage: $0 /path/to/ps5-payload-sdk [image]}"
-IMAGE="${2:-anypad-build}"
+IMAGE="${2:-whateverpad-build}"
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="$(sed -n 's/^#define ANYPAD_VERSION "\(.*\)"/\1/p' "$PROJ/src/version.h")"
+VERSION="$(sed -n 's/^#define WHATEVERPAD_VERSION "\(.*\)"/\1/p' "$PROJ/src/version.h")"
 [ -n "$VERSION" ] || { echo "no version in src/version.h" >&2; exit 1; }
-OUT="dist/AnyPad-PS5-$VERSION.elf"
+OUT="dist/WhateverPad-PS5-$VERSION.elf"
 mkdir -p "$PROJ/dist" "$PROJ/build"
 # The commit it is built from, for the log's first line ("-dirty": with
 # changes not committed yet): two builds of one version stay told apart.
 BUILD_ID="$(git -C "$PROJ" describe --always --dirty --abbrev=7 2>/dev/null || echo unknown)"
-printf '#define ANYPAD_BUILD_ID "%s"\n' "$BUILD_ID" > "$PROJ/build/build_id.h"
+printf '#define WHATEVERPAD_BUILD_ID "%s"\n' "$BUILD_ID" > "$PROJ/build/build_id.h"
 
 docker run --rm --platform linux/amd64 -e OUT="$OUT" \
   -v "$SDK":/opt/ps5-payload-sdk-ro:ro -v "$PROJ":/work "$IMAGE" bash -c '

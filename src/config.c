@@ -18,7 +18,7 @@ static const struct { const char *key; const char *shown; uint32_t bit; } k_butt
 };
 #define N_BUTTONS (sizeof k_buttons / sizeof k_buttons[0])
 
-void config_defaults(anypad_config *c)
+void config_defaults(whateverpad_config *c)
 {
     c->menu_combo = PAD_OPTIONS | PAD_L2 | PAD_R2;
     c->menu_hold_ms = 1500;
@@ -83,7 +83,7 @@ static char *trim(char *s)
     return s;
 }
 
-int config_load(anypad_config *c, const char *path)
+int config_load(whateverpad_config *c, const char *path)
 {
     char line[160];
     FILE *f = fopen(path, "r");

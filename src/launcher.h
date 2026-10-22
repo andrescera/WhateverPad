@@ -1,15 +1,15 @@
 /* The launcher entry in the console's "Contenido multimedia" row: a small
- * app folder (param.json + icon0.png) whose only job is to open AnyPad's web
+ * app folder (param.json + icon0.png) whose only job is to open WhateverPad's web
  * menu in the browser, the way Payload Manager's own entry does. Writing the
  * files is plain file work and is tested here; telling the system about the
  * folder is ps5_apps.c. */
-#ifndef ANYPAD_LAUNCHER_H
-#define ANYPAD_LAUNCHER_H
+#ifndef WHATEVERPAD_LAUNCHER_H
+#define WHATEVERPAD_LAUNCHER_H
 
 #include <stddef.h>
 
-#define LAUNCHER_TITLE_ID   "ANYP00001"
-#define LAUNCHER_TITLE_NAME "AnyPad"
+#define LAUNCHER_TITLE_ID   "WHTP00001"
+#define LAUNCHER_TITLE_NAME "WhateverPad"
 #define LAUNCHER_URL        "http://127.0.0.1:8095/"
 #define LAUNCHER_APP_ROOT   "/user/app"
 

@@ -9,8 +9,8 @@
  * 10.01 the events come on 0x81 and the ACL on 0x82, which cost two trials
  * to find out. The rule here is the usual one: the first endpoint of each
  * kind in descriptor order. */
-#ifndef ANYPAD_USB_DESC_H
-#define ANYPAD_USB_DESC_H
+#ifndef WHATEVERPAD_USB_DESC_H
+#define WHATEVERPAD_USB_DESC_H
 
 #include <stdint.h>
 

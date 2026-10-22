@@ -6,8 +6,8 @@
  * the start of the next. This puts them back together. A piece lost on the way
  * (taken by another reader of the same endpoint) would leave a half event
  * waiting forever, so one that has waited too long is dropped. */
-#ifndef ANYPAD_EVSTREAM_H
-#define ANYPAD_EVSTREAM_H
+#ifndef WHATEVERPAD_EVSTREAM_H
+#define WHATEVERPAD_EVSTREAM_H
 
 #include <stdint.h>
 

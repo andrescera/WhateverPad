@@ -152,7 +152,7 @@ void notify(const char *fmt, ...)
  * server re-serves it to any number of clients on TCP 3232. So:
  *   - the server is used when there is one;
  *   - /dev/klog only when there is none, held just for the seconds of one
- *     identification, and every line read is copied into AnyPad PS5's log so
+ *     identification, and every line read is copied into WhateverPad PS5's log so
  *     nothing taken from it is lost;
  *   - if neither answers with the expected lines, nothing is bound. */
 
@@ -259,7 +259,7 @@ static void log_source_read(void)
  * user, who is the one who owns the console, is preferred if signed in; then
  * the foreground user; then the first signed-in one.
  *
- * `want` (from /data/anypad/bind_user) overrides that for an experiment: a
+ * `want` (from /data/whateverpad/bind_user) overrides that for an experiment: a
  * game only sees a pad bound to the user who started it, so the pad can be
  * given to another signed-in user. "other" means a signed-in user who is not
  * the initial one; a hexadecimal id means that user. If the wish cannot be met
@@ -299,7 +299,7 @@ static int32_t main_user(void)
     if (sceUserServiceGetLoginUserIdList(login) != 0) login[0] = login[1] = login[2] = login[3] = -1;
     if (sceUserServiceGetInitialUser(&init) != 0) init = -1;
     if (sceUserServiceGetForegroundUser(&fore) != 0) fore = -1;
-    if ((f = fopen("/data/anypad/bind_user", "r"))) {
+    if ((f = fopen("/data/whateverpad/bind_user", "r"))) {
         if (fgets(want, sizeof want, f)) {
             for (i = 0; want[i]; i++) if (want[i] == '\n' || want[i] == '\r' || want[i] == ' ') want[i] = 0;
             if (strncmp(want, "0x", 2) == 0) memmove(want, want + 2, strlen(want + 2) + 1);

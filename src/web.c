@@ -338,7 +338,7 @@ static void handle(web_t *w, int fd, char *req)
      * sends: a browser will not add it to a request made by another site
      * without asking us first, and we never agree. */
     if (strcmp(method, "POST") == 0 &&
-        (!header(req, "X-AnyPad", custom, sizeof custom) || strcmp(custom, "1") != 0)) {
+        (!header(req, "X-WhateverPad", custom, sizeof custom) || strcmp(custom, "1") != 0)) {
         respond_text(fd, 403, "{\"error\":\"forbidden\"}");
         return;
     }

@@ -114,7 +114,7 @@
 
 #define DB_MAX            16
 #define DB_REC            64    /* one record in the store file */
-#define DB_MAGIC     "ANYPAD02"
+#define DB_MAGIC     "WHATEVERPAD02"
 
 /* ---- state -------------------------------------------------------------- */
 
@@ -333,7 +333,7 @@ struct host {
 };
 
 
-/* Dialog mode: settings that can be changed while AnyPad runs (web /api/tune). */
+/* Dialog mode: settings that can be changed while WhateverPad runs (web /api/tune). */
 typedef struct {
     int ps_light;               /* lighten the system's page scan while pairing */
     unsigned ps_iv, ps_win;     /* the light page scan */

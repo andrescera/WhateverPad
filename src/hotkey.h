@@ -3,8 +3,8 @@
  * Fires once per hold, then not again until the buttons have been let go
  * and a cooldown has passed. A pad that cannot be read resets the hold, so
  * a combination is never "completed" by a pad that stopped answering. */
-#ifndef ANYPAD_HOTKEY_H
-#define ANYPAD_HOTKEY_H
+#ifndef WHATEVERPAD_HOTKEY_H
+#define WHATEVERPAD_HOTKEY_H
 
 #include <stdint.h>
 

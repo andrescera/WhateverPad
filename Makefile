@@ -1,4 +1,4 @@
-# AnyPad PS5: Bluetooth game controllers on a jailbroken PS5.
+# WhateverPad PS5: Bluetooth game controllers on a jailbroken PS5.
 #
 #   make test                 builds and runs the tests on this machine
 #   make ps5                  builds the payload (needs PS5_PAYLOAD_SDK)
@@ -103,7 +103,7 @@ endif
 	$(MAKE) -f ps5.mk
 
 send: ps5
-	$(PS5_PAYLOAD_SDK)/bin/prospero-deploy -h $(PS5_HOST) -p $(PS5_PORT) dist/AnyPad-PS5-*.elf
+	$(PS5_PAYLOAD_SDK)/bin/prospero-deploy -h $(PS5_HOST) -p $(PS5_PORT) dist/WhateverPad-PS5-*.elf
 
 clean:
 	rm -rf $(BUILD)

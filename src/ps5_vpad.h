@@ -45,7 +45,7 @@ void vpad_remove(int slot);
  * nobody is signed in; 0x809B0081 the user chosen is not signed in). */
 int     vpad_read_physical(uint32_t *buttons);
 int32_t vpad_physical_error(void);
-void    vpad_close_physical(void);      /* closes the pad AnyPad PS5 opened, if it did */
+void    vpad_close_physical(void);      /* closes the pad WhateverPad PS5 opened, if it did */
 
 /* Gives the process its original credentials back, and raises them again.
  * They are raised for virtual pads and put back, if the Bluetooth controller

@@ -16,7 +16,7 @@ int sceAppInstUtilTerminate(void);
 
 /* sceAppInstUtilAppInstallTitleDir is looked up when it is needed instead of
  * being imported: some payload loaders on newer firmwares cannot resolve that
- * import, and then AnyPad would not start at all. Without it there is only no
+ * import, and then WhateverPad would not start at all. Without it there is only no
  * entry in the media row; the page still works. */
 typedef int (*install_dir_fn)(const char *title_id, const char *dir, void *reserved);
 typedef int (*install_all_fn)(void *reserved);

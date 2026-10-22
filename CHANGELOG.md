@@ -1,19 +1,19 @@
 # Changelog
 
-Every ELF is `dist/AnyPad-PS5-<version>.elf`, with a `.sha256` beside it. The
+Every ELF is `dist/WhateverPad-PS5-<version>.elf`, with a `.sha256` beside it. The
 version is set in `src/version.h` and is also in the first line of the log, in
 the start-up notification, on the web page, and in the binary
-(`strings AnyPad-PS5-*.elf | grep anypad-version`).
+(`strings WhateverPad-PS5-*.elf | grep whateverpad-version`).
 
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
-The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `AI-WORKFLOW.md` (how to work on AnyPad with an AI assistant: connect to the running program, watch the log in real time, change live settings, add a controller, test it and report it), `tools/live.sh` (the commands to talk to AnyPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
+The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `AI-WORKFLOW.md` (how to work on WhateverPad with an AI assistant: connect to the running program, watch the log in real time, change live settings, add a controller, test it and report it), `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
 
-Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo nuevo es que **todo el código fuente es público** (GPL-3.0-or-later), con `AI-WORKFLOW.md` (cómo trabajar en AnyPad con un asistente de IA: conectarse al programa en marcha, ver el log en tiempo real, cambiar ajustes en caliente, añadir un mando, probarlo e informar), `tools/live.sh` (las órdenes para hablar con AnyPad por la red local) y una plantilla de incidencias para informes de mandos.
+Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo nuevo es que **todo el código fuente es público** (GPL-3.0-or-later), con `AI-WORKFLOW.md` (cómo trabajar en WhateverPad con un asistente de IA: conectarse al programa en marcha, ver el log en tiempo real, cambiar ajustes en caliente, añadir un mando, probarlo e informar), `tools/live.sh` (las órdenes para hablar con WhateverPad por la red local) y una plantilla de incidencias para informes de mandos.
 
 ## 0.9.1-beta (12 octubre 2026)
 
-- **El mando virtual se crea con el primer informe del mando**, no al quedar listo su enlace. Un mando que se enlaza pero no envía nada (el 8BitDo al encenderlo de nuevo con AnyPad en marcha) ya no deja un DualSense virtual quieto en el que la consola se queda esperando sin aceptar los demás mandos. Prueba `test_silent_pad_no_virtual` (falla con el comportamiento anterior). Las órdenes que AnyPad envía a los mandos son las mismas que en la 0.8.1.
+- **El mando virtual se crea con el primer informe del mando**, no al quedar listo su enlace. Un mando que se enlaza pero no envía nada (el 8BitDo al encenderlo de nuevo con WhateverPad en marcha) ya no deja un DualSense virtual quieto en el que la consola se queda esperando sin aceptar los demás mandos. Prueba `test_silent_pad_no_virtual` (falla con el comportamiento anterior). Las órdenes que WhateverPad envía a los mandos son las mismas que en la 0.8.1.
 - Log: `first input (report …): virtual DualSense created`, y en «not in its full report yet» los informes que el mando ha enviado (para entender por qué no se despierta).
 
 ## 0.9.0-beta (12 octubre 2026)
@@ -21,7 +21,7 @@ Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo n
 Versión de compatibilidad. El camino de DS4 y 8BitDo en la consola MediaTek es el de la 0.8.1 (misma huella de órdenes en el simulador); todo lo nuevo está aislado por modelo, por chip o por caso, y probado con mandos emulados (`tests/test_compat.c`, cada arreglo comprobado con mutación). Sin probar en consola con esos mandos: beta.
 
 - Todo lo de la 0.8.2, 0.8.3 y 0.8.4 (Xbox por LE: identidad y Exit Suspend; LE con el chip ocupado; clones de DS4 con calibración; chips Marvell/NXP; icono por NID en firmwares nuevos; interfaz nueva).
-- Interfaz en naranja (el color de AnyPad); la pausa por el DualSense en naranja con su motivo; guía de emparejado con Joy-Con, Wii U Pro y Wiimote, y Stadia.
+- Interfaz en naranja (el color de WhateverPad); la pausa por el DualSense en naranja con su motivo; guía de emparejado con Joy-Con, Wii U Pro y Wiimote, y Stadia.
 - Clones que no dan su identificador: reconocidos por el nombre que anuncian («Wireless Controller», «Pro Controller», «Xbox Wireless Controller»).
 - Joy-Con sueltos (L y R, y los NES Online) de lado; segundo id del mando Mega Drive Online.
 - Reconexión: un mando que llama mientras su enlace sigue abierto aquí (cayó sin aviso) suelta el enlace muerto y se acepta la llamada (el 8BitDo que se dormía y no volvía).
@@ -42,7 +42,7 @@ Segunda de compatibilidad: conexión de mandos **Bluetooth LE** cuando el chip e
 
 - Si el chip responde **0x0c** («hay otro intento de conexión LE en curso»: del sistema o uno que dejó una ejecución anterior) a nuestra conexión LE, ya no se suelta el mando para repetir el mismo intento en el siguiente anuncio (en el simulador: 266 intentos en 8 s sin conectar nunca, el fallo del issue nº 1 con el Xbox Series). Ahora se cancela el intento pendiente (`LE Create Connection Cancel`) y se vuelve a pedir a los 300, 800 y 1500 ms; tras el cuarto rechazo, ese mando descansa 5 s.
 - Solo se atienden las respuestas a nuestra propia orden de conexión LE; las del sistema se apuntan y se ignoran. El fin del intento cancelado (Connection Complete 0x02) no tumba nuestro enlace.
-- Al parar AnyPad se cancela un intento LE nuestro que siguiera pendiente, para que no bloquee la siguiente ejecución.
+- Al parar WhateverPad se cancela un intento LE nuestro que siguiera pendiente, para que no bloquee la siguiente ejecución.
 - Log: `the controller was busy with another connection attempt: cancelled it, trying again in N ms`, `still refused; left alone for 5 s`.
 - Simulador: opción `busy` (intento ajeno pendiente que hay que cancelar N veces); prueba `test_busy_controller` (1, 3 y 5 cancelaciones: 2, 4 y 7 intentos). Falla con el código anterior.
 - Idea de PadBridge-PS5 0.1.5 (X-F1REBALL-X, GPL-3.0); código propio. Sin probar con un Xbox real.
@@ -55,17 +55,17 @@ Primera versión de compatibilidad sobre la 0.8.1 (base intocable). Solo cambia 
 - **HID Control Point:** al terminar de activar las notificaciones, a un mando HID por LE que ofrece Control Point se le escribe «Exit Suspend» (una escritura sin respuesta). Los que no lo tienen no cambian.
 - Log: `our identity handed over` y `told to leave suspend`.
 - Simulador: opciones de mando `wants_identity` y `needs_wake` (Xbox real); pruebas nuevas `test_xbox_identity` (SC y legacy, y vuelta tras apagarlo) y `test_identity_only_if_asked`. Comprobado con mutación: sin cada arreglo, la prueba falla.
-- Idea tomada de una compilación de un tercero (AnyPad 0.5.7 con módulos de PadBridge-PS5 de X-F1REBALL-X, GPL-3.0); código reescrito. Sin probar con un Xbox real en esta versión.
+- Idea tomada de una compilación de un tercero (WhateverPad 0.5.7 con módulos de PadBridge-PS5 de X-F1REBALL-X, GPL-3.0); código reescrito. Sin probar con un Xbox real en esta versión.
 
 ## 0.8.1-beta (9 octubre 2026)
 
-La última versión de AnyPad PS5. Es la 0.8.0 con su último retoque: si en un enlace recién hecho el mando niega el canal inicial (SDP) por falta de recursos 3 veces, se hace un enlace nuevo a los 3 s, una vez por búsqueda (el 8BitDo lo hacía en su primer enlace; el segundo funcionaba al momento). Configurar PS (1 botón o 3) probado en consola: funciona.
+La última versión de WhateverPad PS5. Es la 0.8.0 con su último retoque: si en un enlace recién hecho el mando niega el canal inicial (SDP) por falta de recursos 3 veces, se hace un enlace nuevo a los 3 s, una vez por búsqueda (el 8BitDo lo hacía en su primer enlace; el segundo funcionaba al momento). Configurar PS (1 botón o 3) probado en consola: funciona.
 
 ## 0.8.0-beta (9 octubre 2026)
 
 La 0.6.19 (probada: DS4 y 8BitDo a la vez, «va perfecto», sin lag) pulida, con dos novedades en la página. Nada de la búsqueda ni del emparejado cambia, salvo el pulido del 8BitDo.
 
-- **Configurar PS**: en «Mandos emparejados», a la izquierda de «Pulsar PS», para los mandos que no son DualShock 4 ni DualSense. El usuario elige si hará de PS un botón o una combinación de tres, y los pulsa en el mando: manteniéndolos 1 s se detectan solos (sin desplegables, a petición del usuario). Mientras se mantiene la combinación entera, la consola recibe PS en lugar de esos botones. Se guarda por modelo de mando en `/data/anypad/ps_combos.txt` y sirve en las siguientes sesiones. Mientras el diálogo está abierto, la combinación anterior no actúa.
+- **Configurar PS**: en «Mandos emparejados», a la izquierda de «Pulsar PS», para los mandos que no son DualShock 4 ni DualSense. El usuario elige si hará de PS un botón o una combinación de tres, y los pulsa en el mando: manteniéndolos 1 s se detectan solos (sin desplegables, a petición del usuario). Mientras se mantiene la combinación entera, la consola recibe PS en lugar de esos botones. Se guarda por modelo de mando en `/data/whateverpad/ps_combos.txt` y sirve en las siguientes sesiones. Mientras el diálogo está abierto, la combinación anterior no actúa.
 - **Idiomas**: la página sigue el idioma de la consola: español, inglés, francés, italiano, portugués, alemán, ruso, chino simplificado y tradicional, japonés, coreano y árabe (de derecha a izquierda); inglés para cualquier otro. Comprobada con capturas en todos ellos, en pantalla de tele y de móvil. Los avisos de la consola siguen en español o inglés.
 - Pulido del 8BitDo: tras rechazar su propia llamada, se le llama a los 2 s (no 0,7). Si en un enlace recién hecho niega el canal inicial (SDP) por falta de recursos 3 veces, se hace un enlace nuevo a los 3 s, una vez por búsqueda (antes, 8 negativas: unos 20 s). Visto en consola dos veces, con y sin llamada propia; el segundo enlace funcionó siempre al momento.
 - Texto de ayuda de la página al día: sin la recomendación del cable USB, con el aviso de no apagar el DualSense.
@@ -75,25 +75,25 @@ La 0.6.19 (probada: DS4 y 8BitDo a la vez, «va perfecto», sin lag) pulida, con
 
 Lo visto en directo con la 0.6.18 (DS4 y 8BitDo a la vez):
 
-- Sin lag: la radio se queda ligera mientras haya mandos de AnyPad conectados, no solo al emparejar. Con el page scan pesado del sistema, el DS4 iba «con muuucho lag»; aligerado en vivo, «ahora va bien». Se vuelve a mirar cada 30 s; el valor del sistema se devuelve cuando no queda ningún mando o al parar.
-- El 8BitDo que se cree enlazado se empareja a la primera: al encenderlo llama a la consola, su llamada queda pendiente 29 s y la de AnyPad recibe «ya existe» (0x0b). Ahora AnyPad rechaza esa llamada pendiente y lo llama a los 700 ms (hasta 3 veces por búsqueda). Si no había tal llamada (0x02), es un enlace real y se deja como antes. Solo con la dirección que AnyPad quiere emparejar.
+- Sin lag: la radio se queda ligera mientras haya mandos de WhateverPad conectados, no solo al emparejar. Con el page scan pesado del sistema, el DS4 iba «con muuucho lag»; aligerado en vivo, «ahora va bien». Se vuelve a mirar cada 30 s; el valor del sistema se devuelve cuando no queda ningún mando o al parar.
+- El 8BitDo que se cree enlazado se empareja a la primera: al encenderlo llama a la consola, su llamada queda pendiente 29 s y la de WhateverPad recibe «ya existe» (0x0b). Ahora WhateverPad rechaza esa llamada pendiente y lo llama a los 700 ms (hasta 3 veces por búsqueda). Si no había tal llamada (0x02), es un enlace real y se deja como antes. Solo con la dirección que WhateverPad quiere emparejar.
 - La traza no escribe claves de emparejado (Link Key Notification y Link Key Reply).
 - Ajuste en caliente `ev_len`: bytes pedidos en cada lectura de eventos (16 = un paquete, como siempre). Para probar si el lector del sistema deja de atascarse cuando cada lectura recibe eventos enteros.
-- DualSense: limitación conocida (decisión del usuario): no apagarlo con AnyPad en marcha.
+- DualSense: limitación conocida (decisión del usuario): no apagarlo con WhateverPad en marcha.
 
 ## 0.6.18-beta (9 octubre 2026)
 
 0.6.17 con lo aprovechable de la auditoría externa y lo visto en la traza del DualSense.
 
 - La máscara sin Connection Request queda desactivada por defecto (experimento del modo diálogo, `mask_conn=1`): en consola el DualSense apagado y encendido se quedó en azul igual.
-- Traza del 9 oct: el DualSense vive en la misma función del chip que lee AnyPad (enlace 0x032). Al apagarlo, el aviso de desconexión (`05 04 00 32 00 13`) lo leyó AnyPad, no el sistema: el sistema siguió creyéndolo conectado y no lo dejó volver, ni con AnyPad parado.
-- Nuevo ajuste en caliente `idle_reads`: lecturas de eventos que AnyPad mantiene cuando no empareja (40 = como siempre). Con menos, los eventos que nadie de AnyPad espera los recibe el sistema. Al emparejar y al enviar cualquier orden vuelven todas. Los datos de los mandos (ACL) no cambian. Por defecto 40, para probarlo en directo.
+- Traza del 9 oct: el DualSense vive en la misma función del chip que lee WhateverPad (enlace 0x032). Al apagarlo, el aviso de desconexión (`05 04 00 32 00 13`) lo leyó WhateverPad, no el sistema: el sistema siguió creyéndolo conectado y no lo dejó volver, ni con WhateverPad parado.
+- Nuevo ajuste en caliente `idle_reads`: lecturas de eventos que WhateverPad mantiene cuando no empareja (40 = como siempre). Con menos, los eventos que nadie de WhateverPad espera los recibe el sistema. Al emparejar y al enviar cualquier orden vuelven todas. Los datos de los mandos (ACL) no cambian. Por defecto 40, para probarlo en directo.
 - La devolución del page scan se reintenta (cada 3 s, hasta 5 veces) en vez de darse por hecha antes de confirmarla.
 - El vigilante de la búsqueda sigue a `inq_len` (no 14 s fijos); `ps_iv` se valida contra `ps_win`; `mask_conn` solo da «ok» si el chip lo confirma.
 
 ## 0.6.17-beta (9 octubre 2026)
 
-0.6.16 con un arreglo: una orden del modo diálogo (/api/hci) que espera al chip hacía que la web se volviera a servir desde dentro de sí misma (el host atiende la web mientras espera), la misma petición se repetía sin fin y AnyPad se caía. La web ya no se vuelve a entrar. El test de la web usa ahora la misma espera que la consola; sin el arreglo, se cae igual.
+0.6.16 con un arreglo: una orden del modo diálogo (/api/hci) que espera al chip hacía que la web se volviera a servir desde dentro de sí misma (el host atiende la web mientras espera), la misma petición se repetía sin fin y WhateverPad se caía. La web ya no se vuelve a entrar. El test de la web usa ahora la misma espera que la consola; sin el arreglo, se cae igual.
 
 En consola, la 0.6.16 (antes de la caída): con la radio en el modo pesado del sistema, page scan aligerado al pulsar Emparejar, DS4 encontrado a los 9,5 s, contesta a la llamada en 0,47 s, listo a los 13,5 s; la tele vuelve a oírse.
 
@@ -103,16 +103,16 @@ Auditoría de todos los logs (46 ejecuciones, de la 0.5.25 a la 0.6.15): lo que 
 
 - Mientras se empareja, el page scan del sistema se aligera a 18 ranuras cada 1,28 s (lo que permite R1: el DualSense sigue reconectando al momento) y se devuelve el valor del sistema al acabar. Se vuelve a mirar cada 3 s, por si el sistema lo cambia.
 - Si una ronda entera de búsqueda no oye nada (ni la tele), se registra «radio ocupada» y se vuelve a mirar el page scan en el acto.
-- Las llamadas a la consola (Connection Request) quedan para el sistema: AnyPad ya no las recoge (máscara de eventos sin ese bit; se repone al cerrar). Cada mando de la sesión lo llama AnyPad, así que no las necesita. El DualSense apagado y encendido llamaba, AnyPad se quedaba la llamada y nadie la contestaba: azul. Sin verificar en consola.
+- Las llamadas a la consola (Connection Request) quedan para el sistema: WhateverPad ya no las recoge (máscara de eventos sin ese bit; se repone al cerrar). Cada mando de la sesión lo llama WhateverPad, así que no las necesita. El DualSense apagado y encendido llamaba, WhateverPad se quedaba la llamada y nadie la contestaba: azul. Sin verificar en consola.
 - Modo diálogo en la web (puerto 8095): /api/live?from=N (log en vivo), /api/tune (ajustes en caliente: ps_light, ps_iv, ps_win, mask_conn, inq_len, trace) y /api/hci?op=XXXX&p=hex (una orden HCI; nunca Reset). Para ajustar en directo, sin una versión por prueba.
 
 ## 0.6.15-beta (9 octubre 2026)
 
 Candidata 0.6.14 (configuracion L2CAP adelantada y backoff de rechazos) mas tres cambios pensados para que el emparejado no dependa de reiniciar el Bluetooth ni el mando. Parte de la referencia 0.6.10 (1e784b2).
 
-- Si la llamada al mando acaba sin respuesta (page timeout, estado 0x04), AnyPad vuelve a llamar al mismo mando hasta 2 veces mas, tras 500 ms, ampliando la ventana de emparejado. Antes la llamada fallida terminaba el intento y no se volvia a probar mientras no se pulsara «Emparejar» otra vez.
-- Si un paso del emparejado seguro (SSP) no llega en 3 s (peticion de capacidades, confirmacion del usuario), AnyPad contesta el siguiente paso igualmente en vez de esperar un evento que pudo leer el sistema.
-- Si al abrir el USB faltan lecturas de eventos o de datos (otro payload sigue reteniendo transferencias del chip, como Prospero-Pad), AnyPad vuelve a pedirlas cada 5 s y se recupera solo cuando el otro suelta. Avisa en pantalla de que otro programa usa el Bluetooth, y tambien si el puerto 8095 esta ocupado.
+- Si la llamada al mando acaba sin respuesta (page timeout, estado 0x04), WhateverPad vuelve a llamar al mismo mando hasta 2 veces mas, tras 500 ms, ampliando la ventana de emparejado. Antes la llamada fallida terminaba el intento y no se volvia a probar mientras no se pulsara «Emparejar» otra vez.
+- Si un paso del emparejado seguro (SSP) no llega en 3 s (peticion de capacidades, confirmacion del usuario), WhateverPad contesta el siguiente paso igualmente en vez de esperar un evento que pudo leer el sistema.
+- Si al abrir el USB faltan lecturas de eventos o de datos (otro payload sigue reteniendo transferencias del chip, como Prospero-Pad), WhateverPad vuelve a pedirlas cada 5 s y se recupera solo cuando el otro suelta. Avisa en pantalla de que otro programa usa el Bluetooth, y tambien si el puerto 8095 esta ocupado.
 - Nuevos tests del simulador: repagina tras timeout (3 llamadas, una sola conexion) y perdida de eventos de emparejado (0x31 y 0x33). Mutaciones comprobadas: sin repaginar y sin el empujon SSP, los tests fallan.
 
 Pendiente de prueba en consola. No arregla el DualSense azul ni la sordera del chip.
@@ -122,7 +122,7 @@ Pendiente de prueba en consola. No arregla el DualSense azul ni la sordera del c
 Sobre la candidata 0.6.13. Revisión directa de HearBridge-PS5, commit 308995806bfa39861501848b4aee3ecd64b79287 (X-F1REBALL-X, GPL-3.0). Implementación propia de las ideas aplicables; no se copia su capa Bluetooth.
 
 - Conserva una petición de configuración L2CAP completa, sin opciones, recibida antes de conocer el CID remoto. La contesta al recibir la apertura, sin esperar a que el mando la repita. Borra la pendiente al cerrar o abrir un intento nuevo. Inspirado en el tratamiento de CFG_REQ adelantado de HearBridge.
-- Tras un rechazo L2CAP, espera 250, 500, 1000, 2000 y hasta 4000 ms entre intentos, con máximo de 8 rechazos por canal; cierra el enlace propio al agotarlos. Es el diseño de backoff de AnyPad 0.6.12, separado de la reserva ACL. El límite de dos intentos de HearBridge se refiere a CREATE_CONNECTION, no a SDP.
+- Tras un rechazo L2CAP, espera 250, 500, 1000, 2000 y hasta 4000 ms entre intentos, con máximo de 8 rechazos por canal; cierra el enlace propio al agotarlos. Es el diseño de backoff de WhateverPad 0.6.12, separado de la reserva ACL. El límite de dos intentos de HearBridge se refiere a CREATE_CONNECTION, no a SDP.
 - No incorpora reserva ACL, cambio del timeout global, reset del chip, cambio de escaneo ni sustitución del transporte.
 - Diez escenarios dirigidos (DS4 y Switch Pro) prueban intercambio normal, configuración adelantada con/sin repetición y rechazo transitorio/persistente. Se han probado cada cambio y la combinación por separado.
 
@@ -160,7 +160,7 @@ No cambia nada de la fase conectada.
 
 ## 0.6.8-beta
 
-**Vuelta a la base 0.6.0** (la publicada y estable para el usuario), con solo tres cambios demostrados o pedidos. Las 0.6.1–0.6.7 se descartan como base (rama `web-watchdog`): la 0.6.1 hizo que la pausa para el sistema congelara los mandos de AnyPad.
+**Vuelta a la base 0.6.0** (la publicada y estable para el usuario), con solo tres cambios demostrados o pedidos. Las 0.6.1–0.6.7 se descartan como base (rama `web-watchdog`): la 0.6.1 hizo que la pausa para el sistema congelara los mandos de WhateverPad.
 
 1. **Escaneo LE en pausa** mientras se llama o se prepara un mando Classic (de la 0.6.5). En consola, el DS4 pasó de no responder en 15 s a responder en 0,03–0,27 s, 4 de 4 veces.
 2. **Datos ACL por el endpoint USB 0x02 desde el principio** (de la 0.6.7). El 0x01 de este chip ejecuta como orden HCI lo que se le escribe. Verificado en consola: ninguna orden basura, y unos 5 s menos por emparejado.
@@ -188,7 +188,7 @@ Además, la primera línea del log lleva el commit (`build …`). Todo lo demás
 ## 0.5.1-alpha
 
 - La búsqueda de mandos ya no se queda atascada: si el aviso de "fin de búsqueda" del chip se pierde, a los 14 s se cancela y se busca otra vez (antes quedaba parada hasta 45 s, y el mando "no aparecía").
-- Al arrancar se cancela cualquier búsqueda que una ejecución anterior cortada dejara en el chip; si el chip contesta "comando no permitido" (0x0c) se espera a que acabe en vez de repetir la orden decenas de veces; al parar AnyPad no se deja ninguna búsqueda en marcha.
+- Al arrancar se cancela cualquier búsqueda que una ejecución anterior cortada dejara en el chip; si el chip contesta "comando no permitido" (0x0c) se espera a que acabe en vez de repetir la orden decenas de veces; al parar WhateverPad no se deja ninguna búsqueda en marcha.
 - Un aviso de fin de búsqueda dañado (longitud errónea) ya no se toma por bueno.
 - Test nuevo `test_inquiry_watchdog` (probado con mutación).
 
@@ -209,7 +209,7 @@ Además, la primera línea del log lleva el commit (`build …`). Todo lo demás
 - Aviso de arranque y página web: hay que crear un usuario nuevo en la consola y asignarle el mando cuando lo detecte; con el usuario del DualSense los juegos no ven el mando. README actualizado.
 - Nombre: desde esta versión los ELF se llaman `-alpha` en vez de `-experimental`.
 - El log registra al arrancar el firmware de la consola (`console: firmware 10.01`) y los procesos que no son del sistema (otros payloads en marcha), para comparar consolas y firmwares.
-- La web: el botón «Salir» solo cierra la página (AnyPad sigue funcionando); apagar AnyPad queda como botón «avanzado» aparte.
+- La web: el botón «Salir» solo cierra la página (WhateverPad sigue funcionando); apagar WhateverPad queda como botón «avanzado» aparte.
 - Nuevo `COMPATIBILITY.md` (castellano e inglés): solo el DualShock 4 está verificado en consola.
 
 ## 0.4.5-experimental
@@ -219,7 +219,7 @@ Además, la primera línea del log lleva el commit (`build …`). Todo lo demás
 
 ## 0.4.4-experimental
 
-- Construida sobre la **0.4.1** (la que encuentra el DS4), no sobre 0.4.2/0.4.3, más un único cambio: `/data/anypad/bind_user` (opcional) decide a qué usuario se da el mando virtual: `other` (un usuario con sesión que no sea el principal) o un id en hexadecimal. Sin el fichero todo es igual que la 0.4.1. Para probar si un juego lanzado por ese otro usuario recibe el mando.
+- Construida sobre la **0.4.1** (la que encuentra el DS4), no sobre 0.4.2/0.4.3, más un único cambio: `/data/whateverpad/bind_user` (opcional) decide a qué usuario se da el mando virtual: `other` (un usuario con sesión que no sea el principal) o un id en hexadecimal. Sin el fichero todo es igual que la 0.4.1. Para probar si un juego lanzado por ese otro usuario recibe el mando.
 - El log `users:` por fin se imprime cuando cambia algo (antes un detector erróneo no lo mostraba).
 
 ## 0.4.3-experimental
@@ -240,10 +240,10 @@ Además, la primera línea del log lleva el commit (`build …`). Todo lo demás
 
 ## 0.4.0-experimental
 
-- Acceso en "Contenido multimedia" (ANYP00001, "AnyPad", icono del mando naranja) que abre
+- Acceso en "Contenido multimedia" (WHTP00001, "WhateverPad", icono del mando naranja) que abre
   `http://127.0.0.1:8095/` en el navegador, con el mismo mecanismo que Payload Manager
-  (`/user/app/ANYP00001/sce_sys/{param.json,icon0.png}` + `sceAppInstUtilAppInstallTitleDir`).
-  Se instala al arrancar; `/data/anypad/no_icon` lo evita y `/data/anypad/remove_icon` lo desinstala.
+  (`/user/app/WHTP00001/sce_sys/{param.json,icon0.png}` + `sceAppInstUtilAppInstallTitleDir`).
+  Se instala al arrancar; `/data/whateverpad/no_icon` lo evita y `/data/whateverpad/remove_icon` lo desinstala.
   Icono: `assets/icon0.png` (512x512 PNG con transparencia, negro bajo los píxeles transparentes),
   generado con `tools/make-icon.py` y comprobado con `tools/check-icon.py`.
 - Combinación de la consola por defecto: **L2 + R2 + OPTIONS** (1,5 s).
@@ -307,12 +307,12 @@ appeared because it was started after the Bluetooth.
 
 - **The menu starts first.** The web page is up before anything that can fail, so
   it is there to explain a failure. If the virtual pads or the Bluetooth are not
-  available, AnyPad PS5 **stays running** in a reduced mode (menu, log, stop
+  available, WhateverPad PS5 **stays running** in a reduced mode (menu, log, stop
   and a *Reintentar Bluetooth* button) instead of exiting.
 - **The menu opens on the console with a button combination:** hold
   **L1 + R1 + touchpad for 1.5 s** on the DualSense and the console's browser
   opens `http://127.0.0.1:8095/` (`sceSystemServiceLaunchWebBrowser`, as Payload
-  Manager does). Configurable in `/data/anypad/config.ini` (`menu_combo`,
+  Manager does). Configurable in `/data/whateverpad/config.ini` (`menu_combo`,
   `menu_hold_ms`). The menu says whether the user's pad can be read and why not.
 - **The start-up notification says where the menu is and how to open it:** the
   console's address (`http://<ip>:8095/`) and the combination, in Spanish.
@@ -329,7 +329,7 @@ appeared because it was started after the Bluetooth.
   Bluetooth* button tries again. Losing the Bluetooth later no longer stops the
   program: it reports it and offers the same button.
 - The pairing key combination (L1+R1+Square) is gone; pair from the menu or with
-  the `/data/anypad/pair` file.
+  the `/data/whateverpad/pair` file.
 - `host_poll(NULL)` does nothing; the store/web code tolerates a missing host.
 - Tests: `test_config` (config, hotkey, local address), degraded-mode and
   hotkey fields in `test_web`, credentials restore in `test_vpad`, the dead
@@ -345,10 +345,10 @@ First build after the first run on a console.
   `scePadInit` goes first and a privilege answer other than 0 is only a
   warning. Details in
   [PRUEBAS.md](PRUEBAS.md#registro-de-pruebas-en-consola).
-- Renamed from "padhost" to **AnyPad PS5**. The data folder is now
-  `/data/anypad` (log `anypad.log`, flags `pair` and `stop`). The old
+- Renamed from "padhost" to **WhateverPad PS5**. The data folder is now
+  `/data/whateverpad` (log `whateverpad.log`, flags `pair` and `stop`). The old
   `/data/padhost` is not used any more and can be deleted by hand.
-- The store file's magic is now `ANYPAD02`.
+- The store file's magic is now `WHATEVERPAD02`.
 - Web page on port 8095 (no PIN, by choice), with checks that need none.
 - ELFs are named with their version.
 - New test `test_vpad`, which runs the console's start-up code against

@@ -55,7 +55,7 @@ static void test_descriptor(void)
     }
 
     printf("ACL out: the spare OUT numbered like the IN on the MediaTek chip, the first otherwise\n");
-    if (n == 2) CHECK(usb_spare_acl_out(&f[0]) == 0x02);     /* 0x82 in -> 0x02, as AnyPad always used */
+    if (n == 2) CHECK(usb_spare_acl_out(&f[0]) == 0x02);     /* 0x82 in -> 0x02, as WhateverPad always used */
     {
         hci_function m;
         memset(&m, 0, sizeof m);

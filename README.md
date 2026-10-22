@@ -1,6 +1,6 @@
-<p align="center"><img src="assets/icon0.png" width="180" alt="AnyPad PS5"></p>
+<p align="center"><img src="assets/icon0.png" width="180" alt="WhateverPad PS5"></p>
 
-# AnyPad PS5: Free your PS5 from the DualSense
+# WhateverPad PS5: Free your PS5 from the DualSense
 
 **A Bluetooth controller bridge for jailbroken PS5 consoles.**
 **Un puente de mandos Bluetooth para PS5 con jailbreak.**
@@ -9,54 +9,56 @@
 
 ---
 
+> **WhateverPad is a fork of [AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5) by elmonomalva0.** The original code, credits and GPL-3.0-or-later licence are kept; this fork changes the name/branding and the DualSense reconnect handling. Upstream controller-compatibility reports still belong in the original project.
+
 <a name="english"></a>
 # English
 
-AnyPad PS5 lets you use controllers from other platforms on your PS5. It connects them through the console's own Bluetooth chip and presents them to the system as virtual DualSense controllers.
+WhateverPad PS5 lets you use controllers from other platforms on your PS5. It connects them through the console's own Bluetooth chip and presents them to the system as virtual DualSense controllers.
 
 No USB dongle required.
 
 **Version 0.9.5-beta.** Tested on a PS5 fat, firmware 10.01, with a DualShock 4 and an 8BitDo SF30 Pro (Switch mode), in the console menus, in games and in emulators.
 
-**Available in twelve languages:** English, Spanish, French, Italian, Portuguese, German, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean and Arabic. The AnyPad page follows the console language.
+**Available in twelve languages:** English, Spanish, French, Italian, Portuguese, German, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean and Arabic. The WhateverPad page follows the console language.
 
 ---
 
 ## About this project
 
-AnyPad PS5 started on 3 October 2026 at about 14:20 (Spanish time), the day I published its first version. The idea came from MissionControl, which lets the Nintendo Switch use controllers from other consoles. AnyPad may not have been the first project to use other controllers on the PS5: there were already projects that connected them by USB. But none connected them by Bluetooth, and AnyPad was the first to do it. I had an idea and I carried it out.
+WhateverPad PS5 started on 3 October 2026 at about 14:20 (Spanish time), the day I published its first version. The idea came from MissionControl, which lets the Nintendo Switch use controllers from other consoles. WhateverPad may not have been the first project to use other controllers on the PS5: there were already projects that connected them by USB. But none connected them by Bluetooth, and WhateverPad was the first to do it. I had an idea and I carried it out.
 
-The goal now is to make AnyPad work with more controllers. If you try it, please send me your log (see "Help us confirm compatibility" below): every log helps.
+The goal now is to make WhateverPad work with more controllers. If you try it, please send me your log (see "Help us confirm compatibility" below): every log helps.
 
-The full source code is published in this repository under GPL-3.0-or-later (see "Open source, and working with an AI" below). If you develop an emulator and would like to integrate AnyPad, you are welcome to do so under that license. Write to me at [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com) if you need help.
+The full source code is published in this repository under GPL-3.0-or-later (see "Open source, and working with an AI" below). If you develop an emulator and would like to integrate WhateverPad, you are welcome to do so under that license. Write to me at [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com) if you need help.
 
-One known issue remains: if the DualSense is switched off while AnyPad is running, it can stay blinking blue. I hope future projects do not have it. Projects forked from AnyPad, from the code I published, will very probably inherit this issue. It is part of AnyPad's legacy, and a sign that, at least in their Bluetooth part, they are forks of AnyPad.
+One known issue remains: if the DualSense is switched off while WhateverPad is running, it can stay blinking blue. I hope future projects do not have it. Projects forked from WhateverPad, from the code I published, will very probably inherit this issue. It is part of WhateverPad's legacy, and a sign that, at least in their Bluetooth part, they are forks of WhateverPad.
 
 ---
 
 ## Open source, and working with an AI
 
-From version 0.9.5 the whole source code of AnyPad PS5 is published in this repository, under GPL-3.0-or-later: the Bluetooth host, the controller profiles, the AnyPad page, the tests and the build scripts. It includes a simulator, so a controller can be checked on a computer without a console.
+From version 0.9.5 the whole source code of WhateverPad PS5 is published in this repository, under GPL-3.0-or-later: the Bluetooth host, the controller profiles, the WhateverPad page, the tests and the build scripts. It includes a simulator, so a controller can be checked on a computer without a console.
 
-What I believe AnyPad really adds, more than the bridge itself, is **its communication system for integrating new controllers with the help of an AI**. While AnyPad is running, its page offers on your local network:
+What I believe WhateverPad really adds, more than the bridge itself, is **its communication system for integrating new controllers with the help of an AI**. While WhateverPad is running, its page offers on your local network:
 
 - the log, in real time;
 - a few settings of the Bluetooth connection that can be changed while it runs, without restarting or rebuilding;
 - the pairing button.
 
-An AI assistant that has a terminal on a computer in the same network (for example Claude Code, Codex CLI or Gemini CLI) can follow what AnyPad does while you switch a controller on, propose a change, rebuild the ELF, upload it to the console and check the result in the next run. This is how AnyPad itself has been improved.
+An AI assistant that has a terminal on a computer in the same network (for example Claude Code, Codex CLI or Gemini CLI) can follow what WhateverPad does while you switch a controller on, propose a change, rebuild the ELF, upload it to the console and check the result in the next run. This is how WhateverPad itself has been improved.
 
 The file **[AI-WORKFLOW.md](AI-WORKFLOW.md)** is a guide written for that assistant: how to connect, what it may and may not touch, how to test a change and how to add support for a new controller. You can give it to the assistant as the first instruction.
 
 Please keep in mind:
 
-- A chat in a web browser cannot reach your console. The assistant needs a terminal on a computer connected to the same local network as the PS5. AnyPad itself never connects to the internet.
-- The page has no PIN, as in every version: anyone on your local network can read the log and send commands to AnyPad. Use it only on a network you trust, and stop AnyPad when you finish.
+- A chat in a web browser cannot reach your console. The assistant needs a terminal on a computer connected to the same local network as the PS5. WhateverPad itself never connects to the internet.
+- The page has no PIN, as in every version: anyone on your local network can read the log and send commands to WhateverPad. Use it only on a network you trust, and stop WhateverPad when you finish.
 - The log contains the Bluetooth addresses of your controllers and the id of your console user. Review it before sharing it.
 
 ### Share what you (or your AI) learn
 
-If you adapt AnyPad to a controller, with or without an AI, please open an [issue](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues) with the controller model, the console firmware, the jailbreak, the AnyPad version, what you changed and why, and the log. If an AI helped you, say so and let it write the explanation: what the controller does differently, what was changed and how it was tested. I will review each proposal and integrate the compatible ones in later versions. A change must keep passing `make test` and must not alter how the DualShock 4 and the 8BitDo connect.
+If you adapt WhateverPad to a controller, with or without an AI, please open an [issue](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues) with the controller model, the console firmware, the jailbreak, the WhateverPad version, what you changed and why, and the log. If an AI helped you, say so and let it write the explanation: what the controller does differently, what was changed and how it was tested. I will review each proposal and integrate the compatible ones in later versions. A change must keep passing `make test` and must not alter how the DualShock 4 and the 8BitDo connect.
 
 ### Build from source
 
@@ -70,7 +72,7 @@ tools/build-elf-docker.sh /path/to/ps5-payload-sdk     # or the same, inside a c
 
 ### Please mention me
 
-If you make your own version of AnyPad, or you include it (or a part of it) in an emulator, a HEN, a payload or any other program, I would be very grateful if you mentioned **elmonomalvad0** and linked this project. The license, GPL-3.0-or-later, already requires you to keep the copyright notices and to distribute your changes under the same license. The mention is a request, not a condition, and it is what makes it worthwhile to keep sharing the work.
+If you make your own version of WhateverPad, or you include it (or a part of it) in an emulator, a HEN, a payload or any other program, I would be very grateful if you mentioned **elmonomalvad0** and linked this project. The license, GPL-3.0-or-later, already requires you to keep the copyright notices and to distribute your changes under the same license. The mention is a request, not a condition, and it is what makes it worthwhile to keep sharing the work.
 
 ### Inside the code
 
@@ -98,7 +100,7 @@ Adding a controller is, in most cases, adding one profile in `src/profiles.c` an
 
 - **More compatible:** more controllers supported, and support for the two Bluetooth chips used in PS5 consoles.
 - **Bug fixes.**
-- **New graphical interface** for the AnyPad page.
+- **New graphical interface** for the WhateverPad page.
 
 ## What is new in 0.8
 
@@ -114,19 +116,19 @@ Pairing is now much faster and more reliable. In our tests the DualShock 4 and t
 
 ### Configure PS
 
-For controllers without a usable PS button (Switch Pro, 8BitDo and others), the **Configure PS** button lets you choose **one button or a combination of three** that will act as the PS button. Choose how many, press them on the controller and hold them for one second: AnyPad detects them by itself. The setting is saved for that controller model.
+For controllers without a usable PS button (Switch Pro, 8BitDo and others), the **Configure PS** button lets you choose **one button or a combination of three** that will act as the PS button. Choose how many, press them on the controller and hold them for one second: WhateverPad detects them by itself. The setting is saved for that controller model.
 
 DualShock 4 and DualSense controllers have their own PS button, so this option does not appear for them.
 
 ### Twelve languages
 
-The AnyPad page follows the console language: English, Spanish, French, Italian, Portuguese, German, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean and Arabic (right to left). Any other language falls back to English.
+The WhateverPad page follows the console language: English, Spanish, French, Italian, Portuguese, German, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean and Arabic (right to left). Any other language falls back to English.
 
 ---
 
-## ⚠️ Important: do not switch off the DualSense while AnyPad is running
+## ⚠️ Important: do not switch off the DualSense while WhateverPad is running
 
-If the DualSense is switched off while AnyPad is running, it can enter the blinking blue mode and stop working until the console is restarted.
+If the DualSense is switched off while WhateverPad is running, it can enter the blinking blue mode and stop working until the console is restarted.
 
 So that the console does not switch it off by itself after a while without use, set:
 
@@ -161,7 +163,7 @@ The full list, controller by controller, is in [COMPATIBILITY.md](COMPATIBILITY.
 
 # How it works
 
-AnyPad PS5 runs as a resident payload on a jailbroken PS5. It uses the console's own Bluetooth chip, **sharing it with the system**, to discover and pair controllers, read their input and present them to the PS5 as virtual DualSense controllers.
+WhateverPad PS5 runs as a resident payload on a jailbroken PS5. It uses the console's own Bluetooth chip, **sharing it with the system**, to discover and pair controllers, read their input and present them to the PS5 as virtual DualSense controllers.
 
 It does **not** modify games, the PS5 firmware or the jailbreak. Your PS5 must already be able to run payloads.
 
@@ -169,8 +171,8 @@ It does **not** modify games, the PS5 firmware or the jailbreak. Your PS5 must a
 
 # How to use
 
-1. **Load AnyPad.** Download `AnyPad-PS5-0.9.5-beta.elf` from [Releases](https://codeberg.org/elmonomalva0/Any-Pad-ps5/releases) and load it with the payload loader you normally use.
-2. **Open the page.** Open **AnyPad** in the console's Media row, or open `http://<console-ip>:8095` from a phone or computer on the same network.
+1. **Load WhateverPad.** Download `WhateverPad-PS5-0.9.5-beta.elf` from [Releases](https://github.com/andrescera/WhateverPad/releases) and load it with the payload loader you normally use.
+2. **Open the page.** Open **WhateverPad** in the console's Media row, or open `http://<console-ip>:8095` from a phone or computer on the same network.
 3. **Pair.** Press **Pair**, then put the controller in pairing mode, close to the console.
 
 | Controller | Pairing mode |
@@ -188,15 +190,15 @@ Several controllers can be used at the same time, together with the DualSense.
 
 # Every run starts clean
 
-AnyPad does not keep paired controllers between runs. Pair your controllers each time you start AnyPad. This avoids old pairings that no longer work and keeps the Bluetooth chip in a known state.
+WhateverPad does not keep paired controllers between runs. Pair your controllers each time you start WhateverPad. This avoids old pairings that no longer work and keeps the Bluetooth chip in a known state.
 
 If a controller that was switched off reconnects by itself and does not respond, switch it off and pair it again from the page.
 
 ---
 
-# Stopping AnyPad
+# Stopping WhateverPad
 
-Always stop it with **Stop AnyPad PS5** on its page, also before running it again and before switching off or restarting the console. The **Exit** button only closes the page.
+Always stop it with **Stop WhateverPad PS5** on its page, also before running it again and before switching off or restarting the console. The **Exit** button only closes the page.
 
 ---
 
@@ -210,17 +212,17 @@ Always stop it with **Stop AnyPad PS5** on its page, also before running it agai
 
 ### Another controller payload is running
 
-Another payload that uses the Bluetooth chip and port 8095 gets in the way. Stop it from its own menu before running AnyPad; AnyPad shows a notice when it detects this.
+Another payload that uses the Bluetooth chip and port 8095 gets in the way. Stop it from its own menu before running WhateverPad; WhateverPad shows a notice when it detects this.
 
 ### The page does not open
 
-Check that AnyPad is running, that your phone or computer is on the same network as the PS5, and that you use the console's IP address with port `8095`.
+Check that WhateverPad is running, that your phone or computer is on the same network as the PS5, and that you use the console's IP address with port `8095`.
 
 ---
 
 # Help us confirm compatibility
 
-If you can confirm that AnyPad PS5 works (or does not work) with a controller, please send the log (`/data/anypad/anypad.log`) to [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com), with the controller model, the console firmware, the jailbreak and the AnyPad version. This helps a lot.
+If you can confirm that WhateverPad PS5 works (or does not work) with a controller, please send the log (`/data/whateverpad/whateverpad.log`) to [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com), with the controller model, the console firmware, the jailbreak and the WhateverPad version. This helps a lot.
 
 ### Support the project
 
@@ -230,7 +232,7 @@ Many people ask me to test other controllers and other console versions. Any hel
 
 # Credits
 
-AnyPad PS5 is original code. These projects were studied to understand how things work, and their ideas were written anew for AnyPad. Thanks to their authors:
+WhateverPad PS5 is original code. These projects were studied to understand how things work, and their ideas were written anew for WhateverPad. Thanks to their authors:
 
 - **[FGG-PlayPods](https://github.com/FGGstore/FGG-PlayPods)** (FGGstore): the idea behind the Bluetooth part, sharing the PS5's own Bluetooth chip with the system.
 - **[MissionControl](https://github.com/ndeadly/MissionControl)** (ndeadly): controller profiles by vendor and model, and the report layouts of many controllers.
@@ -241,7 +243,7 @@ AnyPad PS5 is original code. These projects were studied to understand how thing
 
 License: GPL-3.0-or-later ([LICENSE](LICENSE)).
 
-Author: **elmonomalvad0**, the same author as *sinfiltros* (the original AnyPad PS5 on GitHub).
+Author: **elmonomalvad0**, the same author as *sinfiltros* (the original WhateverPad PS5 on GitHub).
 X: [@elmonomalvad0](https://x.com/elmonomalvad0) · Contact: exposed.ct.ws@gmail.com
 
 ---
@@ -249,51 +251,51 @@ X: [@elmonomalvad0](https://x.com/elmonomalvad0) · Contact: exposed.ct.ws@gmail
 <a name="español"></a>
 # Español
 
-AnyPad PS5 te permite usar en tu PS5 mandos de otras plataformas. Los conecta a través del propio chip Bluetooth de la consola y los presenta al sistema como DualSense virtuales.
+WhateverPad PS5 te permite usar en tu PS5 mandos de otras plataformas. Los conecta a través del propio chip Bluetooth de la consola y los presenta al sistema como DualSense virtuales.
 
 No hace falta ningún adaptador USB.
 
 **Versión 0.9.5-beta.** Probada en una PS5 fat, firmware 10.01, con un DualShock 4 y un 8BitDo SF30 Pro (modo Switch), en los menús de la consola, en juegos y en emuladores.
 
-**Disponible en doce idiomas:** español, inglés, francés, italiano, portugués, alemán, ruso, chino simplificado, chino tradicional, japonés, coreano y árabe. La página de AnyPad sigue el idioma de la consola.
+**Disponible en doce idiomas:** español, inglés, francés, italiano, portugués, alemán, ruso, chino simplificado, chino tradicional, japonés, coreano y árabe. La página de WhateverPad sigue el idioma de la consola.
 
 ---
 
 ## Sobre este proyecto
 
-AnyPad PS5 empezó el 3 de octubre de 2026, hacia las 14:20 (hora de España), el día que publiqué su primera versión. La idea partió de MissionControl, que permite usar en la Nintendo Switch mandos de otras consolas. Quizá AnyPad no fue el primer proyecto para usar otros mandos en la PS5: ya había proyectos que los conectaban por USB. Pero ninguno los conectaba por Bluetooth, y AnyPad fue el primero en hacerlo. Tuve una idea y la llevé a cabo.
+WhateverPad PS5 empezó el 3 de octubre de 2026, hacia las 14:20 (hora de España), el día que publiqué su primera versión. La idea partió de MissionControl, que permite usar en la Nintendo Switch mandos de otras consolas. Quizá WhateverPad no fue el primer proyecto para usar otros mandos en la PS5: ya había proyectos que los conectaban por USB. Pero ninguno los conectaba por Bluetooth, y WhateverPad fue el primero en hacerlo. Tuve una idea y la llevé a cabo.
 
-El objetivo ahora es que AnyPad funcione con más mandos. Si lo pruebas, por favor envíame tu log (mira «Ayúdanos a confirmar la compatibilidad» más abajo): cada log ayuda.
+El objetivo ahora es que WhateverPad funcione con más mandos. Si lo pruebas, por favor envíame tu log (mira «Ayúdanos a confirmar la compatibilidad» más abajo): cada log ayuda.
 
-El código fuente completo está publicado en este repositorio con licencia GPL-3.0-or-later (mira «Código abierto y trabajo con una IA» más abajo). Si desarrollas un emulador y quieres integrar AnyPad, puedes hacerlo bajo esa licencia. Escríbeme a [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com) si necesitas ayuda.
+El código fuente completo está publicado en este repositorio con licencia GPL-3.0-or-later (mira «Código abierto y trabajo con una IA» más abajo). Si desarrollas un emulador y quieres integrar WhateverPad, puedes hacerlo bajo esa licencia. Escríbeme a [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com) si necesitas ayuda.
 
-Queda un fallo conocido: si se apaga el DualSense con AnyPad en marcha, puede quedarse en azul parpadeante. Espero que los próximos proyectos no lo tengan. Los que sean forks de AnyPad, del código que publiqué, muy probablemente heredarán ese fallo. Es parte del legado de AnyPad, y una muestra de que, al menos en su parte Bluetooth, son un fork de AnyPad.
+Queda un fallo conocido: si se apaga el DualSense con WhateverPad en marcha, puede quedarse en azul parpadeante. Espero que los próximos proyectos no lo tengan. Los que sean forks de WhateverPad, del código que publiqué, muy probablemente heredarán ese fallo. Es parte del legado de WhateverPad, y una muestra de que, al menos en su parte Bluetooth, son un fork de WhateverPad.
 
 ---
 
 ## Código abierto y trabajo con una IA
 
-Desde la versión 0.9.5 todo el código fuente de AnyPad PS5 está publicado en este repositorio, con licencia GPL-3.0-or-later: el anfitrión Bluetooth, los perfiles de mandos, la página de AnyPad, las pruebas y los scripts de compilación. Incluye un simulador, así que se puede comprobar un mando en un ordenador sin consola.
+Desde la versión 0.9.5 todo el código fuente de WhateverPad PS5 está publicado en este repositorio, con licencia GPL-3.0-or-later: el anfitrión Bluetooth, los perfiles de mandos, la página de WhateverPad, las pruebas y los scripts de compilación. Incluye un simulador, así que se puede comprobar un mando en un ordenador sin consola.
 
-Lo que creo que aporta de verdad AnyPad, más que el puente en sí, es **su sistema de comunicación para integrar mandos nuevos con la ayuda de una IA**. Mientras AnyPad está en marcha, su página ofrece en tu red local:
+Lo que creo que aporta de verdad WhateverPad, más que el puente en sí, es **su sistema de comunicación para integrar mandos nuevos con la ayuda de una IA**. Mientras WhateverPad está en marcha, su página ofrece en tu red local:
 
 - el log, en tiempo real;
 - algunos ajustes de la conexión Bluetooth que se pueden cambiar en caliente, sin reiniciar ni recompilar;
 - el botón de emparejar.
 
-Un asistente de IA que tenga una terminal en un ordenador de la misma red (por ejemplo Claude Code, Codex CLI o Gemini CLI) puede seguir lo que hace AnyPad mientras enciendes un mando, proponer un cambio, recompilar el ELF, subirlo a la consola y comprobar el resultado en la siguiente ejecución. Así se ha mejorado el propio AnyPad.
+Un asistente de IA que tenga una terminal en un ordenador de la misma red (por ejemplo Claude Code, Codex CLI o Gemini CLI) puede seguir lo que hace WhateverPad mientras enciendes un mando, proponer un cambio, recompilar el ELF, subirlo a la consola y comprobar el resultado en la siguiente ejecución. Así se ha mejorado el propio WhateverPad.
 
 El archivo **[AI-WORKFLOW.md](AI-WORKFLOW.md)** es una guía escrita para ese asistente: cómo conectarse, qué puede y qué no puede tocar, cómo probar un cambio y cómo añadir un mando nuevo. Puedes dársela al asistente como primera instrucción.
 
 Ten en cuenta:
 
-- Un chat en el navegador no llega a tu consola. El asistente necesita una terminal en un ordenador conectado a la misma red local que la PS5. AnyPad nunca se conecta a internet.
-- La página no tiene PIN, como en todas las versiones: cualquiera en tu red local puede leer el log y mandar órdenes a AnyPad. Úsalo solo en una red de confianza y detén AnyPad cuando termines.
+- Un chat en el navegador no llega a tu consola. El asistente necesita una terminal en un ordenador conectado a la misma red local que la PS5. WhateverPad nunca se conecta a internet.
+- La página no tiene PIN, como en todas las versiones: cualquiera en tu red local puede leer el log y mandar órdenes a WhateverPad. Úsalo solo en una red de confianza y detén WhateverPad cuando termines.
 - El log contiene las direcciones Bluetooth de tus mandos y el id de tu usuario de la consola. Revísalo antes de compartirlo.
 
 ### Comparte lo que aprendéis (tú y tu IA)
 
-Si adaptas AnyPad a un mando, con o sin IA, abre por favor una [incidencia](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues) con el modelo del mando, el firmware de la consola, el jailbreak, la versión de AnyPad, qué has cambiado y por qué, y el log. Si te ha ayudado una IA, dilo y deja que escriba ella la explicación: qué hace distinto el mando, qué se cambió y cómo se probó. Revisaré cada propuesta e integraré las compatibles en versiones posteriores. Un cambio debe seguir pasando `make test` y no debe alterar cómo conectan el DualShock 4 y el 8BitDo.
+Si adaptas WhateverPad a un mando, con o sin IA, abre por favor una [incidencia](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues) con el modelo del mando, el firmware de la consola, el jailbreak, la versión de WhateverPad, qué has cambiado y por qué, y el log. Si te ha ayudado una IA, dilo y deja que escriba ella la explicación: qué hace distinto el mando, qué se cambió y cómo se probó. Revisaré cada propuesta e integraré las compatibles en versiones posteriores. Un cambio debe seguir pasando `make test` y no debe alterar cómo conectan el DualShock 4 y el 8BitDo.
 
 ### Compilar desde el código
 
@@ -307,7 +309,7 @@ tools/build-elf-docker.sh /ruta/al/ps5-payload-sdk     # o lo mismo, dentro de u
 
 ### Por favor, menciónome
 
-Si haces tu propia versión de AnyPad, o la incluyes (o una parte) en un emulador, un HEN, un payload o cualquier otro programa, te lo agradeceré mucho si mencionas a **elmonomalvad0** y enlazas este proyecto. La licencia, GPL-3.0-or-later, ya exige que conserves los avisos de copyright y que distribuyas tus cambios con la misma licencia. La mención es una petición, no una condición, y es lo que hace que merezca la pena seguir compartiendo el trabajo.
+Si haces tu propia versión de WhateverPad, o la incluyes (o una parte) en un emulador, un HEN, un payload o cualquier otro programa, te lo agradeceré mucho si mencionas a **elmonomalvad0** y enlazas este proyecto. La licencia, GPL-3.0-or-later, ya exige que conserves los avisos de copyright y que distribuyas tus cambios con la misma licencia. La mención es una petición, no una condición, y es lo que hace que merezca la pena seguir compartiendo el trabajo.
 
 ### Dentro del código
 
@@ -335,7 +337,7 @@ Añadir un mando es, en la mayoría de los casos, añadir un perfil en `src/prof
 
 - **Más compatible:** admite más mandos y es compatible con los dos chips Bluetooth que llevan las PS5.
 - **Errores corregidos.**
-- **Nuevo entorno gráfico** en la página de AnyPad.
+- **Nuevo entorno gráfico** en la página de WhateverPad.
 
 ## Novedades de la 0.8
 
@@ -351,19 +353,19 @@ El emparejado es ahora mucho más rápido y fiable. En nuestras pruebas, el Dual
 
 ### Configurar PS
 
-Para los mandos sin un botón PS que funcione (Switch Pro, 8BitDo y otros), el botón **Configurar PS** permite elegir **un botón o una combinación de tres** que hará de botón PS. Eliges cuántos, los pulsas en el mando y los mantienes un segundo: AnyPad los detecta solo. El ajuste se guarda para ese modelo de mando.
+Para los mandos sin un botón PS que funcione (Switch Pro, 8BitDo y otros), el botón **Configurar PS** permite elegir **un botón o una combinación de tres** que hará de botón PS. Eliges cuántos, los pulsas en el mando y los mantienes un segundo: WhateverPad los detecta solo. El ajuste se guarda para ese modelo de mando.
 
 Los DualShock 4 y los DualSense tienen su propio botón PS, así que esta opción no aparece para ellos.
 
 ### Doce idiomas
 
-La página de AnyPad sigue el idioma de la consola: español, inglés, francés, italiano, portugués, alemán, ruso, chino simplificado, chino tradicional, japonés, coreano y árabe (de derecha a izquierda). Cualquier otro idioma usa el inglés.
+La página de WhateverPad sigue el idioma de la consola: español, inglés, francés, italiano, portugués, alemán, ruso, chino simplificado, chino tradicional, japonés, coreano y árabe (de derecha a izquierda). Cualquier otro idioma usa el inglés.
 
 ---
 
-## ⚠️ Importante: no apagues el DualSense con AnyPad en marcha
+## ⚠️ Importante: no apagues el DualSense con WhateverPad en marcha
 
-Si el DualSense se apaga mientras AnyPad está en marcha, puede entrar en el modo azul parpadeante y no funcionar hasta reiniciar la consola.
+Si el DualSense se apaga mientras WhateverPad está en marcha, puede entrar en el modo azul parpadeante y no funcionar hasta reiniciar la consola.
 
 Para que la consola no lo apague sola tras un rato sin usarlo, configura:
 
@@ -398,7 +400,7 @@ La lista completa, mando por mando, está en [COMPATIBILITY.md](COMPATIBILITY.md
 
 # Cómo funciona
 
-AnyPad PS5 se ejecuta como un payload residente en una PS5 con jailbreak. Usa el propio chip Bluetooth de la consola, **compartiéndolo con el sistema**, para buscar y emparejar mandos, leer sus botones y presentarlos a la PS5 como DualSense virtuales.
+WhateverPad PS5 se ejecuta como un payload residente en una PS5 con jailbreak. Usa el propio chip Bluetooth de la consola, **compartiéndolo con el sistema**, para buscar y emparejar mandos, leer sus botones y presentarlos a la PS5 como DualSense virtuales.
 
 **No** modifica juegos, el firmware de la PS5 ni el jailbreak. Tu PS5 ya debe poder ejecutar payloads.
 
@@ -406,8 +408,8 @@ AnyPad PS5 se ejecuta como un payload residente en una PS5 con jailbreak. Usa el
 
 # Cómo usarlo
 
-1. **Carga AnyPad.** Descarga `AnyPad-PS5-0.9.5-beta.elf` desde [Releases](https://codeberg.org/elmonomalva0/Any-Pad-ps5/releases) y cárgalo con el cargador de payloads que uses normalmente.
-2. **Abre la página.** Abre **AnyPad** en *Contenido multimedia* de la consola, o `http://<ip-de-la-consola>:8095` desde un móvil o un PC de la misma red.
+1. **Carga WhateverPad.** Descarga `WhateverPad-PS5-0.9.5-beta.elf` desde [Releases](https://github.com/andrescera/WhateverPad/releases) y cárgalo con el cargador de payloads que uses normalmente.
+2. **Abre la página.** Abre **WhateverPad** en *Contenido multimedia* de la consola, o `http://<ip-de-la-consola>:8095` desde un móvil o un PC de la misma red.
 3. **Empareja.** Pulsa **Emparejar** y después pon el mando en modo emparejamiento, cerca de la consola.
 
 | Mando | Modo emparejamiento |
@@ -425,15 +427,15 @@ Se pueden usar varios mandos a la vez, junto con el DualSense.
 
 # Cada ejecución empieza limpia
 
-AnyPad no guarda mandos emparejados entre ejecuciones. Empareja tus mandos cada vez que arranques AnyPad. Así se evitan emparejados antiguos que ya no funcionan y el chip Bluetooth queda en un estado conocido.
+WhateverPad no guarda mandos emparejados entre ejecuciones. Empareja tus mandos cada vez que arranques WhateverPad. Así se evitan emparejados antiguos que ya no funcionan y el chip Bluetooth queda en un estado conocido.
 
 Si un mando que se apagó se reconecta solo y no responde, apágalo y vuelve a emparejarlo desde la página.
 
 ---
 
-# Apagar AnyPad
+# Apagar WhateverPad
 
-Páralo siempre con **Apagar AnyPad PS5** en su página, también antes de volver a ejecutarlo y antes de apagar o reiniciar la consola. El botón **Salir** solo cierra la página.
+Páralo siempre con **Apagar WhateverPad PS5** en su página, también antes de volver a ejecutarlo y antes de apagar o reiniciar la consola. El botón **Salir** solo cierra la página.
 
 ---
 
@@ -447,17 +449,17 @@ Páralo siempre con **Apagar AnyPad PS5** en su página, también antes de volve
 
 ### Hay otro payload de mandos en marcha
 
-Otro payload que use el chip Bluetooth y el puerto 8095 interfiere. Páralo desde su propio menú antes de ejecutar AnyPad; AnyPad avisa en pantalla cuando lo detecta.
+Otro payload que use el chip Bluetooth y el puerto 8095 interfiere. Páralo desde su propio menú antes de ejecutar WhateverPad; WhateverPad avisa en pantalla cuando lo detecta.
 
 ### La página no se abre
 
-Comprueba que AnyPad está en marcha, que tu móvil o PC está en la misma red que la PS5 y que usas la IP de la consola con el puerto `8095`.
+Comprueba que WhateverPad está en marcha, que tu móvil o PC está en la misma red que la PS5 y que usas la IP de la consola con el puerto `8095`.
 
 ---
 
 # Ayúdanos a confirmar la compatibilidad
 
-Si puedes confirmar que AnyPad PS5 funciona (o no funciona) con un mando, envía el log (`/data/anypad/anypad.log`) a [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com), con el modelo del mando, el firmware de la consola, el jailbreak y la versión de AnyPad. Esto ayuda mucho.
+Si puedes confirmar que WhateverPad PS5 funciona (o no funciona) con un mando, envía el log (`/data/whateverpad/whateverpad.log`) a [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com), con el modelo del mando, el firmware de la consola, el jailbreak y la versión de WhateverPad. Esto ayuda mucho.
 
 ### Apoya el proyecto
 
@@ -467,7 +469,7 @@ Mucha gente me pide que pruebe otros mandos y otras versiones de la consola. Agr
 
 # Agradecimientos
 
-AnyPad PS5 es código propio. Estos proyectos se estudiaron para entender cómo funcionan las cosas, y sus ideas se escribieron de nuevo para AnyPad. Gracias a sus autores:
+WhateverPad PS5 es código propio. Estos proyectos se estudiaron para entender cómo funcionan las cosas, y sus ideas se escribieron de nuevo para WhateverPad. Gracias a sus autores:
 
 - **[FGG-PlayPods](https://github.com/FGGstore/FGG-PlayPods)** (FGGstore): la idea de la parte Bluetooth, compartir el propio chip Bluetooth de la PS5 con el sistema.
 - **[MissionControl](https://github.com/ndeadly/MissionControl)** (ndeadly): los perfiles de mandos por fabricante y modelo, y el formato de los informes de muchos mandos.
@@ -478,5 +480,5 @@ AnyPad PS5 es código propio. Estos proyectos se estudiaron para entender cómo 
 
 Licencia: GPL-3.0-or-later ([LICENSE](LICENSE)).
 
-Autor: **elmonomalvad0**, el mismo autor que *sinfiltros* (el AnyPad PS5 original en GitHub).
+Autor: **elmonomalvad0**, el mismo autor que *sinfiltros* (el WhateverPad PS5 original en GitHub).
 X: [@elmonomalvad0](https://x.com/elmonomalvad0) · Contacto: exposed.ct.ws@gmail.com

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AnyPad PS5</title>
+<title>WhateverPad PS5</title>
 <style>
 :root {
   --bg: #08080a; --surface: #101014; --card: rgba(24,24,28,.88); --card2: #15151a; --line: rgba(255,255,255,.08);
@@ -24,7 +24,7 @@ body { margin: 0; color: var(--text); background: var(--bg);
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 16px; }
 .logo { width: 38px; height: 38px; border-radius: 11px; background: var(--accent); display: grid; place-items: center;
   box-shadow: 0 0 22px var(--accent-glow); color: #141414; }
-.logo svg { width: 24px; height: 24px; }
+.logo img { width: 100%; height: 100%; border-radius: 11px; object-fit: cover; display: block; }
 .brand b { font-size: 18px; letter-spacing: .3px; } .brand b span { color: var(--accent); }
 .brand small { display: block; color: var(--dim); font-size: 11px; direction: ltr; }
 .nav { display: flex; flex-direction: column; gap: 4px; }
@@ -161,7 +161,7 @@ pre { margin: 12px 0 0; max-height: 360px; overflow: auto; font-size: 12px; colo
 <body>
 <div class="shell">
 <aside class="side">
-  <div class="brand"><div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7.2 7h9.6a5 5 0 0 1 4.9 6l-.9 4.2a2.5 2.5 0 0 1-4.4 1L14.8 16H9.2l-1.6 2.2a2.5 2.5 0 0 1-4.4-1L2.3 13a5 5 0 0 1 4.9-6z"/><path d="M7 10v4M5 12h4"/><circle cx="15.5" cy="11" r=".8" fill="currentColor"/><circle cx="18" cy="13" r=".8" fill="currentColor"/></svg></div><div><b><span>Any</span>Pad PS5</b><small id="ver"></small></div></div>
+  <div class="brand"><div class="logo"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAADAFBMVEVlAQf3tCUjnIVcAQUkpI0PBwgXEg7tqyT+wikniHQep484WEwseGjQliXz58kvZljtqRolGw4ik31TFhZCRTxiSBW0aBbPiBxJNhKoWBMWmILn17ceZld9JQvFexsaOC8aRDqYRBKMZhqpdhWwhC0XIhweemggsZhMKyVHOTNdRRVzFwuELQ2Rc0falx4YKyQRkX05KhFETUOOORDYuJv+89AdT0MdV0odjXk9RjxOIB5LWkpKhHCTh3OVp46tiXC1upzNiybGqGvLrJHZsVLUtHfcxqXiniL5shzgx6scs5g/TUU0bmBOHSFXk31yVUhhc2B6n4Z7pYuBZVeReWiFlX2JmICiTxOsfCy9lni1noqkpYu7v6HcoSTaqFDex5Xc0a/mwXfm3sTz47/y7+IAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADpar7nAAABAHRSTlP//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJ0AIpwAAA2FJREFUeNrtVmdz2kAQ1RXpUKcKi2KwwVQbO+69xI5Leu89+f+/IbenYkkIM5nM5BM7DKcBvbe7b4skSTOb2cz+nxEwqdAjf3M/IdFrbusYq3a/IE1lIVJ9wXXdjbrkswj4vqHhPNY0bEwhIEOHoQyCz9W869afrBfBdErzeQymrd/t3QEoYogxBGe5p1EwcB/YHSGQ+hXAQ8uu/DwxKjhqnEyfKANZRjE8QuYDy3qpBlgPT3GBkAn+0Zhl359Y5zb1kN6BqT6BQGKe/0w0jvKRddwJsFxJFS7Ta0nmPZzZarXMIABW3XqxRv3sMd1R5FVOYUspMZBl3++cLMtzPr5tXR5UaCigIcuK3AAV0gIo+17v8ZtCgmr1Ew4Z6LascMMihDH8hoCwGAHKmver1Tcdn4HWOIG8CloUJiiQCSLw02Go9Wxrk1eBCglog+dgAMHjpAhkCJ1nDkqlUo57yfGzBEpmf1ifVWglqjaWGnlq1PJU1GM/wUAWoP9LXD+RJpzyYga1v1WPdkUN8RL/ZSloB6ztJVTwMigJtG+cILti3TyviObpwF+yCsmIjx2PgEhidgY8fdAJIgACNDIvrdNDUMDwCei2ojQ5pZog8Lp4UcnlQAJZnG3+y7Xzauu8Bi65fjJHikLsiIGIJiEkANUZ+5KDKvALEVP26833w13RyLWmTaEOfiX7sRCIE7Y/y0X6gE/jqVoJB5l/NYGgSXE3PlHBHAgCBQg8/yu/Nw/W/FkWG4WqvBpKnpMZcYKzcPyYEs4CQ7wRrWM1H10ouFYTbZWPi2iGeLQ4KA3a4T5ovbagE2/3UbgX4jNtejH7++CW7frs46+3HRpdab4ctJ8egShFiB9dWNWnaxTj5F6EvRSf5UwEzLwLxkW0PugVH6TRYDN6KRgTyhhfqheurlU4VDXsYpGG7kUqRBpvpFsbOa7rOOXysq3qe72CeDr1aYAXFL2IimQYBTNUrpOoBU/IYriZgaCYKoKw+WiTRJkedamYR4hB0xPPlNsylsfWTUijd8NOSCz3iIyj5MaMpmFTP4WxJ5w3DryC5ZSNGzE7qGYheRtxWSaDmBPgx2k8IqNLNU17qKfdsPFuYUimvrkYqqHrRZL2gCSETH19Cd5bJPIvL1zTPd2Bn720zmxmqfYHDbA/6Q65+JIAAAAASUVORK5CYII=" alt=""></div><div><b><span>Whatever</span>Pad PS5</b><small id="ver"></small></div></div>
   <nav class="nav">
     <button data-v="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6-6"/></svg><span data-t="navhome"></span></button>
     <button data-v="padsv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg><span data-t="navpads"></span></button>
@@ -218,7 +218,7 @@ pre { margin: 12px 0 0; max-height: 360px; overflow: auto; font-size: 12px; colo
   </section>
 
   <section id="v-sys" class="view" hidden>
-    <h1 class="title"><span>AnyPad</span> PS5</h1>
+    <h1 class="title"><span>WhateverPad</span> PS5</h1>
     <div class="card">
       <div class="row">
         <button id="showlog" data-t="showlog"></button>
@@ -266,12 +266,12 @@ const TEXT = {
     retryhint: "El resto del menú y el log siguen funcionando.", pairh: "Emparejar",
     pairintro: "Pulsa <b>Emparejar</b> y pon el mando en modo emparejamiento (DualShock 4: Share + PS). Cuando la consola " +
       "pregunte quién usa el mando, elige <b>Juego rápido / Invitado</b>. Si el mando no tiene botón PS, usa <b>Pulsar PS</b> " +
-      "o <b>Configurar PS</b> en «Mandos emparejados». Los mandos solo quedan emparejados mientras AnyPad está en marcha. " +
-      "No apagues el DualSense mientras AnyPad está en marcha.",
+      "o <b>Configurar PS</b> en «Mandos emparejados». Los mandos solo quedan emparejados mientras WhateverPad está en marcha. " +
+      "No apagues el DualSense mientras WhateverPad está en marcha.",
     pairbtn: "Emparejar un mando (60 s)", connected: "Mandos conectados", paired: "Mandos emparejados",
-    showlog: "Ver log", hidelog: "Ocultar log", exit: "Salir", exithint: "Cierra esta página; AnyPad PS5 sigue funcionando.",
+    showlog: "Ver log", hidelog: "Ocultar log", exit: "Salir", exithint: "Cierra esta página; WhateverPad PS5 sigue funcionando.",
     exitfail: "Si no se ha cerrado, pulsa el botón PS del mando para volver al menú de la consola.",
-    stop: "Apagar AnyPad PS5", stophint: "Desconecta los mandos y deja el Bluetooth como estaba. Hazlo antes de volver a lanzar el ELF.",
+    stop: "Apagar WhateverPad PS5", stophint: "Desconecta los mandos y deja el Bluetooth como estaba. Hazlo antes de volver a lanzar el ELF.",
     running: "en marcha", nobt: "sin Bluetooth", starting: "iniciando Bluetooth…", offline: "sin conexión", stopping: "deteniéndose",
     searching: (n) => "Buscando mandos… " + n + " s. Pon el mando en modo emparejamiento.",
     waiting: (n) => "Otro mando acaba de llamar a la consola: la búsqueda empieza en " + n + " s y durará 60 s. Pon el mando en modo emparejamiento cuando empiece.",
@@ -280,7 +280,7 @@ const TEXT = {
     battery: "Batería", charging: "cargando", pressps: "Pulsar PS",
     presspshint: "Para mandos que no tienen botón PS (los que no son de PlayStation): es como mantener pulsado PS",
     forget: "Olvidar", forgetq: (a) => "¿Olvidar " + a + "? Tendrás que emparejarlo de nuevo.",
-    stopq: "¿Detener AnyPad PS5? Los mandos conectados se desconectarán.",
+    stopq: "¿Detener WhateverPad PS5? Los mandos conectados se desconectarán.",
     unknownpad: "Mando desconocido", genericpad: "Mando HID genérico", panel: "PANEL", pl: "J",
     psconf: "Configurar PS", psconfhint: "Elige una combinación de botones de este mando que haga de botón PS",
     howmany: "¿Cuántos botones quieres usar como PS?", n1: "1 botón", n3: "3 botones",
@@ -293,12 +293,12 @@ const TEXT = {
     retryhint: "The rest of the menu and the log keep working.", pairh: "Pair",
     pairintro: "Press <b>Pair</b> and put the controller in pairing mode (DualShock 4: Share + PS). When the console asks " +
       "who uses the controller, choose <b>Quick play / Guest</b>. If the controller has no PS button, use <b>Press PS</b> " +
-      "or <b>Configure PS</b> in “Paired controllers”. Controllers stay paired only while AnyPad is running. " +
-      "Do not switch off the DualSense while AnyPad is running.",
+      "or <b>Configure PS</b> in “Paired controllers”. Controllers stay paired only while WhateverPad is running. " +
+      "Do not switch off the DualSense while WhateverPad is running.",
     pairbtn: "Pair a controller (60 s)", connected: "Connected controllers", paired: "Paired controllers",
-    showlog: "Show log", hidelog: "Hide log", exit: "Exit", exithint: "Closes this page; AnyPad PS5 keeps running.",
+    showlog: "Show log", hidelog: "Hide log", exit: "Exit", exithint: "Closes this page; WhateverPad PS5 keeps running.",
     exitfail: "If it did not close, press the PS button on the controller to go back to the console menu.",
-    stop: "Stop AnyPad PS5", stophint: "Disconnects the controllers and leaves Bluetooth as it was. Do it before running the ELF again.",
+    stop: "Stop WhateverPad PS5", stophint: "Disconnects the controllers and leaves Bluetooth as it was. Do it before running the ELF again.",
     running: "running", nobt: "no Bluetooth", starting: "starting Bluetooth…", offline: "offline", stopping: "stopping",
     searching: (n) => "Searching for controllers… " + n + " s. Put the controller in pairing mode.",
     waiting: (n) => "Another controller just called the console: the search starts in " + n + " s and lasts 60 s. Put the controller in pairing mode when it starts.",
@@ -307,7 +307,7 @@ const TEXT = {
     battery: "Battery", charging: "charging", pressps: "Press PS",
     presspshint: "For controllers without a PS button (not PlayStation ones): like holding PS",
     forget: "Forget", forgetq: (a) => "Forget " + a + "? You will have to pair it again.",
-    stopq: "Stop AnyPad PS5? Connected controllers will be disconnected.",
+    stopq: "Stop WhateverPad PS5? Connected controllers will be disconnected.",
     unknownpad: "Unknown controller", genericpad: "Generic HID controller", panel: "PAD", pl: "P",
     psconf: "Configure PS", psconfhint: "Choose a combination of this controller's buttons to act as the PS button",
     howmany: "How many buttons do you want to use as PS?", n1: "1 button", n3: "3 buttons",
@@ -321,11 +321,11 @@ const TEXT = {
     pairintro: "Appuyez sur <b>Associer</b> et mettez la manette en mode association (DualShock 4 : Share + PS). Quand la console " +
       "demande qui utilise la manette, choisissez <b>Partie rapide / Invité</b>. Si la manette n'a pas de touche PS, utilisez " +
       "<b>Appuyer sur PS</b> ou <b>Configurer PS</b> dans « Manettes associées ». Les manettes ne restent associées que tant " +
-      "qu'AnyPad fonctionne. N'éteignez pas la DualSense pendant qu'AnyPad fonctionne.",
+      "qu'WhateverPad fonctionne. N'éteignez pas la DualSense pendant qu'WhateverPad fonctionne.",
     pairbtn: "Associer une manette (60 s)", connected: "Manettes connectées", paired: "Manettes associées",
-    showlog: "Voir le journal", hidelog: "Masquer le journal", exit: "Quitter", exithint: "Ferme cette page ; AnyPad PS5 continue de fonctionner.",
+    showlog: "Voir le journal", hidelog: "Masquer le journal", exit: "Quitter", exithint: "Ferme cette page ; WhateverPad PS5 continue de fonctionner.",
     exitfail: "Si la page ne s'est pas fermée, appuyez sur la touche PS de la manette pour revenir au menu de la console.",
-    stop: "Arrêter AnyPad PS5", stophint: "Déconnecte les manettes et laisse le Bluetooth comme il était. À faire avant de relancer l'ELF.",
+    stop: "Arrêter WhateverPad PS5", stophint: "Déconnecte les manettes et laisse le Bluetooth comme il était. À faire avant de relancer l'ELF.",
     running: "en marche", nobt: "sans Bluetooth", starting: "démarrage du Bluetooth…", offline: "hors ligne", stopping: "arrêt en cours",
     searching: (n) => "Recherche de manettes… " + n + " s. Mettez la manette en mode association.",
     waiting: (n) => "Une autre manette vient d'appeler la console : la recherche commence dans " + n + " s et dure 60 s. Mettez la manette en mode association quand elle commence.",
@@ -334,7 +334,7 @@ const TEXT = {
     battery: "Batterie", charging: "en charge", pressps: "Appuyer sur PS",
     presspshint: "Pour les manettes sans touche PS (non PlayStation) : comme maintenir PS enfoncée",
     forget: "Oublier", forgetq: (a) => "Oublier " + a + " ? Vous devrez l'associer à nouveau.",
-    stopq: "Arrêter AnyPad PS5 ? Les manettes connectées seront déconnectées.",
+    stopq: "Arrêter WhateverPad PS5 ? Les manettes connectées seront déconnectées.",
     unknownpad: "Manette inconnue", genericpad: "Manette HID générique", panel: "PAVÉ", pl: "J",
     psconf: "Configurer PS", psconfhint: "Choisissez une combinaison de touches de cette manette qui servira de touche PS",
     howmany: "Combien de touches voulez-vous utiliser comme PS ?", n1: "1 touche", n3: "3 touches",
@@ -347,12 +347,12 @@ const TEXT = {
     retryhint: "Il resto del menu e il log continuano a funzionare.", pairh: "Associa",
     pairintro: "Premi <b>Associa</b> e metti il controller in modalità di associazione (DualShock 4: Share + PS). Quando la console " +
       "chiede chi usa il controller, scegli <b>Gioco rapido / Ospite</b>. Se il controller non ha il tasto PS, usa <b>Premi PS</b> " +
-      "o <b>Configura PS</b> in «Controller associati». I controller restano associati solo mentre AnyPad è in funzione. " +
-      "Non spegnere il DualSense mentre AnyPad è in funzione.",
+      "o <b>Configura PS</b> in «Controller associati». I controller restano associati solo mentre WhateverPad è in funzione. " +
+      "Non spegnere il DualSense mentre WhateverPad è in funzione.",
     pairbtn: "Associa un controller (60 s)", connected: "Controller connessi", paired: "Controller associati",
-    showlog: "Mostra log", hidelog: "Nascondi log", exit: "Esci", exithint: "Chiude questa pagina; AnyPad PS5 resta in funzione.",
+    showlog: "Mostra log", hidelog: "Nascondi log", exit: "Esci", exithint: "Chiude questa pagina; WhateverPad PS5 resta in funzione.",
     exitfail: "Se non si è chiusa, premi il tasto PS del controller per tornare al menu della console.",
-    stop: "Arresta AnyPad PS5", stophint: "Disconnette i controller e lascia il Bluetooth com'era. Fallo prima di avviare di nuovo l'ELF.",
+    stop: "Arresta WhateverPad PS5", stophint: "Disconnette i controller e lascia il Bluetooth com'era. Fallo prima di avviare di nuovo l'ELF.",
     running: "in funzione", nobt: "senza Bluetooth", starting: "avvio del Bluetooth…", offline: "non in linea", stopping: "arresto in corso",
     searching: (n) => "Ricerca dei controller… " + n + " s. Metti il controller in modalità di associazione.",
     waiting: (n) => "Un altro controller ha appena chiamato la console: la ricerca inizia tra " + n + " s e dura 60 s. Metti il controller in modalità di associazione quando inizia.",
@@ -361,7 +361,7 @@ const TEXT = {
     battery: "Batteria", charging: "in carica", pressps: "Premi PS",
     presspshint: "Per i controller senza tasto PS (non PlayStation): come tenere premuto PS",
     forget: "Dimentica", forgetq: (a) => "Dimenticare " + a + "? Dovrai associarlo di nuovo.",
-    stopq: "Arrestare AnyPad PS5? I controller connessi verranno disconnessi.",
+    stopq: "Arrestare WhateverPad PS5? I controller connessi verranno disconnessi.",
     unknownpad: "Controller sconosciuto", genericpad: "Controller HID generico", panel: "TOUCHPAD", pl: "G",
     psconf: "Configura PS", psconfhint: "Scegli una combinazione di tasti di questo controller che faccia da tasto PS",
     howmany: "Quanti tasti vuoi usare come PS?", n1: "1 tasto", n3: "3 tasti",
@@ -374,12 +374,12 @@ const TEXT = {
     retryhint: "O resto do menu e o registo continuam a funcionar.", pairh: "Emparelhar",
     pairintro: "Prima <b>Emparelhar</b> e coloque o comando em modo de emparelhamento (DualShock 4: Share + PS). Quando a consola " +
       "perguntar quem usa o comando, escolha <b>Jogo rápido / Convidado</b>. Se o comando não tiver botão PS, use <b>Premir PS</b> " +
-      "ou <b>Configurar PS</b> em «Comandos emparelhados». Os comandos só ficam emparelhados enquanto o AnyPad estiver a funcionar. " +
-      "Não desligue o DualSense enquanto o AnyPad estiver a funcionar.",
+      "ou <b>Configurar PS</b> em «Comandos emparelhados». Os comandos só ficam emparelhados enquanto o WhateverPad estiver a funcionar. " +
+      "Não desligue o DualSense enquanto o WhateverPad estiver a funcionar.",
     pairbtn: "Emparelhar um comando (60 s)", connected: "Comandos ligados", paired: "Comandos emparelhados",
-    showlog: "Ver registo", hidelog: "Ocultar registo", exit: "Sair", exithint: "Fecha esta página; o AnyPad PS5 continua a funcionar.",
+    showlog: "Ver registo", hidelog: "Ocultar registo", exit: "Sair", exithint: "Fecha esta página; o WhateverPad PS5 continua a funcionar.",
     exitfail: "Se não fechou, prima o botão PS do comando para voltar ao menu da consola.",
-    stop: "Desligar o AnyPad PS5", stophint: "Desliga os comandos e deixa o Bluetooth como estava. Faça-o antes de voltar a lançar o ELF.",
+    stop: "Desligar o WhateverPad PS5", stophint: "Desliga os comandos e deixa o Bluetooth como estava. Faça-o antes de voltar a lançar o ELF.",
     running: "a funcionar", nobt: "sem Bluetooth", starting: "a iniciar o Bluetooth…", offline: "sem ligação", stopping: "a parar",
     searching: (n) => "A procurar comandos… " + n + " s. Coloque o comando em modo de emparelhamento.",
     waiting: (n) => "Outro comando acabou de chamar a consola: a procura começa dentro de " + n + " s e dura 60 s. Coloque o comando em modo de emparelhamento quando começar.",
@@ -388,7 +388,7 @@ const TEXT = {
     battery: "Bateria", charging: "a carregar", pressps: "Premir PS",
     presspshint: "Para comandos sem botão PS (os que não são PlayStation): é como manter PS premido",
     forget: "Esquecer", forgetq: (a) => "Esquecer " + a + "? Terá de o emparelhar de novo.",
-    stopq: "Parar o AnyPad PS5? Os comandos ligados serão desligados.",
+    stopq: "Parar o WhateverPad PS5? Os comandos ligados serão desligados.",
     unknownpad: "Comando desconhecido", genericpad: "Comando HID genérico", panel: "PAINEL", pl: "J",
     psconf: "Configurar PS", psconfhint: "Escolha uma combinação de botões deste comando que faça de botão PS",
     howmany: "Quantos botões quer usar como PS?", n1: "1 botão", n3: "3 botões",
@@ -401,12 +401,12 @@ const TEXT = {
     retryhint: "Der Rest des Menüs und das Protokoll funktionieren weiter.", pairh: "Koppeln",
     pairintro: "Drücke <b>Koppeln</b> und versetze den Controller in den Kopplungsmodus (DualShock 4: Share + PS). Wenn die Konsole " +
       "fragt, wer den Controller benutzt, wähle <b>Schnelles Spiel / Gast</b>. Hat der Controller keine PS-Taste, nutze " +
-      "<b>PS drücken</b> oder <b>PS einrichten</b> unter „Gekoppelte Controller“. Controller bleiben nur gekoppelt, solange AnyPad läuft. " +
-      "Schalte den DualSense nicht aus, solange AnyPad läuft.",
+      "<b>PS drücken</b> oder <b>PS einrichten</b> unter „Gekoppelte Controller“. Controller bleiben nur gekoppelt, solange WhateverPad läuft. " +
+      "Schalte den DualSense nicht aus, solange WhateverPad läuft.",
     pairbtn: "Controller koppeln (60 s)", connected: "Verbundene Controller", paired: "Gekoppelte Controller",
-    showlog: "Protokoll zeigen", hidelog: "Protokoll ausblenden", exit: "Beenden", exithint: "Schließt diese Seite; AnyPad PS5 läuft weiter.",
+    showlog: "Protokoll zeigen", hidelog: "Protokoll ausblenden", exit: "Beenden", exithint: "Schließt diese Seite; WhateverPad PS5 läuft weiter.",
     exitfail: "Falls sie sich nicht geschlossen hat, drücke die PS-Taste am Controller, um zum Konsolenmenü zurückzukehren.",
-    stop: "AnyPad PS5 beenden", stophint: "Trennt die Controller und lässt Bluetooth, wie es war. Vor einem erneuten Start des ELF ausführen.",
+    stop: "WhateverPad PS5 beenden", stophint: "Trennt die Controller und lässt Bluetooth, wie es war. Vor einem erneuten Start des ELF ausführen.",
     running: "läuft", nobt: "kein Bluetooth", starting: "Bluetooth startet…", offline: "offline", stopping: "wird beendet",
     searching: (n) => "Suche nach Controllern… " + n + " s. Versetze den Controller in den Kopplungsmodus.",
     waiting: (n) => "Ein anderer Controller hat gerade die Konsole gerufen: Die Suche beginnt in " + n + " s und dauert 60 s. Versetze den Controller dann in den Kopplungsmodus.",
@@ -415,7 +415,7 @@ const TEXT = {
     battery: "Akku", charging: "lädt", pressps: "PS drücken",
     presspshint: "Für Controller ohne PS-Taste (keine PlayStation-Controller): wie PS gedrückt halten",
     forget: "Vergessen", forgetq: (a) => a + " vergessen? Du musst ihn erneut koppeln.",
-    stopq: "AnyPad PS5 beenden? Verbundene Controller werden getrennt.",
+    stopq: "WhateverPad PS5 beenden? Verbundene Controller werden getrennt.",
     unknownpad: "Unbekannter Controller", genericpad: "Generischer HID-Controller", panel: "TOUCHPAD", pl: "S",
     psconf: "PS einrichten", psconfhint: "Wähle eine Tastenkombination dieses Controllers, die als PS-Taste dient",
     howmany: "Wie viele Tasten möchtest du als PS verwenden?", n1: "1 Taste", n3: "3 Tasten",
@@ -428,12 +428,12 @@ const TEXT = {
     retryhint: "Остальное меню и журнал продолжают работать.", pairh: "Сопряжение",
     pairintro: "Нажмите <b>Сопряжение</b> и переведите контроллер в режим сопряжения (DualShock 4: Share + PS). Когда консоль " +
       "спросит, кто использует контроллер, выберите <b>Быстрая игра / Гость</b>. Если у контроллера нет кнопки PS, используйте " +
-      "<b>Нажать PS</b> или <b>Настроить PS</b> в разделе «Сопряжённые контроллеры». Контроллеры остаются сопряжёнными, только пока работает AnyPad. " +
-      "Не выключайте DualSense, пока работает AnyPad.",
+      "<b>Нажать PS</b> или <b>Настроить PS</b> в разделе «Сопряжённые контроллеры». Контроллеры остаются сопряжёнными, только пока работает WhateverPad. " +
+      "Не выключайте DualSense, пока работает WhateverPad.",
     pairbtn: "Сопрячь контроллер (60 с)", connected: "Подключённые контроллеры", paired: "Сопряжённые контроллеры",
-    showlog: "Показать журнал", hidelog: "Скрыть журнал", exit: "Выйти", exithint: "Закрывает эту страницу; AnyPad PS5 продолжает работать.",
+    showlog: "Показать журнал", hidelog: "Скрыть журнал", exit: "Выйти", exithint: "Закрывает эту страницу; WhateverPad PS5 продолжает работать.",
     exitfail: "Если страница не закрылась, нажмите кнопку PS на контроллере, чтобы вернуться в меню консоли.",
-    stop: "Выключить AnyPad PS5", stophint: "Отключает контроллеры и оставляет Bluetooth как было. Сделайте это перед повторным запуском ELF.",
+    stop: "Выключить WhateverPad PS5", stophint: "Отключает контроллеры и оставляет Bluetooth как было. Сделайте это перед повторным запуском ELF.",
     running: "работает", nobt: "нет Bluetooth", starting: "запуск Bluetooth…", offline: "нет связи", stopping: "остановка",
     searching: (n) => "Поиск контроллеров… " + n + " с. Переведите контроллер в режим сопряжения.",
     waiting: (n) => "Другой контроллер только что вызвал консоль: поиск начнётся через " + n + " с и продлится 60 с. Переведите контроллер в режим сопряжения, когда он начнётся.",
@@ -442,7 +442,7 @@ const TEXT = {
     battery: "Батарея", charging: "заряжается", pressps: "Нажать PS",
     presspshint: "Для контроллеров без кнопки PS (не PlayStation): как удерживать PS",
     forget: "Забыть", forgetq: (a) => "Забыть " + a + "? Его придётся сопрячь заново.",
-    stopq: "Остановить AnyPad PS5? Подключённые контроллеры будут отключены.",
+    stopq: "Остановить WhateverPad PS5? Подключённые контроллеры будут отключены.",
     unknownpad: "Неизвестный контроллер", genericpad: "Универсальный HID-контроллер", panel: "ПАНЕЛЬ", pl: "И",
     psconf: "Настроить PS", psconfhint: "Выберите сочетание кнопок этого контроллера, которое будет работать как кнопка PS",
     howmany: "Сколько кнопок использовать как PS?", n1: "1 кнопка", n3: "3 кнопки",
@@ -455,11 +455,11 @@ const TEXT = {
     retryhint: "菜单的其余部分和日志仍可使用。", pairh: "配对",
     pairintro: "按 <b>配对</b>，并让手柄进入配对模式（DualShock 4：Share + PS）。当主机询问谁使用该手柄时，选择 " +
       "<b>快速游戏 / 访客</b>。如果手柄没有 PS 键，请在“已配对的手柄”中使用 <b>按下 PS</b> 或 <b>设置 PS</b>。" +
-      "手柄只在 AnyPad 运行期间保持配对。AnyPad 运行时请不要关闭 DualSense。",
+      "手柄只在 WhateverPad 运行期间保持配对。WhateverPad 运行时请不要关闭 DualSense。",
     pairbtn: "配对手柄（60 秒）", connected: "已连接的手柄", paired: "已配对的手柄",
-    showlog: "查看日志", hidelog: "隐藏日志", exit: "退出", exithint: "关闭此页面；AnyPad PS5 会继续运行。",
+    showlog: "查看日志", hidelog: "隐藏日志", exit: "退出", exithint: "关闭此页面；WhateverPad PS5 会继续运行。",
     exitfail: "如果页面没有关闭，请按手柄上的 PS 键返回主机菜单。",
-    stop: "关闭 AnyPad PS5", stophint: "断开手柄并让蓝牙恢复原状。再次运行 ELF 之前请先执行此操作。",
+    stop: "关闭 WhateverPad PS5", stophint: "断开手柄并让蓝牙恢复原状。再次运行 ELF 之前请先执行此操作。",
     running: "运行中", nobt: "无蓝牙", starting: "正在启动蓝牙…", offline: "离线", stopping: "正在停止",
     searching: (n) => "正在搜索手柄… " + n + " 秒。请让手柄进入配对模式。",
     waiting: (n) => "另一个手柄刚刚呼叫了主机：搜索将在 " + n + " 秒后开始，持续 60 秒。开始后请让手柄进入配对模式。",
@@ -468,7 +468,7 @@ const TEXT = {
     battery: "电量", charging: "充电中", pressps: "按下 PS",
     presspshint: "适用于没有 PS 键的手柄（非 PlayStation 手柄）：相当于按住 PS",
     forget: "忘记", forgetq: (a) => "忘记 " + a + "？之后需要重新配对。",
-    stopq: "停止 AnyPad PS5？已连接的手柄将断开连接。",
+    stopq: "停止 WhateverPad PS5？已连接的手柄将断开连接。",
     unknownpad: "未知手柄", genericpad: "通用 HID 手柄", panel: "触控板", pl: "P",
     psconf: "设置 PS", psconfhint: "选择此手柄的一个按键组合作为 PS 键",
     howmany: "要用几个按键作为 PS？", n1: "1 个按键", n3: "3 个按键",
@@ -481,11 +481,11 @@ const TEXT = {
     retryhint: "選單的其他部分和記錄仍可使用。", pairh: "配對",
     pairintro: "按 <b>配對</b>，並讓控制器進入配對模式（DualShock 4：Share + PS）。當主機詢問誰使用此控制器時，選擇 " +
       "<b>快速遊戲 / 訪客</b>。如果控制器沒有 PS 鍵，請在「已配對的控制器」中使用 <b>按下 PS</b> 或 <b>設定 PS</b>。" +
-      "控制器只在 AnyPad 執行期間保持配對。AnyPad 執行時請不要關閉 DualSense。",
+      "控制器只在 WhateverPad 執行期間保持配對。WhateverPad 執行時請不要關閉 DualSense。",
     pairbtn: "配對控制器（60 秒）", connected: "已連線的控制器", paired: "已配對的控制器",
-    showlog: "檢視記錄", hidelog: "隱藏記錄", exit: "離開", exithint: "關閉此頁面；AnyPad PS5 會繼續執行。",
+    showlog: "檢視記錄", hidelog: "隱藏記錄", exit: "離開", exithint: "關閉此頁面；WhateverPad PS5 會繼續執行。",
     exitfail: "如果頁面沒有關閉，請按控制器上的 PS 鍵返回主機選單。",
-    stop: "關閉 AnyPad PS5", stophint: "中斷控制器連線並讓藍牙恢復原狀。再次執行 ELF 之前請先這樣做。",
+    stop: "關閉 WhateverPad PS5", stophint: "中斷控制器連線並讓藍牙恢復原狀。再次執行 ELF 之前請先這樣做。",
     running: "執行中", nobt: "無藍牙", starting: "正在啟動藍牙…", offline: "離線", stopping: "正在停止",
     searching: (n) => "正在搜尋控制器… " + n + " 秒。請讓控制器進入配對模式。",
     waiting: (n) => "另一個控制器剛剛呼叫了主機：搜尋將在 " + n + " 秒後開始，持續 60 秒。開始後請讓控制器進入配對模式。",
@@ -494,7 +494,7 @@ const TEXT = {
     battery: "電量", charging: "充電中", pressps: "按下 PS",
     presspshint: "適用於沒有 PS 鍵的控制器（非 PlayStation 控制器）：等同按住 PS",
     forget: "忘記", forgetq: (a) => "忘記 " + a + "？之後需要重新配對。",
-    stopq: "停止 AnyPad PS5？已連線的控制器將中斷連線。",
+    stopq: "停止 WhateverPad PS5？已連線的控制器將中斷連線。",
     unknownpad: "未知控制器", genericpad: "通用 HID 控制器", panel: "觸控板", pl: "P",
     psconf: "設定 PS", psconfhint: "選擇此控制器的一個按鍵組合作為 PS 鍵",
     howmany: "要用幾個按鍵作為 PS？", n1: "1 個按鍵", n3: "3 個按鍵",
@@ -508,11 +508,11 @@ const TEXT = {
     pairintro: "<b>ペアリング</b> を押して、コントローラーをペアリングモードにしてください（DualShock 4：Share + PS）。" +
       "誰がコントローラーを使うか聞かれたら、<b>クイックプレイ / ゲスト</b> を選びます。PS ボタンのないコントローラーは、" +
       "「ペアリング済みのコントローラー」の <b>PS を押す</b> または <b>PS を設定</b> を使ってください。" +
-      "コントローラーのペアリングは AnyPad の実行中だけ保たれます。AnyPad の実行中は DualSense の電源を切らないでください。",
+      "コントローラーのペアリングは WhateverPad の実行中だけ保たれます。WhateverPad の実行中は DualSense の電源を切らないでください。",
     pairbtn: "コントローラーをペアリング（60 秒）", connected: "接続中のコントローラー", paired: "ペアリング済みのコントローラー",
-    showlog: "ログを表示", hidelog: "ログを隠す", exit: "終了", exithint: "このページを閉じます。AnyPad PS5 は動作し続けます。",
+    showlog: "ログを表示", hidelog: "ログを隠す", exit: "終了", exithint: "このページを閉じます。WhateverPad PS5 は動作し続けます。",
     exitfail: "閉じない場合は、コントローラーの PS ボタンを押して本体のメニューに戻ってください。",
-    stop: "AnyPad PS5 を停止", stophint: "コントローラーを切断し、Bluetooth を元の状態に戻します。ELF を再実行する前に行ってください。",
+    stop: "WhateverPad PS5 を停止", stophint: "コントローラーを切断し、Bluetooth を元の状態に戻します。ELF を再実行する前に行ってください。",
     running: "実行中", nobt: "Bluetooth なし", starting: "Bluetooth を起動中…", offline: "オフライン", stopping: "停止中",
     searching: (n) => "コントローラーを検索中… " + n + " 秒。コントローラーをペアリングモードにしてください。",
     waiting: (n) => "別のコントローラーが本体を呼び出しました。検索は " + n + " 秒後に始まり、60 秒続きます。始まったらコントローラーをペアリングモードにしてください。",
@@ -521,7 +521,7 @@ const TEXT = {
     battery: "バッテリー", charging: "充電中", pressps: "PS を押す",
     presspshint: "PS ボタンのないコントローラー（PlayStation 以外）用：PS を長押しするのと同じです",
     forget: "削除", forgetq: (a) => a + " を削除しますか？もう一度ペアリングが必要になります。",
-    stopq: "AnyPad PS5 を停止しますか？接続中のコントローラーは切断されます。",
+    stopq: "WhateverPad PS5 を停止しますか？接続中のコントローラーは切断されます。",
     unknownpad: "不明なコントローラー", genericpad: "汎用 HID コントローラー", panel: "タッチパッド", pl: "P",
     psconf: "PS を設定", psconfhint: "このコントローラーのボタンの組み合わせを PS ボタンとして使います",
     howmany: "PS として使うボタンはいくつですか？", n1: "ボタン 1 個", n3: "ボタン 3 個",
@@ -534,12 +534,12 @@ const TEXT = {
     retryhint: "메뉴의 나머지 부분과 로그는 계속 작동합니다.", pairh: "페어링",
     pairintro: "<b>페어링</b>을 누르고 컨트롤러를 페어링 모드로 전환하세요(DualShock 4: Share + PS). 본체가 컨트롤러를 " +
       "사용할 사람을 물으면 <b>빠른 플레이 / 게스트</b>를 선택하세요. PS 버튼이 없는 컨트롤러는 “페어링된 컨트롤러”의 " +
-      "<b>PS 누르기</b> 또는 <b>PS 설정</b>을 사용하세요. 컨트롤러는 AnyPad가 실행되는 동안에만 페어링이 유지됩니다. " +
-      "AnyPad가 실행되는 동안에는 DualSense를 끄지 마세요.",
+      "<b>PS 누르기</b> 또는 <b>PS 설정</b>을 사용하세요. 컨트롤러는 WhateverPad가 실행되는 동안에만 페어링이 유지됩니다. " +
+      "WhateverPad가 실행되는 동안에는 DualSense를 끄지 마세요.",
     pairbtn: "컨트롤러 페어링(60초)", connected: "연결된 컨트롤러", paired: "페어링된 컨트롤러",
-    showlog: "로그 보기", hidelog: "로그 숨기기", exit: "나가기", exithint: "이 페이지를 닫습니다. AnyPad PS5는 계속 실행됩니다.",
+    showlog: "로그 보기", hidelog: "로그 숨기기", exit: "나가기", exithint: "이 페이지를 닫습니다. WhateverPad PS5는 계속 실행됩니다.",
     exitfail: "닫히지 않았다면 컨트롤러의 PS 버튼을 눌러 본체 메뉴로 돌아가세요.",
-    stop: "AnyPad PS5 끄기", stophint: "컨트롤러 연결을 끊고 블루투스를 원래대로 둡니다. ELF를 다시 실행하기 전에 하세요.",
+    stop: "WhateverPad PS5 끄기", stophint: "컨트롤러 연결을 끊고 블루투스를 원래대로 둡니다. ELF를 다시 실행하기 전에 하세요.",
     running: "실행 중", nobt: "블루투스 없음", starting: "블루투스 시작 중…", offline: "오프라인", stopping: "중지 중",
     searching: (n) => "컨트롤러 검색 중… " + n + "초. 컨트롤러를 페어링 모드로 전환하세요.",
     waiting: (n) => "다른 컨트롤러가 방금 본체를 호출했습니다. 검색은 " + n + "초 후에 시작되어 60초 동안 계속됩니다. 시작되면 컨트롤러를 페어링 모드로 전환하세요.",
@@ -548,7 +548,7 @@ const TEXT = {
     battery: "배터리", charging: "충전 중", pressps: "PS 누르기",
     presspshint: "PS 버튼이 없는 컨트롤러(PlayStation 제품이 아닌 것)용: PS를 길게 누르는 것과 같습니다",
     forget: "삭제", forgetq: (a) => a + "을(를) 삭제할까요? 다시 페어링해야 합니다.",
-    stopq: "AnyPad PS5를 중지할까요? 연결된 컨트롤러의 연결이 끊깁니다.",
+    stopq: "WhateverPad PS5를 중지할까요? 연결된 컨트롤러의 연결이 끊깁니다.",
     unknownpad: "알 수 없는 컨트롤러", genericpad: "일반 HID 컨트롤러", panel: "터치패드", pl: "P",
     psconf: "PS 설정", psconfhint: "이 컨트롤러의 버튼 조합을 PS 버튼으로 사용합니다",
     howmany: "PS로 사용할 버튼은 몇 개인가요?", n1: "버튼 1개", n3: "버튼 3개",
@@ -561,12 +561,12 @@ const TEXT = {
     retryhint: "باقي القائمة والسجل يواصلان العمل.", pairh: "الإقران",
     pairintro: "اضغط <b>الإقران</b> وضع وحدة التحكم في وضع الإقران (DualShock 4: Share + PS). عندما يسأل الجهاز عمّن يستخدم " +
       "وحدة التحكم، اختر <b>اللعب السريع / ضيف</b>. إذا لم يكن في وحدة التحكم زر PS، فاستخدم <b>اضغط PS</b> أو " +
-      "<b>إعداد PS</b> في «وحدات التحكم المقترنة». تبقى وحدات التحكم مقترنة فقط أثناء تشغيل AnyPad. " +
-      "لا تُطفئ DualSense أثناء تشغيل AnyPad.",
+      "<b>إعداد PS</b> في «وحدات التحكم المقترنة». تبقى وحدات التحكم مقترنة فقط أثناء تشغيل WhateverPad. " +
+      "لا تُطفئ DualSense أثناء تشغيل WhateverPad.",
     pairbtn: "إقران وحدة تحكم (60 ث)", connected: "وحدات التحكم المتصلة", paired: "وحدات التحكم المقترنة",
-    showlog: "عرض السجل", hidelog: "إخفاء السجل", exit: "خروج", exithint: "يغلق هذه الصفحة؛ ويستمر AnyPad PS5 في العمل.",
+    showlog: "عرض السجل", hidelog: "إخفاء السجل", exit: "خروج", exithint: "يغلق هذه الصفحة؛ ويستمر WhateverPad PS5 في العمل.",
     exitfail: "إذا لم تُغلق، فاضغط زر PS في وحدة التحكم للعودة إلى قائمة الجهاز.",
-    stop: "إيقاف AnyPad PS5", stophint: "يفصل وحدات التحكم ويترك البلوتوث كما كان. افعل ذلك قبل تشغيل ملف ELF مرة أخرى.",
+    stop: "إيقاف WhateverPad PS5", stophint: "يفصل وحدات التحكم ويترك البلوتوث كما كان. افعل ذلك قبل تشغيل ملف ELF مرة أخرى.",
     running: "قيد التشغيل", nobt: "لا يوجد بلوتوث", starting: "جارٍ تشغيل البلوتوث…", offline: "غير متصل", stopping: "جارٍ الإيقاف",
     searching: (n) => "جارٍ البحث عن وحدات التحكم… " + n + " ث. ضع وحدة التحكم في وضع الإقران.",
     waiting: (n) => "استدعت وحدة تحكم أخرى الجهاز للتو: يبدأ البحث بعد " + n + " ث ويستمر 60 ث. ضع وحدة التحكم في وضع الإقران عندما يبدأ.",
@@ -575,7 +575,7 @@ const TEXT = {
     battery: "البطارية", charging: "قيد الشحن", pressps: "اضغط PS",
     presspshint: "لوحدات التحكم التي لا تحتوي على زر PS (غير وحدات PlayStation): كأنك تضغط مطولًا على PS",
     forget: "نسيان", forgetq: (a) => "نسيان " + a + "؟ سيلزم إقرانها من جديد.",
-    stopq: "إيقاف AnyPad PS5؟ سيتم فصل وحدات التحكم المتصلة.",
+    stopq: "إيقاف WhateverPad PS5؟ سيتم فصل وحدات التحكم المتصلة.",
     unknownpad: "وحدة تحكم غير معروفة", genericpad: "وحدة تحكم HID عامة", panel: "لوحة اللمس", pl: "#",
     psconf: "إعداد PS", psconfhint: "اختر مجموعة أزرار من وحدة التحكم هذه لتعمل كزر PS",
     howmany: "كم زرًا تريد استخدامه كزر PS؟", n1: "زر واحد", n3: "3 أزرار",
@@ -590,7 +590,7 @@ const MORE = {
     navhome: "Inicio", navpads: "Mandos", navguide: "Guía", navsys: "Sistema",
     hometitle: "Empareja tus <span>mandos</span>", padstitle: "Mandos <span>emparejados</span>", guidetitle: "Guía de <span>mandos</span>",
     radidle: "Listo para emparejar", radsearch: "Buscando mandos", radsearchhint: "Pon el mando en modo emparejamiento, cerca de la consola.",
-    radpause: "Pausa por el DualSense", radpausehint: "AnyPad se detiene un momento para que el DualSense conecte con la consola. Después sigue solo.",
+    radpause: "Pausa por el DualSense", radpausehint: "WhateverPad se detiene un momento para que el DualSense conecte con la consola. Después sigue solo.",
     radpads: (n) => n === 1 ? "1 mando conectado" : n + " mandos conectados",
     gt: "Probado", gb: "Beta", gx: "No se empareja",
     tips: ["Pulsa <b>Emparejar</b> primero y después pon el mando en modo emparejamiento, cerca de la consola.",
@@ -607,13 +607,13 @@ const MORE = {
       ["Joy-Con (de uno en uno)", "Mantén pulsado el botón de sincronización del rail hasta que las luces corran. Se usa de lado; el izquierdo no tiene botón PS: usa Configurar PS.", "b"],
       ["Wii U Pro y Wiimote", "Pulsa el botón Sync (rojo, detrás o bajo la tapa de las pilas). El Wiimote se usa de lado.", "b"],
       ["Stadia", "Necesita el firmware Bluetooth que publicó Google. Mantén Y + botón Stadia hasta que parpadee.", "b"],
-      ["DualSense", "Es el mando de la consola: AnyPad no lo empareja. No lo apagues mientras AnyPad está en marcha.", "x"]]
+      ["DualSense", "Es el mando de la consola: WhateverPad no lo empareja. No lo apagues mientras WhateverPad está en marcha.", "x"]]
   },
   en: {
     navhome: "Home", navpads: "Controllers", navguide: "Guide", navsys: "System",
     hometitle: "Pair your <span>controllers</span>", padstitle: "Paired <span>controllers</span>", guidetitle: "Controller <span>guide</span>",
     radidle: "Ready to pair", radsearch: "Searching for controllers", radsearchhint: "Put the controller in pairing mode, close to the console.",
-    radpause: "Paused for the DualSense", radpausehint: "AnyPad stops for a moment so the DualSense can connect to the console. It carries on by itself afterwards.",
+    radpause: "Paused for the DualSense", radpausehint: "WhateverPad stops for a moment so the DualSense can connect to the console. It carries on by itself afterwards.",
     radpads: (n) => n === 1 ? "1 controller connected" : n + " controllers connected",
     gt: "Tested", gb: "Beta", gx: "Not paired",
     tips: ["Press <b>Pair</b> first, then put the controller in pairing mode, close to the console.",
@@ -630,13 +630,13 @@ const MORE = {
       ["Joy-Con (one at a time)", "Hold the sync button on the rail until the lights run. It is held sideways; the left one has no PS button: use Configure PS.", "b"],
       ["Wii U Pro and Wii Remote", "Press the Sync button (red, on the back or under the battery cover). The Wii Remote is held sideways.", "b"],
       ["Stadia", "It needs the Bluetooth firmware Google released. Hold Y + the Stadia button until it blinks.", "b"],
-      ["DualSense", "It is the console's own controller: AnyPad does not pair it. Do not switch it off while AnyPad is running.", "x"]]
+      ["DualSense", "It is the console's own controller: WhateverPad does not pair it. Do not switch it off while WhateverPad is running.", "x"]]
   },
   fr: {
     navhome: "Accueil", navpads: "Manettes", navguide: "Guide", navsys: "Système",
     hometitle: "Associez vos <span>manettes</span>", padstitle: "Manettes <span>associées</span>", guidetitle: "Guide des <span>manettes</span>",
     radidle: "Prêt à associer", radsearch: "Recherche de manettes", radsearchhint: "Mettez la manette en mode association, près de la console.",
-    radpause: "Pause pour la DualSense", radpausehint: "AnyPad s'arrête un instant pour que la DualSense se connecte à la console. Il reprend tout seul ensuite.",
+    radpause: "Pause pour la DualSense", radpausehint: "WhateverPad s'arrête un instant pour que la DualSense se connecte à la console. Il reprend tout seul ensuite.",
     radpads: (n) => n === 1 ? "1 manette connectée" : n + " manettes connectées",
     gt: "Testée", gb: "Bêta", gx: "Non associée",
     tips: ["Appuyez d'abord sur <b>Associer</b>, puis mettez la manette en mode association, près de la console.",
@@ -653,13 +653,13 @@ const MORE = {
       ["Joy-Con (un par un)", "Maintenez le bouton de synchronisation du rail jusqu'à ce que les voyants défilent. Il se tient à l'horizontale ; le gauche n'a pas de touche PS : utilisez Configurer PS.", "b"],
       ["Wii U Pro et Wiimote", "Appuyez sur le bouton Sync (rouge, au dos ou sous le couvercle des piles). La Wiimote se tient à l'horizontale.", "b"],
       ["Stadia", "Elle nécessite le firmware Bluetooth publié par Google. Maintenez Y + le bouton Stadia jusqu'à ce qu'elle clignote.", "b"],
-      ["DualSense", "C'est la manette de la console : AnyPad ne l'associe pas. Ne l'éteignez pas pendant qu'AnyPad fonctionne.", "x"]]
+      ["DualSense", "C'est la manette de la console : WhateverPad ne l'associe pas. Ne l'éteignez pas pendant qu'WhateverPad fonctionne.", "x"]]
   },
   it: {
     navhome: "Home", navpads: "Controller", navguide: "Guida", navsys: "Sistema",
     hometitle: "Associa i tuoi <span>controller</span>", padstitle: "Controller <span>associati</span>", guidetitle: "Guida ai <span>controller</span>",
     radidle: "Pronto ad associare", radsearch: "Ricerca dei controller", radsearchhint: "Metti il controller in modalità di associazione, vicino alla console.",
-    radpause: "Pausa per il DualSense", radpausehint: "AnyPad si ferma un momento perché il DualSense si colleghi alla console. Poi riprende da solo.",
+    radpause: "Pausa per il DualSense", radpausehint: "WhateverPad si ferma un momento perché il DualSense si colleghi alla console. Poi riprende da solo.",
     radpads: (n) => n === 1 ? "1 controller collegato" : n + " controller collegati",
     gt: "Provato", gb: "Beta", gx: "Non si associa",
     tips: ["Premi prima <b>Associa</b>, poi metti il controller in modalità di associazione, vicino alla console.",
@@ -676,13 +676,13 @@ const MORE = {
       ["Joy-Con (uno alla volta)", "Tieni premuto il tasto di sincronizzazione sul binario finché le luci scorrono. Si usa in orizzontale; il sinistro non ha tasto PS: usa Configura PS.", "b"],
       ["Wii U Pro e Wiimote", "Premi il tasto Sync (rosso, sul retro o sotto il coperchio delle pile). Il Wiimote si usa in orizzontale.", "b"],
       ["Stadia", "Serve il firmware Bluetooth pubblicato da Google. Tieni premuti Y + il tasto Stadia finché lampeggia.", "b"],
-      ["DualSense", "È il controller della console: AnyPad non lo associa. Non spegnerlo mentre AnyPad è in funzione.", "x"]]
+      ["DualSense", "È il controller della console: WhateverPad non lo associa. Non spegnerlo mentre WhateverPad è in funzione.", "x"]]
   },
   pt: {
     navhome: "Início", navpads: "Comandos", navguide: "Guia", navsys: "Sistema",
     hometitle: "Emparelhe os seus <span>comandos</span>", padstitle: "Comandos <span>emparelhados</span>", guidetitle: "Guia de <span>comandos</span>",
     radidle: "Pronto para emparelhar", radsearch: "A procurar comandos", radsearchhint: "Coloque o comando em modo de emparelhamento, perto da consola.",
-    radpause: "Pausa pelo DualSense", radpausehint: "O AnyPad para um momento para o DualSense se ligar à consola. Depois continua sozinho.",
+    radpause: "Pausa pelo DualSense", radpausehint: "O WhateverPad para um momento para o DualSense se ligar à consola. Depois continua sozinho.",
     radpads: (n) => n === 1 ? "1 comando ligado" : n + " comandos ligados",
     gt: "Testado", gb: "Beta", gx: "Não emparelha",
     tips: ["Prima primeiro <b>Emparelhar</b> e depois coloque o comando em modo de emparelhamento, perto da consola.",
@@ -699,13 +699,13 @@ const MORE = {
       ["Joy-Con (um de cada vez)", "Mantenha o botão de sincronização do trilho até as luzes correrem. Usa-se na horizontal; o esquerdo não tem botão PS: use Configurar PS.", "b"],
       ["Wii U Pro e Wiimote", "Prima o botão Sync (vermelho, atrás ou debaixo da tampa das pilhas). O Wiimote usa-se na horizontal.", "b"],
       ["Stadia", "Precisa do firmware Bluetooth publicado pela Google. Mantenha Y + o botão Stadia até piscar.", "b"],
-      ["DualSense", "É o comando da consola: o AnyPad não o emparelha. Não o desligue enquanto o AnyPad estiver a funcionar.", "x"]]
+      ["DualSense", "É o comando da consola: o WhateverPad não o emparelha. Não o desligue enquanto o WhateverPad estiver a funcionar.", "x"]]
   },
   de: {
     navhome: "Start", navpads: "Controller", navguide: "Anleitung", navsys: "System",
     hometitle: "Koppel deine <span>Controller</span>", padstitle: "Gekoppelte <span>Controller</span>", guidetitle: "Controller-<span>Anleitung</span>",
     radidle: "Bereit zum Koppeln", radsearch: "Suche nach Controllern", radsearchhint: "Versetze den Controller nahe der Konsole in den Kopplungsmodus.",
-    radpause: "Pause für den DualSense", radpausehint: "AnyPad hält kurz an, damit sich der DualSense mit der Konsole verbinden kann. Danach geht es von selbst weiter.",
+    radpause: "Pause für den DualSense", radpausehint: "WhateverPad hält kurz an, damit sich der DualSense mit der Konsole verbinden kann. Danach geht es von selbst weiter.",
     radpads: (n) => n === 1 ? "1 Controller verbunden" : n + " Controller verbunden",
     gt: "Getestet", gb: "Beta", gx: "Wird nicht gekoppelt",
     tips: ["Drücke zuerst <b>Koppeln</b> und versetze dann den Controller nahe der Konsole in den Kopplungsmodus.",
@@ -722,13 +722,13 @@ const MORE = {
       ["Joy-Con (einzeln)", "Die Sync-Taste an der Schiene halten, bis die Lichter laufen. Er wird quer gehalten; der linke hat keine PS-Taste: PS einrichten verwenden.", "b"],
       ["Wii U Pro und Wiimote", "Die Sync-Taste drücken (rot, hinten oder unter dem Batteriedeckel). Die Wiimote wird quer gehalten.", "b"],
       ["Stadia", "Benötigt die von Google veröffentlichte Bluetooth-Firmware. Y + Stadia-Taste halten, bis es blinkt.", "b"],
-      ["DualSense", "Das ist der Controller der Konsole: AnyPad koppelt ihn nicht. Nicht ausschalten, solange AnyPad läuft.", "x"]]
+      ["DualSense", "Das ist der Controller der Konsole: WhateverPad koppelt ihn nicht. Nicht ausschalten, solange WhateverPad läuft.", "x"]]
   },
   ru: {
     navhome: "Главная", navpads: "Контроллеры", navguide: "Справка", navsys: "Система",
     hometitle: "Подключите <span>контроллеры</span>", padstitle: "Сопряжённые <span>контроллеры</span>", guidetitle: "Справка по <span>контроллерам</span>",
     radidle: "Готово к сопряжению", radsearch: "Поиск контроллеров", radsearchhint: "Переведите контроллер в режим сопряжения рядом с консолью.",
-    radpause: "Пауза для DualSense", radpausehint: "AnyPad ненадолго останавливается, чтобы DualSense подключился к консоли. Затем продолжает сам.",
+    radpause: "Пауза для DualSense", radpausehint: "WhateverPad ненадолго останавливается, чтобы DualSense подключился к консоли. Затем продолжает сам.",
     radpads: (n) => "Подключено контроллеров: " + n,
     gt: "Проверен", gb: "Бета", gx: "Не сопрягается",
     tips: ["Сначала нажмите <b>Сопряжение</b>, затем переведите контроллер в режим сопряжения рядом с консолью.",
@@ -745,13 +745,13 @@ const MORE = {
       ["Joy-Con (по одному)", "Удерживайте кнопку синхронизации на рейке, пока индикаторы не побегут. Держится горизонтально; у левого нет кнопки PS: «Настроить PS».", "b"],
       ["Wii U Pro и Wiimote", "Нажмите кнопку Sync (красная, сзади или под крышкой батарей). Wiimote держится горизонтально.", "b"],
       ["Stadia", "Нужна прошивка Bluetooth, выпущенная Google. Удерживайте Y + кнопку Stadia, пока не замигает.", "b"],
-      ["DualSense", "Это контроллер самой консоли: AnyPad его не сопрягает. Не выключайте его, пока работает AnyPad.", "x"]]
+      ["DualSense", "Это контроллер самой консоли: WhateverPad его не сопрягает. Не выключайте его, пока работает WhateverPad.", "x"]]
   },
   zh: {
     navhome: "首页", navpads: "手柄", navguide: "指南", navsys: "系统",
     hometitle: "配对你的<span>手柄</span>", padstitle: "已配对的<span>手柄</span>", guidetitle: "手柄<span>指南</span>",
     radidle: "可以配对", radsearch: "正在搜索手柄", radsearchhint: "在主机附近让手柄进入配对模式。",
-    radpause: "为 DualSense 暂停", radpausehint: "AnyPad 暂停片刻，让 DualSense 连接主机。之后会自动继续。",
+    radpause: "为 DualSense 暂停", radpausehint: "WhateverPad 暂停片刻，让 DualSense 连接主机。之后会自动继续。",
     radpads: (n) => "已连接 " + n + " 个手柄",
     gt: "已测试", gb: "测试版", gx: "不配对",
     tips: ["先按<b>配对</b>，再在主机附近让手柄进入配对模式。", "主机询问由谁使用手柄时，选择<b>快速游戏 / 访客</b>。",
@@ -767,13 +767,13 @@ const MORE = {
       ["Joy-Con（单个使用）", "按住滑轨上的同步键，直到指示灯流动。横握使用；左手柄没有 PS 键：使用“设置 PS”。", "b"],
       ["Wii U Pro 和 Wiimote", "按下 Sync 键（红色，在背面或电池盖下）。Wiimote 横握使用。", "b"],
       ["Stadia", "需要 Google 发布的蓝牙固件。按住 Y + Stadia 键直到闪烁。", "b"],
-      ["DualSense", "这是主机自带的手柄：AnyPad 不会配对它。AnyPad 运行时不要关闭它。", "x"]]
+      ["DualSense", "这是主机自带的手柄：WhateverPad 不会配对它。WhateverPad 运行时不要关闭它。", "x"]]
   },
   "zh-Hant": {
     navhome: "首頁", navpads: "控制器", navguide: "指南", navsys: "系統",
     hometitle: "配對你的<span>控制器</span>", padstitle: "已配對的<span>控制器</span>", guidetitle: "控制器<span>指南</span>",
     radidle: "可以配對", radsearch: "正在搜尋控制器", radsearchhint: "在主機附近讓控制器進入配對模式。",
-    radpause: "為 DualSense 暫停", radpausehint: "AnyPad 暫停片刻，讓 DualSense 連接主機。之後會自動繼續。",
+    radpause: "為 DualSense 暫停", radpausehint: "WhateverPad 暫停片刻，讓 DualSense 連接主機。之後會自動繼續。",
     radpads: (n) => "已連線 " + n + " 個控制器",
     gt: "已測試", gb: "測試版", gx: "不配對",
     tips: ["先按<b>配對</b>，再在主機附近讓控制器進入配對模式。", "主機詢問由誰使用控制器時，選擇<b>快速遊戲 / 訪客</b>。",
@@ -789,13 +789,13 @@ const MORE = {
       ["Joy-Con（單個使用）", "按住滑軌上的同步鍵，直到指示燈流動。橫握使用；左控制器沒有 PS 鍵：使用「設定 PS」。", "b"],
       ["Wii U Pro 和 Wiimote", "按下 Sync 鍵（紅色，在背面或電池蓋下）。Wiimote 橫握使用。", "b"],
       ["Stadia", "需要 Google 發布的藍牙韌體。按住 Y + Stadia 鍵直到閃爍。", "b"],
-      ["DualSense", "這是主機內建的控制器：AnyPad 不會配對它。AnyPad 執行時請勿關閉它。", "x"]]
+      ["DualSense", "這是主機內建的控制器：WhateverPad 不會配對它。WhateverPad 執行時請勿關閉它。", "x"]]
   },
   ja: {
     navhome: "ホーム", navpads: "コントローラー", navguide: "ガイド", navsys: "システム",
     hometitle: "<span>コントローラー</span>をペアリング", padstitle: "ペアリング済みの<span>コントローラー</span>", guidetitle: "コントローラー<span>ガイド</span>",
     radidle: "ペアリングの準備完了", radsearch: "コントローラーを検索中", radsearchhint: "本体の近くでコントローラーをペアリングモードにしてください。",
-    radpause: "DualSense のため一時停止", radpausehint: "DualSense が本体に接続できるよう、AnyPad が少しの間止まります。その後は自動で続きます。",
+    radpause: "DualSense のため一時停止", radpausehint: "DualSense が本体に接続できるよう、WhateverPad が少しの間止まります。その後は自動で続きます。",
     radpads: (n) => n + " 台のコントローラーが接続中",
     gt: "動作確認済み", gb: "ベータ", gx: "ペアリングしない",
     tips: ["先に<b>ペアリング</b>を押し、本体の近くでコントローラーをペアリングモードにしてください。",
@@ -812,13 +812,13 @@ const MORE = {
       ["Joy-Con（1本ずつ）", "レールのシンクロボタンをランプが流れるまで押し続けます。横持ちで使用。左側には PS ボタンがないため「PS を設定」を使用。", "b"],
       ["Wii U Pro と Wii リモコン", "Sync ボタン（赤、背面または電池カバーの中）を押します。Wii リモコンは横持ちで使用。", "b"],
       ["Stadia", "Google が公開した Bluetooth ファームウェアが必要です。点滅するまで Y + Stadia ボタンを押し続けます。", "b"],
-      ["DualSense", "本体付属のコントローラーです。AnyPad ではペアリングしません。AnyPad の実行中は電源を切らないでください。", "x"]]
+      ["DualSense", "本体付属のコントローラーです。WhateverPad ではペアリングしません。WhateverPad の実行中は電源を切らないでください。", "x"]]
   },
   ko: {
     navhome: "홈", navpads: "컨트롤러", navguide: "가이드", navsys: "시스템",
     hometitle: "<span>컨트롤러</span>를 페어링하세요", padstitle: "페어링된 <span>컨트롤러</span>", guidetitle: "컨트롤러 <span>가이드</span>",
     radidle: "페어링 준비 완료", radsearch: "컨트롤러 검색 중", radsearchhint: "본체 가까이에서 컨트롤러를 페어링 모드로 만드세요.",
-    radpause: "DualSense를 위해 일시 정지", radpausehint: "DualSense가 본체에 연결할 수 있도록 AnyPad가 잠시 멈춥니다. 이후 자동으로 계속합니다.",
+    radpause: "DualSense를 위해 일시 정지", radpausehint: "DualSense가 본체에 연결할 수 있도록 WhateverPad가 잠시 멈춥니다. 이후 자동으로 계속합니다.",
     radpads: (n) => "연결된 컨트롤러 " + n + "개",
     gt: "검증됨", gb: "베타", gx: "페어링 안 함",
     tips: ["먼저 <b>페어링</b>을 누르고, 본체 가까이에서 컨트롤러를 페어링 모드로 만드세요.",
@@ -835,13 +835,13 @@ const MORE = {
       ["Joy-Con (한 개씩)", "레일의 동기화 버튼을 표시등이 흐를 때까지 누르세요. 가로로 들고 사용하며, 왼쪽에는 PS 버튼이 없으니 'PS 설정'을 사용하세요.", "b"],
       ["Wii U Pro와 Wii 리모컨", "Sync 버튼(빨간색, 뒷면 또는 배터리 덮개 안)을 누르세요. Wii 리모컨은 가로로 들고 사용합니다.", "b"],
       ["Stadia", "Google이 공개한 블루투스 펌웨어가 필요합니다. 깜빡일 때까지 Y + Stadia 버튼을 누르세요.", "b"],
-      ["DualSense", "본체 기본 컨트롤러입니다. AnyPad는 페어링하지 않습니다. AnyPad 실행 중에는 끄지 마세요.", "x"]]
+      ["DualSense", "본체 기본 컨트롤러입니다. WhateverPad는 페어링하지 않습니다. WhateverPad 실행 중에는 끄지 마세요.", "x"]]
   },
   ar: {
     navhome: "الرئيسية", navpads: "وحدات التحكم", navguide: "الدليل", navsys: "النظام",
     hometitle: "أقرِن <span>وحدات التحكم</span>", padstitle: "وحدات التحكم <span>المقترنة</span>", guidetitle: "دليل <span>وحدات التحكم</span>",
     radidle: "جاهز للإقران", radsearch: "جارٍ البحث عن وحدات التحكم", radsearchhint: "ضع وحدة التحكم في وضع الإقران بالقرب من الجهاز.",
-    radpause: "إيقاف مؤقت من أجل DualSense", radpausehint: "يتوقف AnyPad لحظة كي يتصل DualSense بالجهاز، ثم يتابع تلقائيًا.",
+    radpause: "إيقاف مؤقت من أجل DualSense", radpausehint: "يتوقف WhateverPad لحظة كي يتصل DualSense بالجهاز، ثم يتابع تلقائيًا.",
     radpads: (n) => "وحدات التحكم المتصلة: " + n,
     gt: "مُختبرة", gb: "تجريبي", gx: "لا تُقرَن",
     tips: ["اضغط <b>الإقران</b> أولًا، ثم ضع وحدة التحكم في وضع الإقران بالقرب من الجهاز.",
@@ -858,7 +858,7 @@ const MORE = {
       ["Joy-Con (كلٌّ على حدة)", "اضغط مع الاستمرار على زر المزامنة في السكة حتى تجري الأضواء. يُمسك بالعرض؛ الأيسر بلا زر PS: استخدم «إعداد PS».", "b"],
       ["Wii U Pro وWiimote", "اضغط زر Sync (الأحمر، في الخلف أو تحت غطاء البطاريات). يُمسك Wiimote بالعرض.", "b"],
       ["Stadia", "يحتاج إلى برنامج البلوتوث الذي نشرته Google. اضغط Y + زر Stadia حتى يومض.", "b"],
-      ["DualSense", "إنها وحدة التحكم الخاصة بالجهاز: AnyPad لا يقرنها. لا تُطفئها أثناء تشغيل AnyPad.", "x"]]
+      ["DualSense", "إنها وحدة التحكم الخاصة بالجهاز: WhateverPad لا يقرنها. لا تُطفئها أثناء تشغيل WhateverPad.", "x"]]
   }
 };
 for (const k in MORE) if (TEXT[k]) Object.assign(TEXT[k], MORE[k]);
@@ -896,7 +896,7 @@ function renderGuide() {
 function showView(v) {
   for (const b of document.querySelectorAll(".nav button")) b.classList.toggle("on", b.dataset.v === v);
   for (const sec of document.querySelectorAll(".view")) sec.hidden = sec.id !== "v-" + v;
-  try { sessionStorage.setItem("anypad-view", v); } catch (e) {}
+  try { sessionStorage.setItem("whateverpad-view", v); } catch (e) {}
 }
 for (const b of document.querySelectorAll(".nav button")) b.onclick = () => showView(b.dataset.v);
 setLang("es");
@@ -905,7 +905,7 @@ const NAMES = { cross: "✕", circle: "○", square: "□", triangle: "△", l1:
   l3: "L3", r3: "R3", up: "↑", down: "↓", left: "←", right: "→", options: "OPTIONS", create: "CREATE",
   ps: "PS", touchpad: "" };
 async function api(method, path) {
-  const r = await fetch(path, { method, headers: { "X-AnyPad": "1" } });
+  const r = await fetch(path, { method, headers: { "X-WhateverPad": "1" } });
   if (!r.ok) throw new Error("http " + r.status);
   return path === "/api/log" ? r.text() : r.json();
 }
@@ -1131,7 +1131,7 @@ async function refresh() {
 $("retry").onclick = async () => { try { await api("POST", "/api/retry"); } catch (e) {} refresh(); };
 $("pair").onclick = async () => { try { await api("POST", "/api/pair"); } catch (e) {} refresh(); };
 $("exit").onclick = () => {
-  /* Only leaves the page: AnyPad PS5 keeps running. Browsers refuse to close a page they did
+  /* Only leaves the page: WhateverPad PS5 keeps running. Browsers refuse to close a page they did
      not open from a script, so fall back to going back, then say how to leave. */
   try { window.close(); } catch (e) {}
   setTimeout(() => { if (history.length > 1) history.back(); }, 250);
@@ -1151,7 +1151,7 @@ $("showlog").onclick = async () => {
   $("showlog").textContent = L.hidelog;
 };
 
-try { const v = sessionStorage.getItem("anypad-view"); if (v && $("v-" + v)) showView(v); } catch (e) {}
+try { const v = sessionStorage.getItem("whateverpad-view"); if (v && $("v-" + v)) showView(v); } catch (e) {}
 refresh();
 setInterval(refresh, 1000);
 </script>

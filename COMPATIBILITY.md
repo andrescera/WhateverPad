@@ -113,5 +113,5 @@ DualShock 3, Wii Remote / Wii U Pro, Joy-Con por separado.
 
 ## Help us verify / Ayúdanos a verificar
 
-Tried one? Open an issue with the model, the console firmware, what worked and `/data/anypad/anypad.log`.
-¿Has probado alguno? Abre un issue con el modelo, el firmware de la consola, qué funcionó y `/data/anypad/anypad.log`.
+Tried one? Open an issue with the model, the console firmware, what worked and `/data/whateverpad/whateverpad.log`.
+¿Has probado alguno? Abre un issue con el modelo, el firmware de la consola, qué funcionó y `/data/whateverpad/whateverpad.log`.

@@ -465,7 +465,7 @@ static void test_busy_radio_lightened(void)
 }
 
 /* Calls to the console are not taken: the event mask leaves Connection Request
- * out while AnyPad runs, and puts it back on close. */
+ * out while WhateverPad runs, and puts it back on close. */
 static void test_calls_left_to_system(void)
 {
     static const unsigned char addr[6] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };

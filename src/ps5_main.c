@@ -1,4 +1,4 @@
-/* AnyPad PS5 -- Bluetooth game controllers on the PlayStation 5.
+/* WhateverPad PS5 -- Bluetooth game controllers on the PlayStation 5.
  *
  * Pads from other consoles and brands connect to the console's own
  * Bluetooth chip, beside the DualSense, and appear to games as DualSense
@@ -15,7 +15,7 @@
  * ALPHA: see PRUEBAS.md for what has been tried on a console.
  *
  * Stability comes first. It only touches what it created: its own Bluetooth
- * links, its own virtual pads, its own files under /data/anypad. When
+ * links, its own virtual pads, its own files under /data/whateverpad. When
  * something it depends on fails, it says so (log, notification, the menu)
  * and stays out of the way instead of retrying forever.
  *
@@ -23,13 +23,13 @@
  * there to explain a failure. It is a web page: from a phone or a PC at the
  * address the start-up notification gives, or on the console itself by
  * holding a button combination on the DualSense (L2 + R2 + OPTIONS for 1.5
- * seconds unless /data/anypad/config.ini says otherwise).
+ * seconds unless /data/whateverpad/config.ini says otherwise).
  *
- * Stopping: the menu's button, or create /data/anypad/stop. It disconnects
+ * Stopping: the menu's button, or create /data/whateverpad/stop. It disconnects
  * its pads, removes its virtual pads, puts back the controller setting it
  * changed, and exits. It does the same by itself when the console starts
  * going to rest mode (read from SceSystemStateMgrInfo), so nothing of it is left half-way across a sleep.
- * Pairing: the menu's button, or create /data/anypad/pair.
+ * Pairing: the menu's button, or create /data/whateverpad/pair.
  */
 #include "config.h"
 #include "hci_usb.h"
@@ -59,33 +59,33 @@
 #include <time.h>
 #include <unistd.h>
 
-#define STATE_DIR    "/data/anypad"
-#define LOG_PATH     STATE_DIR "/anypad.log"
+#define STATE_DIR    "/data/whateverpad"
+#define LOG_PATH     STATE_DIR "/whateverpad.log"
 #define DB_PATH      STATE_DIR "/pads.db"
-#define LOCK_PATH    STATE_DIR "/anypad.lock"
+#define LOCK_PATH    STATE_DIR "/whateverpad.lock"
 #define CONFIG_PATH  STATE_DIR "/config.ini"
 #define PSCOMBO_PATH STATE_DIR "/ps_combos.txt"   /* «Configure PS»: kept, per model */
 #define PAIR_FLAG    STATE_DIR "/pair"
 #define STOP_FLAG    STATE_DIR "/stop"
-#define NO_ICON_FLAG STATE_DIR "/no_icon"          /* do not put AnyPad in the media row */
+#define NO_ICON_FLAG STATE_DIR "/no_icon"          /* do not put WhateverPad in the media row */
 #define RM_ICON_FLAG STATE_DIR "/remove_icon"      /* take it out, once */
 #define PAIR_SECONDS 60
 
 #define OPEN_TRIES      5       /* opening Bluetooth: 5 tries, 3 s apart */
 #define RAISED_TRIES    2       /* ... the first two with raised credentials */
 
-/* Findable in the binary: strings AnyPad-PS5-*.elf | grep anypad-version */
+/* Findable in the binary: strings WhateverPad-PS5-*.elf | grep whateverpad-version */
 /* The commit the ELF was built from, written by tools/build-elf-docker.sh. */
 #if defined(__has_include)
 #if __has_include("build_id.h")
 #include "build_id.h"
 #endif
 #endif
-#ifndef ANYPAD_BUILD_ID
-#define ANYPAD_BUILD_ID "unknown"
+#ifndef WHATEVERPAD_BUILD_ID
+#define WHATEVERPAD_BUILD_ID "unknown"
 #endif
 
-static const char g_version_tag[] __attribute__((used)) = "anypad-version " ANYPAD_VERSION;
+static const char g_version_tag[] __attribute__((used)) = "whateverpad-version " WHATEVERPAD_VERSION;
 
 static volatile sig_atomic_t g_stop;
 static volatile int g_web_stop;         /* the menu's stop button */
@@ -136,8 +136,8 @@ static void on_connect(void *ud, int slot, const pad_info *info)
         g_pad_id[slot].pid = info->pid;
         g_pad_id[slot].capture_until = 0;
     }
-    if (vpad_add(slot)) notify(TR("AnyPad PS5: %s conectado", "AnyPad PS5: %s connected"), info->profile);
-    else notify(TR("AnyPad PS5: %s conectado, pero sin mando virtual (ver el log)", "AnyPad PS5: %s connected, but no virtual controller (see the log)"), info->profile);
+    if (vpad_add(slot)) notify(TR("WhateverPad PS5: %s conectado", "WhateverPad PS5: %s connected"), info->profile);
+    else notify(TR("WhateverPad PS5: %s conectado, pero sin mando virtual (ver el log)", "WhateverPad PS5: %s connected, but no virtual controller (see the log)"), info->profile);
 }
 
 static void on_state(void *ud, int slot, const pad_state *st)
@@ -193,7 +193,7 @@ static void on_disconnect(void *ud, int slot)
 {
     (void)ud;
     vpad_remove(slot);
-    notify(TR("AnyPad PS5: mando %d desconectado", "AnyPad PS5: controller %d disconnected"), slot + 1);
+    notify(TR("WhateverPad PS5: mando %d desconectado", "WhateverPad PS5: controller %d disconnected"), slot + 1);
 }
 
 /* ---- Bluetooth, one try at a time ------------------------------------------ */
@@ -237,12 +237,12 @@ static void bt_try(long now)
             log_line("Bluetooth ready after %d tr%s%s", attempt, attempt == 1 ? "y" : "ies",
                      g_bt_plain_creds ? ", answering only with the original credentials" : "");
             if (hci.ops->missing_reads && hci.ops->missing_reads(hci.ctx) > 0)
-                notify(TR("AnyPad PS5: otro programa usa el Bluetooth (otro payload sigue en marcha?). Paralo desde su menu: AnyPad se recupera solo",
-                          "AnyPad PS5: another program is using Bluetooth (is another payload still running?). Stop it from its menu: AnyPad recovers by itself"));
+                notify(TR("WhateverPad PS5: otro programa usa el Bluetooth (otro payload sigue en marcha?). Paralo desde su menu: WhateverPad se recupera solo",
+                          "WhateverPad PS5: another program is using Bluetooth (is another payload still running?). Stop it from its menu: WhateverPad recovers by itself"));
             if (host_paired_count(g_host))      /* opened again in this session (after rest mode) */
-                notify(TR("AnyPad PS5: Bluetooth listo (%d mandos de esta sesion)", "AnyPad PS5: Bluetooth ready (%d controllers of this session)"), host_paired_count(g_host));
+                notify(TR("WhateverPad PS5: Bluetooth listo (%d mandos de esta sesion)", "WhateverPad PS5: Bluetooth ready (%d controllers of this session)"), host_paired_count(g_host));
             else
-                notify(TR("AnyPad PS5: Bluetooth listo. Empareja los mandos desde el menu", "AnyPad PS5: Bluetooth ready. Pair the controllers from the menu"));
+                notify(TR("WhateverPad PS5: Bluetooth listo. Empareja los mandos desde el menu", "WhateverPad PS5: Bluetooth ready. Pair the controllers from the menu"));
             return;
         }
         hci.ops->close(hci.ctx);
@@ -257,7 +257,7 @@ static void bt_try(long now)
                      ? " Este chip (Marvell/NXP) puede quedarse colgado tras un reinicio: apaga la consola del todo y vuelve a encenderla."
                      : "");
         log_line("Bluetooth unavailable: %s", g_bt_reason);
-        notify(TR("AnyPad PS5: el Bluetooth no responde.\nSigo activo: abre el menu para ver el motivo", "AnyPad PS5: Bluetooth does not answer.\nStill running: open the menu to see why"));
+        notify(TR("WhateverPad PS5: el Bluetooth no responde.\nSigo activo: abre el menu para ver el motivo", "WhateverPad PS5: Bluetooth does not answer.\nStill running: open the menu to see why"));
         return;
     }
     g_bt_next = now + 3000;
@@ -270,7 +270,7 @@ static void bt_lost(const char *why)
     g_host = NULL;
     g_bt_state = WEB_BT_FAILED;
     snprintf(g_bt_reason, sizeof g_bt_reason, "Se perdio el Bluetooth (%s). Pulsa Reintentar.", why);
-    notify(TR("AnyPad PS5: se perdio el Bluetooth.\nPulsa Reintentar en el menu", "AnyPad PS5: Bluetooth was lost.\nPress Retry in the menu"));
+    notify(TR("WhateverPad PS5: se perdio el Bluetooth.\nPulsa Reintentar en el menu", "WhateverPad PS5: Bluetooth was lost.\nPress Retry in the menu"));
 }
 
 /* ---- flags ---------------------------------------------------------------- */
@@ -288,7 +288,7 @@ static void check_flags(long now)
     if (g_host && access(PAIR_FLAG, F_OK) == 0) {
         unlink(PAIR_FLAG);
         host_pair(g_host, PAIR_SECONDS);
-        notify(TR("AnyPad PS5: emparejando %d s. Pon el mando en modo emparejamiento", "AnyPad PS5: pairing for %d s. Put the controller in pairing mode"), PAIR_SECONDS);
+        notify(TR("WhateverPad PS5: emparejando %d s. Pon el mando en modo emparejamiento", "WhateverPad PS5: pairing for %d s. Put the controller in pairing mode"), PAIR_SECONDS);
     }
 }
 
@@ -301,24 +301,24 @@ int main(void)
 
     mkdir(STATE_DIR, 0755);
     log_open(LOG_PATH);
-    log_line("AnyPad PS5 %s (build %s)", ANYPAD_VERSION, ANYPAD_BUILD_ID);
+    log_line("WhateverPad PS5 %s (build %s)", WHATEVERPAD_VERSION, WHATEVERPAD_BUILD_ID);
     (void)g_version_tag;
     g_lang_code = ui_console_language();
     g_spanish = ui_language_is_spanish(g_lang_code);    /* notifications: Spanish, or English */
 
     if (!lock_take(LOCK_PATH)) {
         log_line("another instance is running");
-        notify(TR("AnyPad PS5: ya esta en marcha", "AnyPad PS5: already running"));
+        notify(TR("WhateverPad PS5: ya esta en marcha", "WhateverPad PS5: already running"));
         log_close();
         return 1;
     }
     unlink(STOP_FLAG);                  /* an old request is not for us */
-    /* One session per run: pads are paired anew each time AnyPad starts, and
+    /* One session per run: pads are paired anew each time WhateverPad starts, and
      * nothing is kept once it stops or the console restarts. The store lives
      * only while this run does (so pads still reconnect after rest mode). */
     if (unlink(DB_PATH) == 0) log_line("session: pads of an earlier run discarded");
     log_line("session: pads are paired for this run only");
-    syscall(SYS_thr_set_name, -1, "anypad");    /* how others find us */
+    syscall(SYS_thr_set_name, -1, "whateverpad");    /* how others find us */
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
     signal(SIGHUP, on_signal);
@@ -333,7 +333,7 @@ int main(void)
     wc.bt_state = &g_bt_state;
     wc.bt_reason = g_bt_reason;
     wc.log_path = LOG_PATH;
-    wc.version = ANYPAD_VERSION;
+    wc.version = WHATEVERPAD_VERSION;
     wc.chip = hci_usb_chip_name();
     wc.lang = ui_language_tag(g_lang_code);
     wc.press_ps = web_press_ps;
@@ -345,16 +345,16 @@ int main(void)
     local_ip(ip);
     snprintf(url, sizeof url, "http://%s:%d/", ip, WEB_PORT);
     if (g_web)
-        notify(TR("AnyPad PS5 %s\nMenu: %s (o Contenido multimedia > AnyPad)\nAl emparejar un mando, elige Juego rapido / Invitado cuando la consola lo pregunte", "AnyPad PS5 %s\nMenu: %s (or Media > AnyPad)\nWhen you pair a controller, choose Quick play / Guest when the console asks"), ANYPAD_VERSION, url);
+        notify(TR("WhateverPad PS5 %s\nMenu: %s (o Contenido multimedia > WhateverPad)\nAl emparejar un mando, elige Juego rapido / Invitado cuando la consola lo pregunte", "WhateverPad PS5 %s\nMenu: %s (or Media > WhateverPad)\nWhen you pair a controller, choose Quick play / Guest when the console asks"), WHATEVERPAD_VERSION, url);
     else
-        notify(TR("AnyPad PS5 %s\nNo se pudo abrir la pagina del menu: puerto %d ocupado. Si otro payload de mandos sigue en marcha, paralo desde su menu", "AnyPad PS5 %s\nCould not open the menu page: port %d in use. If another controller payload is still running, stop it from its menu"),
-               ANYPAD_VERSION, WEB_PORT);
+        notify(TR("WhateverPad PS5 %s\nNo se pudo abrir la pagina del menu: puerto %d ocupado. Si otro payload de mandos sigue en marcha, paralo desde su menu", "WhateverPad PS5 %s\nCould not open the menu page: port %d in use. If another controller payload is still running, stop it from its menu"),
+               WHATEVERPAD_VERSION, WEB_PORT);
 
     sysinfo_log();
 
     /* The entry in the media row that opens the menu in the browser. Done
      * before the credentials are raised for the pads, as Payload Manager does
-     * it with its own; /data/anypad/no_icon skips it, remove_icon undoes it. */
+     * it with its own; /data/whateverpad/no_icon skips it, remove_icon undoes it. */
     if (access(RM_ICON_FLAG, F_OK) == 0) {
         apps_remove_launcher();
         unlink(RM_ICON_FLAG);
@@ -369,7 +369,7 @@ int main(void)
         g_bt_state = WEB_BT_FAILED;
         snprintf(g_bt_reason, sizeof g_bt_reason,
                  "No se pueden crear mandos virtuales en este sistema (ver el log). No se ha tocado el Bluetooth.");
-        notify(TR("AnyPad PS5: no se pueden crear mandos virtuales.\nVer el menu o el log. El Bluetooth no se ha tocado", "AnyPad PS5: cannot create virtual controllers.\nSee the menu or the log. Bluetooth was not touched"));
+        notify(TR("WhateverPad PS5: no se pueden crear mandos virtuales.\nVer el menu o el log. El Bluetooth no se ha tocado", "WhateverPad PS5: cannot create virtual controllers.\nSee the menu or the log. Bluetooth was not touched"));
     } else {
         bt_begin();
     }
@@ -402,7 +402,7 @@ int main(void)
                 g_web = web_start(&wc, WEB_PORT);
                 snprintf(ip, sizeof ip, "%s", nip);
                 if (g_web && strcmp(nip, "127.0.0.1") != 0)
-                    notify(TR("AnyPad PS5: pagina de nuevo en http://%s:%d/", "AnyPad PS5: page back at http://%s:%d/"), nip, WEB_PORT);
+                    notify(TR("WhateverPad PS5: pagina de nuevo en http://%s:%d/", "WhateverPad PS5: page back at http://%s:%d/"), nip, WEB_PORT);
                 else if (!g_web)
                     log_line("web: could not serve the page again; will try in 5 s");
             }
@@ -414,7 +414,7 @@ int main(void)
             last_power = now;
             if (ps == POWER_GOING_TO_REST || ps == POWER_IN_REST) {
                 why = "rest mode";
-                notify(TR("AnyPad PS5: parado por el modo reposo.\nLanzalo de nuevo al despertar", "AnyPad PS5: stopped by rest mode.\nRun it again after waking up"));
+                notify(TR("WhateverPad PS5: parado por el modo reposo.\nLanzalo de nuevo al despertar", "WhateverPad PS5: stopped by rest mode.\nRun it again after waking up"));
                 break;
             }
         }
@@ -451,6 +451,6 @@ int main(void)
     lock_release();
     log_line("stopped");
     log_close();
-    notify(TR("AnyPad PS5: parado", "AnyPad PS5: stopped"));
+    notify(TR("WhateverPad PS5: parado", "WhateverPad PS5: stopped"));
     return 0;
 }

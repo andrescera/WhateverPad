@@ -1,5 +1,5 @@
-#ifndef ANYPAD_NETINFO_H
-#define ANYPAD_NETINFO_H
+#ifndef WHATEVERPAD_NETINFO_H
+#define WHATEVERPAD_NETINFO_H
 
 /* The address this machine uses to reach the local network, as text
  * ("<console-ip>"). Nothing is sent: a UDP socket is connected to an address
