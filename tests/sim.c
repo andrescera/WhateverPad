@@ -895,7 +895,7 @@ static void op_event_reads(void *ctx, int n)
 }
 
 static const hci_ops k_sim_ops = {
-    op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, NULL, op_event_reads, NULL, NULL,
+    op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, NULL, op_event_reads, NULL, NULL, NULL,
 };
 
 /* ---- public ---------------------------------------------------------------- */

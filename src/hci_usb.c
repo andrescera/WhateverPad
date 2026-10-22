@@ -580,10 +580,11 @@ static void default_endpoints(usb_ctx *c)
 }
 
 static int op_chip_vendor(void *ctx);
+static int op_chip_product(void *ctx);
 
 static const hci_ops k_usb_ops = {
     op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, op_missing_reads,
-    op_event_reads, op_event_len, op_chip_vendor,
+    op_event_reads, op_event_len, op_chip_vendor, op_chip_product,
 };
 
 /* Opens one device node and reads its device descriptor. */
@@ -624,6 +625,11 @@ int hci_usb_chip_vendor(void) { return g_chip_vendor; }
 const char *hci_usb_chip_name(void) { return g_chip_name; }
 
 static int op_chip_vendor(void *ctx) { (void)ctx; return g_chip_vendor; }
+static int op_chip_product(void *ctx)
+{
+    usb_ctx *c = ctx;
+    return c->dd_ok ? UGETW(c->dd.idProduct) : 0;
+}
 
 int hci_usb_open(hci_t *out)
 {

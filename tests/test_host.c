@@ -2,6 +2,7 @@
 #include "sim.h"
 #include "../src/crc32.h"
 #include "../src/host.h"
+#include "../src/host_int.h"
 #include "../src/util.h"
 
 #include <stdio.h>
@@ -252,13 +253,13 @@ static void test_reconnect(void)
     memset(&s, 0, sizeof s);
     {
         FILE *f = fopen(DB, "rb");
-        unsigned char rec[8 + 64];      /* magic, then the first record */
+        unsigned char rec[64 + 64];     /* versioned header, then first record */
         int ok = f && fread(rec, 1, sizeof rec, f) == sizeof rec;
         if (f) fclose(f);
         CHECK(ok);
         if (!ok) return;
         sim = sim_new(&pad);
-        sim_give_key(sim, rec + 8 + 6);
+        sim_give_key(sim, rec + 64 + 8);
     }
     h = open_host(sim, &s);
     CHECK(h != NULL);
@@ -1272,6 +1273,58 @@ static void test_dead_controller(void)
     sim_free(sim);
 }
 
+static int without_local_identity(void *ctx, unsigned op, const void *p, int len)
+{
+    if (op == OP_READ_BD_ADDR) return 0;
+    return sim_hci(ctx).ops->cmd(ctx, op, p, len);
+}
+
+static void test_store_admission(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    seen s = {0};
+    host_t *h;
+    db_rec *r;
+    FILE *f;
+    char got[4];
+    static const unsigned char addr[6] = {7, 8, 9, 10, 11, 12};
+    hci_t transport = sim_hci(sim);
+    hci_ops ops = *transport.ops;
+    host_events ev = { on_connect, on_state, on_disconnect, &s, NULL };
+
+    printf("durable admission waits for commit and a successful local identity read\n");
+    ops.cmd = without_local_identity;
+    transport.ops = &ops;
+    CHECK(host_open(transport, DB, &ev) == NULL);
+    CHECK(access(DB, F_OK) != 0);
+    h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_free(sim); return; }
+    r = db_put(h, addr, 0, 0);
+    CHECK(r != NULL);
+    if (!r) { host_close(h); sim_free(sim); return; }
+    memset(r->key, 0x41, 16); r->complete = 1;
+    CHECK(host_paired_count(h) == 0);
+    CHECK(db_save(h) == BOND_COMMITTED && host_paired_count(h) == 1);
+    f = fopen(DB, "wb"); CHECK(f != NULL);
+    if (!f) { host_close(h); sim_free(sim); return; }
+    CHECK(fwrite("bad", 1, 3, f) == 3 && fclose(f) == 0);
+    r = db_put(h, addr, 0, 0);
+    CHECK(r != NULL);
+    if (r) r->key[0]++;
+    CHECK(db_save(h) == BOND_INVALID);
+    CHECK(host_paired_count(h) == 1 && h->store.records[0].key[0] == 0x41);
+    CHECK(host_forget(h, addr) == 0 && host_paired_count(h) == 1);
+    f = fopen(DB, "rb"); CHECK(f != NULL);
+    if (f) {
+        CHECK(fread(got, 1, sizeof got, f) == 3 && !memcmp(got, "bad", 3));
+        CHECK(fclose(f) == 0);
+    }
+    host_close(h);
+    sim_free(sim);
+}
+
 static void test_sdp_parse(void)
 {
     /* As a real pad answers: {{0x0200 ver, 0x0201 vid, 0x0202 pid}} */
@@ -1387,6 +1440,7 @@ int main(int argc, char **argv)
     if (argc == 2) {
         RUN_TEST(test_reconnect());
     } else {
+        RUN_TEST(test_store_admission());
         RUN_TEST(test_discovery_regressions());
         RUN_TEST(test_sdp_parse());
         RUN_TEST(test_pairing(0));

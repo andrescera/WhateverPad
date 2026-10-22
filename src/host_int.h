@@ -5,6 +5,7 @@
 
 #include "host.h"
 #include "profiles.h"
+#include "bond_store.h"
 
 #include <stdint.h>
 
@@ -112,10 +113,6 @@
 #define INFLIGHT_MAX      64
 #define INFLIGHT_MS       60
 
-#define DB_MAX            16
-#define DB_REC            64    /* one record in the store file */
-#define DB_MAGIC     "WHATEVERPAD02"
-
 /* ---- state -------------------------------------------------------------- */
 
 typedef enum { CH_CLOSED, CH_CONNECTING, CH_CONFIG, CH_OPEN } chan_state;
@@ -132,17 +129,6 @@ typedef struct {
     unsigned refused;
     long retry_at;
 } chan;
-
-/* A paired pad. Classic pads keep a link key; LE pads a long-term key
- * (with its EDIV and Rand under legacy pairing) and possibly an identity
- * resolving key, to recognise them behind private addresses. */
-typedef struct {
-    unsigned char addr[6], key[16], type;
-    uint16_t vid, pid;
-    uint8_t le, addr_type;
-    uint16_t ediv;
-    uint8_t rand[8], irk[16], has_irk;
-} db_rec;
 
 typedef struct {
     int credits, max;
@@ -173,6 +159,7 @@ typedef struct {
     int have_pkb, have_cb, have_nb, have_dhkey, dhkey_asked;
     uint8_t ltk[16];                /* the key the link is encrypted with */
     uint8_t keys_expected, keys_got;
+    uint8_t key_messages;           /* ENC_INFO, CENTRAL_ID, ID_INFO, ID_ADDR */
     uint8_t dist_ltk[16], dist_rand[8], dist_irk[16], id_addr[6], id_type;
     uint16_t dist_ediv;
     int enc_sent, bonded;
@@ -266,8 +253,8 @@ struct host {
     unsigned char collision_addr[6];
     int collision_blocked;          /* retry only on an explicit new search */
     unsigned bad_inquiry;           /* malformed discovery events rejected */
-    db_rec db[DB_MAX];
-    int ndb;
+    bond_store store, committed;
+    bond_result store_error;
 
     link_t links[HOST_MAX_PADS];
     unsigned char sig_id;
@@ -287,12 +274,10 @@ struct host {
     unsigned char bdaddr[6];        /* our address */
     unsigned char le_pk[64];        /* our P-256 public key, as sent */
     int le_pk_ok;
-    uint8_t le_irk[16];             /* this console's identity key, kept in <db>.irk */
     uint8_t le_rest_addr[6];        /* an LE pad left alone for a while after refusals */
     uint8_t pin_addr[6];            /* a pad that refused "0000": its next PIN is our address */
     int pin_addr_set;
     long le_rest_until;
-    int le_irk_ok;
     int le_scanning, le_scan_want;
     long t_scan;
     link_t *dhkey_owner;            /* the link a DHKey is being made for */
@@ -361,9 +346,9 @@ int  l2_send(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int len
 void init_tick(host_t *h, link_t *l, long now);
 
 db_rec *db_find(host_t *h, const unsigned char *addr);
-db_rec *db_put(host_t *h, const unsigned char *addr);
-void db_save(host_t *h);
-void db_forget(host_t *h, const unsigned char *addr);
+db_rec *db_put(host_t *h, const unsigned char *addr, uint8_t le, uint8_t type);
+bond_result db_save(host_t *h);
+bond_result db_forget(host_t *h, const unsigned char *addr, uint8_t le, uint8_t type);
 
 /* le.c */
 void le_setup(host_t *h);

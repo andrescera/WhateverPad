@@ -855,7 +855,7 @@ static void op_yield(void *ctx, int ms)
     s->yield_until = sim_le_now() + ms;
 }
 
-static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, op_yield, NULL, NULL, NULL, NULL };
+static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, op_yield, NULL, NULL, NULL, NULL, NULL };
 
 /* ---- public ------------------------------------------------------------------ */
 
