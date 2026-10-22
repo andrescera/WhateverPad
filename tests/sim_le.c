@@ -2,6 +2,7 @@
 #include "../src/smp_crypto.h"
 #include "../src/util.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,7 +27,12 @@ enum {
 
 struct sim_le {
     sim_le_pad pad;
-    queue ev, acl;
+    queue ev, acl, system;
+    struct { uint8_t data[257]; int len; long due; unsigned order; } delayed[32];
+    unsigned schedule_order;
+    int delay_code, delay_subevent, delay_left, delay_ms;
+    sim_lifetime life;
+    long yield_until;
     uint8_t host_addr[6];
     uint8_t cur_addr[6];        /* the address advertised now */
     uint8_t cur_type;
@@ -115,14 +121,60 @@ static int lose(sim_le_t *s)
 
 /* ---- controller side ------------------------------------------------------ */
 
-static void event(sim_le_t *s, unsigned char code, const unsigned char *p, int n)
+static void deliver_event(sim_le_t *s, const uint8_t *e, int n)
 {
-    unsigned char e[260];
+    if (!s->life.event_reads || sim_le_now() < s->yield_until) {
+        assert(s->system.count < QLEN);
+        q_put(&s->system, e, n);
+    } else {
+        q_put(&s->ev, e, n);
+    }
+}
 
+void sim_le_schedule_event(sim_le_t *s, uint8_t code, const uint8_t *p, int n, int delay_ms)
+{
+    uint8_t e[257];
+    int i;
+    assert(n >= 0 && n <= 255 && delay_ms >= 0);
     e[0] = code;
     e[1] = (unsigned char)n;
     memcpy(e + 2, p, (size_t)n);
-    q_put(&s->ev, e, 2 + n);
+    if (!delay_ms) { deliver_event(s, e, n + 2); return; }
+    for (i = 0; i < 32 && s->delayed[i].len; i++) {}
+    assert(i < 32);
+    memcpy(s->delayed[i].data, e, (size_t)n + 2);
+    s->delayed[i].len = n + 2;
+    s->delayed[i].due = sim_le_now() + delay_ms;
+    s->delayed[i].order = ++s->schedule_order;
+}
+
+static void due_events(sim_le_t *s)
+{
+    int i, next;
+    for (;;) {
+        next = -1;
+        for (i = 0; i < 32; i++) {
+            if (!s->delayed[i].len || s->delayed[i].due > sim_le_now()) continue;
+            if (next < 0 || s->delayed[i].due < s->delayed[next].due ||
+                (s->delayed[i].due == s->delayed[next].due &&
+                 s->delayed[i].order < s->delayed[next].order)) next = i;
+        }
+        if (next < 0) return;
+        deliver_event(s, s->delayed[next].data, s->delayed[next].len);
+        s->delayed[next].len = 0;
+    }
+}
+
+static void event(sim_le_t *s, unsigned char code, const unsigned char *p, int n)
+{
+    if (s->delay_left > 0 && code == s->delay_code &&
+        (s->delay_subevent < 0 || (n > 0 && p[0] == s->delay_subevent))) {
+        s->delay_left--;
+        if (s->delay_ms < 0) return;
+        sim_le_schedule_event(s, code, p, n, s->delay_ms);
+    } else {
+        sim_le_schedule_event(s, code, p, n, 0);
+    }
 }
 
 static void cmd_complete(sim_le_t *s, unsigned op, const unsigned char *ret, int n)
@@ -146,6 +198,23 @@ static void cmd_status(sim_le_t *s, unsigned op, unsigned char status)
 }
 
 static void meta(sim_le_t *s, const unsigned char *p, int n) { event(s, 0x3E, p, n); }
+
+void sim_le_peer_advertise(sim_le_t *s, const uint8_t addr[6], uint8_t addr_type)
+{
+    /* flags, appearance gamepad, 16-bit services: HID */
+    static const uint8_t ad[] = { 0x02, 0x01, 0x06, 0x03, 0x19, 0xC4, 0x03, 0x03, 0x03, 0x12, 0x18 };
+    unsigned char r[48];
+    assert(addr_type <= 1);
+    r[0] = 0x02;
+    r[1] = 1;
+    r[2] = 0x00;                    /* ADV_IND */
+    r[3] = addr_type;
+    memcpy(r + 4, addr, 6);
+    r[10] = sizeof ad;
+    memcpy(r + 11, ad, sizeof ad);
+    r[11 + sizeof ad] = 0xC0;       /* RSSI */
+    meta(s, r, 12 + (int)sizeof ad);
+}
 
 static void enc_change(sim_le_t *s, unsigned char status)
 {
@@ -185,6 +254,7 @@ static void acl_to_host(sim_le_t *s, unsigned cid, const unsigned char *d, int n
 {
     unsigned char pkt[PKT];
 
+    if (!s->life.acl_reads) return;
     put16(pkt, HANDLE | 0x2000);
     put16(pkt + 2, (unsigned)(4 + n));
     put16(pkt + 4, (unsigned)n);
@@ -574,6 +644,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     const unsigned char *p = params;
     unsigned char r[80];
 
+    if (!s->life.acl_reads) return 0;
     (void)plen;
     switch (op) {
     case 0x1005:
@@ -710,6 +781,7 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     unsigned char ncp[5];
     int n;
 
+    if (!s->life.acl_reads) return 0;
     if (len < 8 || !s->connected) return 1;
     ncp[0] = 1;
     put16(ncp + 1, HANDLE);
@@ -726,19 +798,10 @@ static int op_pump(void *ctx, int timeout_ms)
     sim_le_t *s = ctx;
 
     g_clock += timeout_ms > 0 ? timeout_ms : 1;
+    due_events(s);
+    if (!s->life.acl_reads) return -1;
     if (s->powered && s->scanning && !s->connected && g_clock - s->t_adv >= 30) {
-        /* flags, appearance gamepad, 16-bit services: HID */
-        static const uint8_t ad[] = { 0x02, 0x01, 0x06, 0x03, 0x19, 0xC4, 0x03, 0x03, 0x03, 0x12, 0x18 };
-        unsigned char r[48];
-        r[0] = 0x02;
-        r[1] = 1;
-        r[2] = 0x00;                    /* ADV_IND */
-        r[3] = s->cur_type;
-        memcpy(r + 4, s->cur_addr, 6);
-        r[10] = sizeof ad;
-        memcpy(r + 11, ad, sizeof ad);
-        r[11 + sizeof ad] = 0xC0;       /* RSSI */
-        meta(s, r, 12 + (int)sizeof ad);
+        sim_le_peer_advertise(s, s->cur_addr, s->cur_type);
         s->t_adv = g_clock;
     }
     if (s->connected && s->encrypted && (s->cccd & 1) && g_clock - s->t_report >= 8 &&
@@ -773,9 +836,26 @@ static int op_next_acl(void *ctx, unsigned char *out, int max)
     return 0;
 }
 
-static void op_close(void *ctx) { (void)ctx; }
+static void op_close(void *ctx)
+{
+    sim_le_t *s = ctx;
+    if (!s->life.acl_reads) return;
+    s->life.event_stops += sim_le_resources(s).event_reads;
+    s->life.acl_stops += s->life.acl_reads;
+    s->life.event_reads = s->life.acl_reads = 0;
+    s->life.uninits++;
+    s->life.closes++;
+    s->ev.count = s->acl.count = 0;
+}
 
-static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, NULL, NULL, NULL, NULL, NULL };
+static void op_yield(void *ctx, int ms)
+{
+    sim_le_t *s = ctx;
+    s->life.event_stops += sim_le_resources(s).event_reads;
+    s->yield_until = sim_le_now() + ms;
+}
+
+static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, op_yield, NULL, NULL, NULL, NULL, NULL };
 
 /* ---- public ------------------------------------------------------------------ */
 
@@ -799,6 +879,12 @@ void sim_le_free(sim_le_t *s) { free(s); }
 hci_t sim_le_hci(sim_le_t *s)
 {
     hci_t h = { &k_ops, s };
+    if (!s->life.acl_reads) {
+        s->life.opens++;
+        s->life.event_reads = 40;
+        s->life.acl_reads = 20;
+        s->yield_until = 0;
+    }
     return h;
 }
 
@@ -838,4 +924,17 @@ int sim_le_last_output(const sim_le_t *s, uint8_t *out, int max)
     int n = s->last_out_len < max ? s->last_out_len : max;
     memcpy(out, s->last_out, (size_t)n);
     return n;
+}
+
+void sim_le_delay_events(sim_le_t *s, int code, int subevent, int count, int delay_ms)
+{
+    s->delay_code = code; s->delay_subevent = subevent;
+    s->delay_left = count; s->delay_ms = delay_ms;
+}
+int sim_le_system_event(sim_le_t *s, uint8_t *out, int max) { return q_get(&s->system, out, max); }
+sim_lifetime sim_le_resources(const sim_le_t *s)
+{
+    sim_lifetime life = s->life;
+    if (sim_le_now() < s->yield_until) life.event_reads = 0;
+    return life;
 }

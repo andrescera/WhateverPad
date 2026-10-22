@@ -146,110 +146,51 @@ void link_disconnect(host_t *h, link_t *l, const char *why)
 
 db_rec *db_find(host_t *h, const unsigned char *addr)
 {
-    int i;
-
-    for (i = 0; i < h->ndb; i++)
-        if (memcmp(h->db[i].addr, addr, 6) == 0) return &h->db[i];
-    return NULL;
+    db_rec *r = bond_store_find(&h->store, 0, 0, addr);
+    return r && r->complete && !r->repair_needed ? r : NULL;
 }
 
-/* The store file: a magic string, then one fixed-size record per pad:
- *   addr 6, key 16, key type 1, vid 2, pid 2, le 1, addr type 1, ediv 2,
- *   rand 8, irk 16, has irk 1, padding */
-void db_save(host_t *h)
+bond_result db_save(host_t *h)
 {
-    char tmp[300];
-    FILE *f;
-    int i, ok;
-
-    /* Written beside, then renamed over: a crash leaves the old or the new
-     * store, never half of one. */
-    snprintf(tmp, sizeof tmp, "%s.new", h->db_path);
-    f = fopen(tmp, "wb");
-    if (!f) {
-        log_line("store: cannot write %s: errno %d", tmp, errno);
-        return;
+    bond_result result = h->store_error;
+    if (result == BOND_COMMITTED) result = bond_store_save(h->db_path, &h->store);
+    if (result == BOND_COMMITTED) {
+        h->committed = h->store;
+    } else {
+        h->store = h->committed;
+        if (result == BOND_UNCERTAIN) h->store_error = result;
+        log_line("store: save failed: %s", bond_store_result_name(result));
     }
-    fwrite(DB_MAGIC, 1, 8, f);
-    for (i = 0; i < h->ndb; i++) {
-        const db_rec *d = &h->db[i];
-        unsigned char r[DB_REC];
-
-        memset(r, 0, sizeof r);
-        memcpy(r, d->addr, 6);
-        memcpy(r + 6, d->key, 16);
-        r[22] = d->type;
-        put16(r + 23, d->vid);
-        put16(r + 25, d->pid);
-        r[27] = d->le;
-        r[28] = d->addr_type;
-        put16(r + 29, d->ediv);
-        memcpy(r + 31, d->rand, 8);
-        memcpy(r + 39, d->irk, 16);
-        r[55] = d->has_irk;
-        fwrite(r, 1, sizeof r, f);
-    }
-    ok = fflush(f) == 0 && !ferror(f);
-    if (fclose(f) != 0) ok = 0;
-    if (!ok || rename(tmp, h->db_path) != 0) {
-        log_line("store: could not save %s: errno %d", h->db_path, errno);
-        remove(tmp);
-    }
+    return result;
 }
 
-static void db_load(host_t *h)
+db_rec *db_put(host_t *h, const unsigned char *addr, uint8_t le, uint8_t type)
 {
-    FILE *f = fopen(h->db_path, "rb");
-    unsigned char r[DB_REC];
-
-    h->ndb = 0;
-    if (!f) return;
-    if (fread(r, 1, 8, f) != 8 || memcmp(r, DB_MAGIC, 8) != 0) {
-        log_line("store: %s is not a WhateverPad PS5 store, ignored", h->db_path);
-        fclose(f);
-        return;
+    db_rec *d;
+    db_rec empty = { .le = le, .addr_type = type };
+    bond_result result;
+    if (h->store_error != BOND_COMMITTED) return NULL;
+    d = bond_store_find(&h->store, le, type, addr);
+    if (!d) {
+        memcpy(empty.addr, addr, 6);
+        result = bond_store_put(&h->store, &empty);
+        if (result != BOND_COMMITTED) {
+            log_line("store: cannot remember pad: %s", bond_store_result_name(result));
+            return NULL;
+        }
+        d = bond_store_find(&h->store, le, type, addr);
     }
-    while (h->ndb < DB_MAX && fread(r, 1, sizeof r, f) == sizeof r) {
-        db_rec *d = &h->db[h->ndb++];
-        memcpy(d->addr, r, 6);
-        memcpy(d->key, r + 6, 16);
-        d->type = r[22];
-        d->vid = (uint16_t)le16(r + 23);
-        d->pid = (uint16_t)le16(r + 25);
-        d->le = r[27];
-        d->addr_type = r[28];
-        d->ediv = (uint16_t)le16(r + 29);
-        memcpy(d->rand, r + 31, 8);
-        memcpy(d->irk, r + 39, 16);
-        d->has_irk = r[55];
-    }
-    fclose(f);
-    log_line("store: %d paired pad(s)", h->ndb);
-}
-
-db_rec *db_put(host_t *h, const unsigned char *addr)
-{
-    db_rec *d = db_find(h, addr);
-
-    if (d) return d;
-    if (h->ndb == DB_MAX) {             /* full: forget the oldest */
-        memmove(h->db, h->db + 1, sizeof h->db[0] * (DB_MAX - 1));
-        h->ndb--;
-    }
-    d = &h->db[h->ndb++];
-    memset(d, 0, sizeof *d);
-    memcpy(d->addr, addr, 6);
     return d;
 }
 
-void db_forget(host_t *h, const unsigned char *addr)
+bond_result db_forget(host_t *h, const unsigned char *addr, uint8_t le, uint8_t type)
 {
-    db_rec *d = db_find(h, addr);
-
-    if (!d) return;
-    memmove(d, d + 1, sizeof *d * (size_t)(h->ndb - (d - h->db) - 1));
-    h->ndb--;
-    db_save(h);
+    db_rec *d = bond_store_find(&h->store, le, type, addr);
+    if (!d) return BOND_MISSING;
+    memmove(d, d + 1, sizeof *d * (size_t)(h->store.count - (d - h->store.records) - 1));
+    h->store.count--;
+    memset(&h->store.records[h->store.count], 0, sizeof *d);
+    return db_save(h);
 }
 
 /* ---- ACL out ---------------------------------------------------------------- */
@@ -753,10 +694,12 @@ static void sdp_finish(host_t *h, link_t *l, int ok)
     if (query == SDP_Q_IDS) {
         uint16_t vid = 0, pid = 0;
         if (ok && sdp_find_ids(l->sdp_buf, l->sdp_len, &vid, &pid)) {
-            db_rec *r = db_put(h, l->addr);
-            r->vid = vid;
-            r->pid = pid;
-            db_save(h);
+            db_rec *r = db_put(h, l->addr, 0, 0);
+            if (r) {
+                r->vid = vid;
+                r->pid = pid;
+                db_save(h);
+            }
             log_line("pad %s: vendor %04x product %04x", addr_str(l->addr), vid, pid);
         } else {
             log_line("pad %s: no Device ID record, treating it as generic", addr_str(l->addr));
@@ -1137,7 +1080,7 @@ static void pair_with(host_t *h, const unsigned char *rec)
         (h->collision_blocked && memcmp(h->collision_addr, rec, 6) == 0)) return;
     if (db_find(h, rec)) {
         log_line("pad %s: in pairing mode again, forgetting its old key", addr_str(rec));
-        db_forget(h, rec);
+        db_forget(h, rec, 0, 0);
     }
     l = link_new(h, rec);
     if (!l) {
@@ -1606,7 +1549,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             h->pin_addr_set = 1;
             log_line("pad %s: it refused the PIN 0000; next time this console's address", addr_str(l->addr));
         }
-        if (!l->pairing) db_forget(h, l->addr);     /* the pad lost its key */
+        if (!l->pairing) db_forget(h, l->addr, 0, 0);     /* the pad lost its key */
         link_disconnect(h, l, "authentication failed");
         break;
 
@@ -1758,10 +1701,12 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x18:  /* Link Key Notification: addr, key, type */
         if (len < 25 || !(l = link_by_addr(h, ev + 2))) break;
         {
-            db_rec *r = db_put(h, ev + 2);
+            db_rec *r = db_put(h, ev + 2, 0, 0);
+            if (!r) break;
             memcpy(r->key, ev + 8, 16);
             r->type = ev[24];
-            db_save(h);
+            r->complete = 1;
+            if (db_save(h) != BOND_COMMITTED) break;
         }
         log_line("pad %s: paired, key stored", addr_str(ev + 2));
         break;
@@ -2215,7 +2160,7 @@ int host_connected(const host_t *h, int slot)
     return slot >= 0 && slot < HOST_MAX_PADS && h->links[slot].used && h->links[slot].ready;
 }
 
-int host_paired_count(const host_t *h) { return h->ndb; }
+int host_paired_count(const host_t *h) { return h->committed.count; }
 
 int host_transport_lost(const host_t *h) { return h->dead; }
 
@@ -2250,8 +2195,8 @@ int host_paired_get(const host_t *h, int i, host_paired_info *out)
     const db_rec *d;
     int k;
 
-    if (i < 0 || i >= h->ndb) return 0;
-    d = &h->db[i];
+    if (i < 0 || i >= h->committed.count) return 0;
+    d = &h->committed.records[i];
     memset(out, 0, sizeof *out);
     memcpy(out->addr, d->addr, 6);
     out->vid = d->vid;
@@ -2259,7 +2204,9 @@ int host_paired_get(const host_t *h, int i, host_paired_info *out)
     out->le = d->le;
     for (k = 0; k < HOST_MAX_PADS; k++) {
         const link_t *l = &h->links[k];
-        if (l->used && l->ready && memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
+        if (l->used && l->ready && l->le == d->le &&
+            (!d->le || l->le_s.id_type == d->addr_type) &&
+            memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
     }
     return 1;
 }
@@ -2283,16 +2230,25 @@ int host_pad_get(const host_t *h, int slot, pad_info *info, pad_state *st)
 int host_forget(host_t *h, const unsigned char addr[6])
 {
     int k;
+    db_rec identity, *found = NULL;
 
-    if (!db_find(h, addr)) return 0;
+    for (k = 0; k < h->store.count; k++) {
+        db_rec *r = &h->store.records[k];
+        if (memcmp(r->addr, addr, 6)) continue;
+        if (found) return 0;             /* address-only API cannot choose a namespace */
+        found = r;
+    }
+    if (!found) return 0;
+    identity = *found;
+    if (db_forget(h, addr, identity.le, identity.addr_type) != BOND_COMMITTED) return 0;
     for (k = 0; k < HOST_MAX_PADS; k++) {
         link_t *l = &h->links[k];
-        if (l->used && memcmp(link_identity(l), addr, 6) == 0) {
+        if (l->used && l->le == identity.le && memcmp(link_identity(l), addr, 6) == 0 &&
+            (!l->le || l->le_s.id_type == identity.addr_type)) {
             send_unplug(h, l);
             link_disconnect(h, l, "forgotten from the web page");
         }
     }
-    db_forget(h, addr);
     log_line("pad %s: forgotten", addr_str(addr));
     return 1;
 }
@@ -2301,12 +2257,12 @@ int host_forget(host_t *h, const unsigned char addr[6])
  * left alone (none are expected right after opening). */
 int host_forget_all(host_t *h)
 {
-    int n = h->ndb;
+    int n = h->store.count;
 
     if (!n) return 0;
-    h->ndb = 0;
-    memset(h->db, 0, sizeof h->db);
-    db_save(h);
+    h->store.count = 0;
+    memset(h->store.records, 0, sizeof h->store.records);
+    if (db_save(h) != BOND_COMMITTED) return 0;
     log_line("store: %d paired pad(s) forgotten, the session starts clean", n);
     return n;
 }
@@ -2433,7 +2389,11 @@ static int setup(host_t *h)
         log_line("controller: page scan turned on (was %#x)", h->scan_orig);
     }
 
-    if (hci_sync(h, OP_READ_BD_ADDR, NULL, 0) && h->cc_len >= 12) memcpy(h->bdaddr, h->cc + 6, 6);
+    if (!hci_sync(h, OP_READ_BD_ADDR, NULL, 0) || h->cc_len < 12) {
+        log_line("store: local adapter identity unavailable");
+        return 0;
+    }
+    memcpy(h->bdaddr, h->cc + 6, 6);
     log_line("controller address %s", addr_str(h->bdaddr));
     chip_report(h);
     le_setup(h);
@@ -2469,6 +2429,7 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
     if (!h) return NULL;
     h->hci = hci;
     if (ev) h->ev = *ev;
+    if (strlen(db_path) >= sizeof h->db_path) { free(h); return NULL; }
     snprintf(h->db_path, sizeof h->db_path, "%s", db_path);
     {
         const char *slash = strrchr(db_path, '/');
@@ -2480,13 +2441,21 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
         int dir = slash ? (int)(slash - db_path) : 1;
         snprintf(h->ban_path, sizeof h->ban_path, "%.*s/ban.txt", dir, slash ? db_path : ".");
     }
-    db_load(h);
     ban_load(h);
     h->last_rx = now_ms();
     if (!setup(h)) {
         free(h);
         return NULL;
     }
+    memcpy(h->store.adapter.addr, h->bdaddr, 6);
+    if (hci.ops->chip_vendor) h->store.adapter.vid = (uint16_t)hci.ops->chip_vendor(hci.ctx);
+    if (hci.ops->chip_product) h->store.adapter.pid = (uint16_t)hci.ops->chip_product(hci.ctx);
+    h->store_error = bond_store_load(h->db_path, &h->store.adapter, &h->store);
+    if (h->store_error == BOND_MISSING) h->store_error = BOND_COMMITTED;
+    if (h->store_error != BOND_COMMITTED)
+        log_line("store: load failed, preserved: %s", bond_store_result_name(h->store_error));
+    h->committed = h->store;
+    log_line("store: %d paired pad(s)", h->store.count);
     /* An earlier run that was cut off may have left a search going on the
      * chip, which then refuses ours ("command disallowed") for a while. Ending
      * a search that is not running is harmless. */

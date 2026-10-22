@@ -7,9 +7,9 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 
-CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c
+CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c
 WEB    := src/web.c src/web_page.c
-HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 
 BUILD := build
 
@@ -31,8 +31,10 @@ $(BUILD)/test_web: $(CORE) $(WEB) tests/sim.c tests/test_web.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
 # The page against a simulated pad, to look at in a browser: make demo
-demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $(BUILD)/web_demo $^
+$(BUILD)/web_demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^ -lm
+
+demo: $(BUILD)/web_demo
 	./$(BUILD)/web_demo
 
 $(BUILD)/test_host: $(CORE) tests/sim.c tests/test_host.c | $(BUILD)
@@ -49,6 +51,9 @@ $(BUILD)/test_crypto: src/smp_crypto.c tests/test_crypto.c | $(BUILD)
 
 $(BUILD)/test_le: $(CORE) tests/sim_le.c tests/test_le.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DBOND_STORE_TEST -o $@ $^
 
 # The console source for virtual pads, against stand-ins for the console's libraries.
 $(BUILD)/test_vpad: src/ps5_vpad.c src/log.c src/util.c tests/test_vpad.c | $(BUILD)
@@ -74,8 +79,20 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+	cc $(HOST_CFLAGS) -Itests/usb_standin -Dopen=test_usb_open -Dclose=test_usb_close -Dioctl=test_usb_ioctl -Dusleep=test_usb_usleep -c -o $@ $<
+
+$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
+
+$(BUILD)/test_session: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+test: $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+	./$(BUILD)/test_bond_store
 	./$(BUILD)/test_usb
+	./$(BUILD)/test_hci_usb
+	./$(BUILD)/test_session
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
 	./$(BUILD)/test_vpad
@@ -93,6 +110,8 @@ SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-po
 fuzz: | $(BUILD)
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
 	./$(BUILD)/test_fuzz
+	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_bond_store_fuzz src/bond_store.c tests/test_bond_store_fuzz.c
+	./$(BUILD)/test_bond_store_fuzz
 
 # ---- the console payload ----------------------------------------------------
 

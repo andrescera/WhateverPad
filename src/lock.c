@@ -2,8 +2,10 @@
 #include "log.h"
 
 #include <sys/stat.h>
+#if defined(__FreeBSD__)
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#endif
 #include <sys/types.h>
 
 #include <errno.h>
@@ -19,12 +21,27 @@ static char g_path[256];
 
 long lock_boot_time(void)
 {
+#if defined(__FreeBSD__)
     int mib[2] = { CTL_KERN, KERN_BOOTTIME };
     struct timeval tv;
     size_t len = sizeof tv;
 
     if (sysctl(mib, 2, &tv, &len, NULL, 0) != 0) return 0;
     return (long)tv.tv_sec;
+#elif defined(__linux__)
+    FILE *f = fopen("/proc/stat", "r");
+    char line[256];
+    long boot = 0;
+
+    if (!f) return 0;
+    /* The kernel's boot timestamp avoids rounding two separately read clocks. */
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "btime %ld", &boot) == 1) break;
+    fclose(f);
+    return boot;
+#else
+    return 0;
+#endif
 }
 
 /* Is the lock at `path` held by a copy that is really running? */
