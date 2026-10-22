@@ -134,7 +134,8 @@ static const uint8_t *link_id_addr(const link_t *l)
 
 static db_rec *link_db(host_t *h, const link_t *l)
 {
-    return db_find(h, link_id_addr(l));
+    db_rec *r = bond_store_find(&h->store, 1, l->le_s.id_type, link_id_addr(l));
+    return r && r->complete && !r->repair_needed ? r : NULL;
 }
 
 /* A paired LE pad behind this advertised address: by address, or a
@@ -143,17 +144,18 @@ static db_rec *known_pad(host_t *h, uint8_t type, const uint8_t *a)
 {
     int i;
 
-    for (i = 0; i < h->ndb; i++) {
-        db_rec *d = &h->db[i];
-        if (d->le && d->addr_type == type && memcmp(d->addr, a, 6) == 0) return d;
+    for (i = 0; i < h->store.count; i++) {
+        db_rec *d = &h->store.records[i];
+        if (d->le && d->complete && !d->repair_needed &&
+            d->addr_type == type && memcmp(d->addr, a, 6) == 0) return d;
     }
     if (type != 1 || (a[5] & 0xC0) != 0x40) return NULL;   /* not resolvable */
-    for (i = 0; i < h->ndb; i++) {
-        db_rec *d = &h->db[i];
+    for (i = 0; i < h->store.count; i++) {
+        db_rec *d = &h->store.records[i];
         uint8_t irk[16];
         uint32_t hash = (uint32_t)a[0] | (uint32_t)a[1] << 8 | (uint32_t)a[2] << 16;
         uint32_t prand = (uint32_t)a[3] | (uint32_t)a[4] << 8 | (uint32_t)a[5] << 16;
-        if (!d->le || !d->has_irk) continue;
+        if (!d->le || !d->complete || d->repair_needed || !d->has_irk) continue;
         smp_reverse(irk, d->irk, 16);
         if (smp_ah(irk, prand) == hash) return d;
     }
@@ -421,12 +423,14 @@ void le_poll(host_t *h, long now)
 
     if (!h->le_ok) return;
     if (now < h->pair_until) want = 1;
-    for (i = 0; i < h->ndb && !want; i++) {
+    for (i = 0; i < h->store.count && !want; i++) {
         int linked = 0;
-        if (!h->db[i].le) continue;
+        if (!h->store.records[i].le || !h->store.records[i].complete ||
+            h->store.records[i].repair_needed) continue;
         for (j = 0; j < HOST_MAX_PADS; j++)
             if (h->links[j].used && h->links[j].le &&
-                memcmp(link_id_addr(&h->links[j]), h->db[i].addr, 6) == 0) linked = 1;
+                h->links[j].le_s.id_type == h->store.records[i].addr_type &&
+                memcmp(link_id_addr(&h->links[j]), h->store.records[i].addr, 6) == 0) linked = 1;
         if (!linked) want = 1;
     }
     for (i = 0; i < HOST_MAX_PADS; i++)
@@ -536,25 +540,18 @@ static void legacy_confirm(host_t *h, link_t *l, const uint8_t r[16], uint8_t ou
     smp_c1(tk, r, preq, pres, 0, l->le_s.addr_type, ia, ra, out);
 }
 
-/* Our identity key, made once and kept beside the pairing store. */
-static void load_host_irk(host_t *h)
+/* Stage our IRK in the same snapshot as the bond. Legacy .irk is migration input. */
+static int prepare_host_irk(host_t *h)
 {
-    char path[sizeof h->db_path + 8];
-    FILE *f;
-
-    if (h->le_irk_ok) return;
-    snprintf(path, sizeof path, "%s.irk", h->db_path);
-    f = fopen(path, "rb");
-    h->le_irk_ok = f && fread(h->le_irk, 1, 16, f) == 16;
-    if (f) fclose(f);
-    if (h->le_irk_ok) return;
-    rand_bytes(h->le_irk, 16);
-    f = fopen(path, "wb");
-    if (f) {
-        (void)fwrite(h->le_irk, 1, 16, f);
-        fclose(f);
-    }
-    h->le_irk_ok = 1;
+    int fd, ok;
+    if (h->store.has_irk) return 1;
+    fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ok = read(fd, h->store.local_irk, 16) == 16;
+    if (close(fd)) ok = 0;
+    if (!ok) return 0;
+    h->store.has_irk = 1;
+    return 1;
 }
 
 /* After the pad's keys, a pad that agreed to it gets ours: its identity key
@@ -566,8 +563,8 @@ static void send_host_identity(host_t *h, link_t *l)
     uint8_t identity[7];
 
     if (e->identity_sent || !(e->pres[5] & e->preq[5] & 0x02)) return;
-    load_host_irk(h);
-    smp_send(h, l, SMP_ID_INFO, h->le_irk, 16);
+    if (!h->committed.has_irk) return;
+    smp_send(h, l, SMP_ID_INFO, h->store.local_irk, 16);
     identity[0] = 0;                    /* public address, in HCI order */
     memcpy(identity + 1, h->bdaddr, 6);
     smp_send(h, l, SMP_ID_ADDR, identity, sizeof identity);
@@ -580,21 +577,33 @@ static void bond_save(host_t *h, link_t *l)
     le_link *e = &l->le_s;
     db_rec *d;
 
-    send_host_identity(h, l);
+    /* Never turn a lone distribution message into complete durable material. */
+    if (!e->sc && (e->key_messages & 3) != 3) {
+        e->smp = SMP_DONE;
+        log_line("store: incomplete LE encryption material, bond not remembered");
+        return;
+    }
 
-    if (e->keys_got & 0x02) {           /* the pad's identity address */
-        d = db_put(h, e->id_addr);
+    if ((e->key_messages & 12) == 12) { /* both identity messages */
+        d = db_put(h, e->id_addr, 1, e->id_type);
+        if (!d) { e->smp = SMP_DONE; return; }
         d->addr_type = e->id_type;
         memcpy(d->irk, e->dist_irk, 16);    /* kept as sent: LSB first */
         d->has_irk = 1;
     } else {
         memcpy(e->id_addr, l->addr, 6);
         e->id_type = e->addr_type;
-        d = db_put(h, l->addr);
+        d = db_put(h, l->addr, 1, e->addr_type);
+        if (!d) { e->smp = SMP_DONE; return; }
         d->addr_type = e->addr_type;
         d->has_irk = 0;
+        memset(d->irk, 0, sizeof d->irk);
     }
     d->le = 1;
+    d->type = 0;
+    d->complete = 1;
+    d->sc = (uint8_t)!!e->sc;
+    d->repair_needed = 0;
     if (e->sc) {
         smp_reverse(d->key, e->ltk, 16);
         d->ediv = 0;
@@ -608,7 +617,14 @@ static void bond_save(host_t *h, link_t *l)
         d->vid = l->vid;
         d->pid = l->pid;
     }
-    db_save(h);
+    if ((e->pres[5] & e->preq[5] & 0x02) && !prepare_host_irk(h)) {
+        h->store = h->committed;
+        e->smp = SMP_DONE;
+        log_line("store: local IRK entropy unavailable, bond not remembered");
+        return;
+    }
+    if (db_save(h) != BOND_COMMITTED) { e->smp = SMP_DONE; return; }
+    send_host_identity(h, l);
     e->bonded = 1;
     e->smp = SMP_DONE;
     log_line("le pad %s: paired (%s), keys stored", addr_str(l->addr), e->sc ? "Secure Connections" : "legacy");
@@ -618,6 +634,7 @@ static void smp_start(host_t *h, link_t *l)
 {
     le_link *e = &l->le_s;
 
+    e->keys_got = e->key_messages = 0;
     e->preq[0] = SMP_PAIRING_REQ;
     e->preq[1] = 0x03;                  /* NoInputNoOutput */
     e->preq[2] = 0x00;                  /* no OOB data */
@@ -763,22 +780,22 @@ static void on_smp(host_t *h, link_t *l, const uint8_t *d, int n)
         break;
 
     case SMP_ENC_INFO:
-        if (n >= 17) memcpy(e->dist_ltk, d + 1, 16);
+        if (n >= 17) { memcpy(e->dist_ltk, d + 1, 16); e->key_messages |= 1; }
         break;
     case SMP_CENTRAL_ID:
         if (n < 11) break;
         e->dist_ediv = (uint16_t)le16(d + 1);
         memcpy(e->dist_rand, d + 3, 8);
-        e->keys_got |= 0x01;
+        e->key_messages |= 2;
         break;
     case SMP_ID_INFO:
-        if (n >= 17) memcpy(e->dist_irk, d + 1, 16);
+        if (n >= 17) { memcpy(e->dist_irk, d + 1, 16); e->key_messages |= 4; }
         break;
     case SMP_ID_ADDR:
         if (n < 8) break;
         e->id_type = d[1];
         memcpy(e->id_addr, d + 2, 6);
-        e->keys_got |= 0x02;
+        e->key_messages |= 8;
         break;
 
     case SMP_SECURITY_REQ:              /* the pad asks for security */
@@ -792,6 +809,8 @@ static void on_smp(host_t *h, link_t *l, const uint8_t *d, int n)
         break;
     }
 
+    if ((e->key_messages & 3) == 3) e->keys_got |= 1;
+    if ((e->key_messages & 12) == 12) e->keys_got |= 2;
     if (e->smp == SMP_KEYS && (e->keys_got & e->keys_expected) == e->keys_expected)
         bond_save(h, l);
 }
@@ -815,7 +834,7 @@ void le_on_encryption(host_t *h, link_t *l, int status, int on)
     log_line("le pad %s: encryption failed (status %#04x)", addr_str(l->addr), status);
     if (e->bonded && !l->pairing && (status == 0x06 || status == 0x05)) {
         log_line("le pad %s: it forgot us; pair it again", addr_str(l->addr));
-        db_forget(h, link_id_addr(l));
+        db_forget(h, link_id_addr(l), 1, e->id_type);
     }
     link_disconnect(h, l, "encryption failed");
 }
@@ -1292,7 +1311,7 @@ void le_step(host_t *h, link_t *l, long now)
         return;
     }
     if (e->smp == SMP_KEYS && now - e->t_smp > T_KEYS) {
-        log_line("le pad %s: not every key came, storing what did", addr_str(l->addr));
+        log_line("le pad %s: key distribution timed out, checking completeness", addr_str(l->addr));
         bond_save(h, l);
     }
 

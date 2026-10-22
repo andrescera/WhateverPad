@@ -149,7 +149,9 @@ static int open_parent(const char *path, char name[256], int create)
         next = strtok_r(NULL, "/", &state);
         if (!strcmp(part, "..") || !strcmp(part, ".")) { errno = EINVAL; break; }
         if (!next) {
-            if (strlen(part) >= 256 || fstat(fd, &st) || st.st_uid != geteuid()) break;
+            if (strlen(part) >= 256) { errno = ENAMETOOLONG; break; }
+            if (fstat(fd, &st)) break;
+            if (st.st_uid != geteuid()) { errno = EPERM; break; }
             if (create && fchmod(fd, 0700)) break;
             memcpy(name, part, strlen(part) + 1);
             return fd;
@@ -177,8 +179,9 @@ static bond_result load_at(int dir, const char *name, const bond_adapter *adapte
     int fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         if (errno != ENOENT) return BOND_ERROR;
-        memset(out, 0, sizeof *out); out->adapter = *adapter;
-        return address_ok(adapter->addr) ? BOND_MISSING : BOND_ADAPTER;
+        if (!address_ok(adapter->addr)) return BOND_ADAPTER;
+        { bond_store empty = { .adapter = *adapter }; *out = empty; }
+        return BOND_MISSING;
     }
     if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != geteuid()) {
         close(fd); return BOND_ERROR;
@@ -201,7 +204,7 @@ bond_result bond_store_load(const char *path, const bond_adapter *adapter, bond_
     if (dir < 0) {
         if (errno != ENOENT) return BOND_ERROR;
         if (!address_ok(adapter->addr)) return BOND_ADAPTER;
-        memset(out, 0, sizeof *out); out->adapter = *adapter;
+        { bond_store empty = { .adapter = *adapter }; *out = empty; }
         return BOND_MISSING;
     }
     result = load_at(dir, name, adapter, out);

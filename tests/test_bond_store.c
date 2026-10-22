@@ -91,6 +91,23 @@ static void parser(void)
         bad[invalid_offsets[i]] = 0x80;
         assert(bond_store_decode(bad, 192, &adapter, &s) == BOND_INVALID);
     }
+    for (i = 1; i < 16; i++) {
+        memcpy(bad, b, 192);
+        put16(bad + 26, 1u | (1u << i));
+        assert(bond_store_decode(bad, 192, &adapter, &s) == BOND_INVALID);
+    }
+    for (i = 4; i < 8; i++) {
+        memcpy(bad, b, 192); bad[153] |= (uint8_t)(1u << i);
+        assert(bond_store_decode(bad, 192, &adapter, &s) == BOND_INVALID);
+    }
+    for (i = 44; i < 64; i++) {
+        memcpy(bad, b, 192); bad[i] = 1;
+        assert(bond_store_decode(bad, 192, &adapter, &s) == BOND_INVALID);
+    }
+    for (i = 184; i < 192; i++) {
+        memcpy(bad, b, 192); bad[i] = 1;
+        assert(bond_store_decode(bad, 192, &adapter, &s) == BOND_INVALID);
+    }
     memcpy(bad, b, 192); bad[8] = 2;
     assert(bond_store_decode(bad, 192, &adapter, &s) == BOND_VERSION);
     memcpy(bad, b, 192); bad[14] = 0xff; bad[15] = 0xff;
@@ -223,6 +240,10 @@ static void failures(void)
       assert(fd >= 0 && write(fd, stale, 192) == 192 && close(fd) == 0); }
     assert(bond_store_load(path, &adapter, &loaded) == BOND_MISSING);
     assert(loaded.count == 0 && !loaded.has_irk);
+    /* The host loads with its adapter inside the destination snapshot. */
+    loaded.adapter = adapter;
+    assert(bond_store_load(path, &loaded.adapter, &loaded) == BOND_MISSING);
+    assert(memcmp(&loaded.adapter, &adapter, sizeof adapter) == 0);
     assert(bond_store_save(path, &next) == BOND_COMMITTED);
     assert(unlink(tmp) == 0);
     assert(unlink(path) == 0);

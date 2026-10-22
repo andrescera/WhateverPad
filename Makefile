@@ -7,7 +7,7 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 
-CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c
+CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c
 WEB    := src/web.c src/web_page.c
 HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 
@@ -99,6 +99,8 @@ SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-po
 fuzz: | $(BUILD)
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
 	./$(BUILD)/test_fuzz
+	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_bond_store_fuzz src/bond_store.c tests/test_bond_store_fuzz.c
+	./$(BUILD)/test_bond_store_fuzz
 
 # ---- the console payload ----------------------------------------------------
 

@@ -2,6 +2,7 @@
  * controller and pad. */
 #include "sim_le.h"
 #include "../src/host.h"
+#include "../src/host_int.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -178,8 +179,18 @@ static void xbox_identity_once(int sc)
     sim_le_t *sim;
     host_t *h;
     seen s;
+    uint8_t saved_irk[16], legacy[16], got[17];
+    char legacy_path[128];
+    FILE *f;
 
     unlink(DB);
+    memset(legacy, 0x37, sizeof legacy);
+    snprintf(legacy_path, sizeof legacy_path, "%s.irk", DB);
+    f = fopen(legacy_path, "wb");
+    CHECK(f != NULL);
+    if (!f) return;
+    CHECK(fwrite(legacy, 1, sizeof legacy, f) == sizeof legacy);
+    CHECK(fclose(f) == 0);
     memset(&s, 0, sizeof s);
     xbox_pad(&pad, sc, 1);
     pad.wants_identity = 1;
@@ -205,7 +216,19 @@ static void xbox_identity_once(int sc)
     CHECK(sim_le_error(sim) == NULL);
     CHECK(s.connects == 1 && sim_le_pairings(sim) == 1);
     CHECK(s.states > 0 && (s.last.buttons & 0x4000));
+    CHECK(h->store.has_irk);
+    memcpy(saved_irk, h->store.local_irk, 16);
     host_close(h);
+    h = open_host(sim, &s);
+    CHECK(h && h->store.has_irk && !memcmp(h->store.local_irk, saved_irk, 16));
+    host_close(h);
+    f = fopen(legacy_path, "rb");
+    CHECK(f != NULL);
+    if (f) {
+        CHECK(fread(got, 1, sizeof got, f) == 16 && !memcmp(got, legacy, 16));
+        CHECK(fclose(f) == 0);
+    }
+    CHECK(unlink(legacy_path) == 0);
     sim_le_free(sim);
 }
 
@@ -422,8 +445,68 @@ static void test_stress(void)
     if (ok < runs) g_fail++;
 }
 
+/* Distribution messages may arrive reversed, alone, or be truncated. Nonzero
+ * key bytes do not prove that the matching identification message arrived. */
+static void test_key_completeness(void)
+{
+    sim_le_pad pad;
+    sim_le_t *sim;
+    host_t *h;
+    link_t *l;
+    seen s = {0};
+    uint8_t enc[17] = {0x06}, central[11] = {0x07};
+    uint8_t irk[17] = {0x08}, identity[8] = {0x09, 0};
+    bond_store reopened;
+    int reverse;
+
+    printf("LE durable material requires both messages, in either order\n");
+    for (reverse = 0; reverse < 2; reverse++) {
+        unlink(DB);
+        xbox_pad(&pad, 0, 0);
+        sim = sim_le_new(&pad);
+        h = open_host(sim, &s);
+        CHECK(h != NULL);
+        if (!h) { sim_le_free(sim); return; }
+        l = link_new(h, pad.addr);
+        CHECK(l != NULL);
+        if (!l) { host_close(h); sim_le_free(sim); return; }
+        l->le = 1;
+        l->connected = 1;
+        l->t_conn = sim_le_now();
+        l->le_s.keys_expected = 3;
+        memset(enc + 1, 0x42, 16);
+        memset(irk + 1, 0x53, 16);
+        memcpy(identity + 2, pad.addr, 6);
+        le_on_frame(h, l, 6, reverse ? central : enc, reverse ? 11 : 17);
+        le_on_frame(h, l, 6, reverse ? identity : irk, reverse ? 8 : 17);
+        CHECK(l->le_s.keys_got == 0);
+        /* Exercise the actual encryption -> distribution timeout path. */
+        l->le_s.smp = 7;                 /* SMP_ENCRYPTING, private state in le.c */
+        le_on_encryption(h, l, 0, 1);
+        le_step(h, l, sim_le_now() + 4000);
+        CHECK(host_paired_count(h) == 0 && access(DB, F_OK) != 0);
+        l->le_s.smp = 7;
+        le_on_encryption(h, l, 0, 1);
+        le_on_frame(h, l, 6, reverse ? enc : central, reverse ? 16 : 10);
+        le_on_frame(h, l, 6, reverse ? irk : identity, reverse ? 16 : 7);
+        CHECK(l->le_s.keys_got == 0);     /* truncated counterparts ignored */
+        le_on_frame(h, l, 6, reverse ? enc : central, reverse ? 17 : 11);
+        CHECK(l->le_s.keys_got == 1 && host_paired_count(h) == 0);
+        le_on_frame(h, l, 6, reverse ? irk : identity, reverse ? 17 : 8);
+        CHECK(l->le_s.keys_got == 3 && host_paired_count(h) == 1);
+        CHECK(bond_store_load(DB, &h->store.adapter, &reopened) == BOND_COMMITTED);
+        CHECK(reopened.count == 1 && reopened.records[0].complete && reopened.records[0].has_irk);
+        CHECK(!memcmp(reopened.records[0].key, enc + 1, 16));
+        CHECK(!memcmp(reopened.records[0].irk, irk + 1, 16));
+        link_free(h, l);
+        host_close(h);
+        sim_le_free(sim);
+    }
+}
+
 int main(void)
 {
+    test_key_completeness();
     test_xbox_sc();
     test_reconnect_rpa();
     test_xbox_identity();

@@ -775,7 +775,7 @@ static int op_next_acl(void *ctx, unsigned char *out, int max)
 
 static void op_close(void *ctx) { (void)ctx; }
 
-static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, NULL, NULL, NULL, NULL, NULL };
+static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 
 /* ---- public ------------------------------------------------------------------ */
 
