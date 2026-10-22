@@ -9,7 +9,7 @@ PS5_PORT ?= 9021
 
 CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c
 WEB    := src/web.c src/web_page.c
-HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 
 BUILD := build
 
@@ -31,8 +31,10 @@ $(BUILD)/test_web: $(CORE) $(WEB) tests/sim.c tests/test_web.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
 # The page against a simulated pad, to look at in a browser: make demo
-demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $(BUILD)/web_demo $^
+$(BUILD)/web_demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^ -lm
+
+demo: $(BUILD)/web_demo
 	./$(BUILD)/web_demo
 
 $(BUILD)/test_host: $(CORE) tests/sim.c tests/test_host.c | $(BUILD)

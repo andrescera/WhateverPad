@@ -6,13 +6,14 @@
 #include <sys/wait.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static int g_fail;
-#define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+static int g_fail, g_checks;
+#define CHECK(c) do { g_checks++; if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
-#define LOCK "build/test_lock.lock"
+static char LOCK[256];
 
 static void write_lock(const char *text)
 {
@@ -32,11 +33,16 @@ static pid_t dead_pid(void)
 int main(void)
 {
     char text[64];
+    char dir[] = "/tmp/whateverpad-lock-XXXXXX";
     long boot = lock_boot_time();
     struct timeval old[2];
 
     printf("the instance lock\n");
+    CHECK(mkdtemp(dir) != NULL);
+    if (g_fail) return 1;
+    snprintf(LOCK, sizeof LOCK, "%s/instance.lock", dir);
     CHECK(boot > 1000000000L);                      /* the boot time is readable */
+    CHECK(lock_boot_time() == boot);
     unlink(LOCK);
 
     CHECK(lock_take(LOCK));                         /* free: taken */
@@ -46,6 +52,16 @@ int main(void)
         CHECK(f && fscanf(f, "%ld %ld", &pid, &b) == 2 && pid == (long)getpid() && b == boot);
         if (f) fclose(f);
     }
+    {
+        pid_t child = fork();
+        int status = 0;
+        CHECK(child >= 0);
+        if (child == 0) _exit(lock_take(LOCK) ? 1 : 0);
+        if (child > 0) {
+            CHECK(waitpid(child, &status, 0) == child);
+            CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        }
+    }
     lock_release();
     CHECK(access(LOCK, F_OK) != 0);                 /* released: gone */
 
@@ -53,6 +69,12 @@ int main(void)
     write_lock(text);
     CHECK(!lock_take(LOCK));                        /* a live owner of this boot: refused */
     CHECK(access(LOCK, F_OK) == 0);                 /* and its lock is left alone */
+    {
+        char actual[64] = {0};
+        FILE *f = fopen(LOCK, "r");
+        CHECK(f && fgets(actual, sizeof actual, f) && strcmp(actual, text) == 0);
+        if (f) fclose(f);
+    }
 
     snprintf(text, sizeof text, "%d %ld\n", (int)dead_pid(), boot);
     write_lock(text);
@@ -80,6 +102,7 @@ int main(void)
     CHECK(lock_take(LOCK));                         /* empty: stale */
     lock_release();
 
-    printf(g_fail ? "%d check(s) failed\n" : "all lock checks passed\n", g_fail);
+    CHECK(rmdir(dir) == 0);
+    printf("%d lock checks, %d failed\n", g_checks, g_fail);
     return g_fail != 0;
 }

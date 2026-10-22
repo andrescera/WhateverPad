@@ -5,13 +5,14 @@
 #include "../src/util.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 int sdp_find_ids(const unsigned char *p, int n, uint16_t *vid, uint16_t *pid);
 
-static int g_fail;
-#define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+static int g_fail, g_checks;
+#define CHECK(c) do { g_checks++; if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
 typedef struct {
     int connects, disconnects, states, slot;
@@ -42,7 +43,44 @@ static void on_disconnect(void *ud, int slot)
     s->disconnects++;
 }
 
-static const char *DB = "build/test_pads.db";
+static char fixture_dir[] = "/tmp/whateverpad-host-XXXXXX";
+static char DB[128], BAN[128];
+static unsigned fixture_case;
+
+static void clear_db(void)
+{
+    char path[160];
+    if (!DB[0]) return;
+    unlink(DB);
+    snprintf(path, sizeof path, "%s.new", DB);
+    unlink(path);
+    snprintf(path, sizeof path, "%s.irk", DB);
+    unlink(path);
+}
+
+static int fixture_init(void)
+{
+    if (!mkdtemp(fixture_dir)) { perror("mkdtemp"); return 0; }
+    snprintf(BAN, sizeof BAN, "%s/ban.txt", fixture_dir);
+    printf("FIXTURE dir=%s\n", fixture_dir);
+    return 1;
+}
+
+static void next_db(void)
+{
+    clear_db();
+    snprintf(DB, sizeof DB, "%s/case-%u.db", fixture_dir, ++fixture_case);
+    CHECK(access(DB, F_OK) != 0);
+}
+
+static void fixture_cleanup(void)
+{
+    clear_db();
+    unlink(BAN);
+    CHECK(rmdir(fixture_dir) == 0);
+}
+
+#define RUN_TEST(call) do { next_db(); call; } while (0)
 
 /* A DualShock 4 full report 0x11: cross and dpad-up held, left stick at
  * (0x20, 0xE0), L2 half pressed. */
@@ -86,7 +124,7 @@ static int test_pairing_seed(int drop_every, unsigned seed, int quiet)
     int fail_before = g_fail;
 
     if (!quiet) printf("pairing a DualShock 4 (dropping every %d packets)\n", drop_every);
-    unlink(DB);
+    next_db();
     memset(&pad, 0, sizeof pad);
     memset(&s, 0, sizeof s);
     pad.mode = SIM_WAIT_PAIRING;
@@ -182,7 +220,36 @@ static void test_reconnect(void)
     pad.report_len = ds4_report(pad.report);
     pad.needs_output = 1;
 
-    /* The pad keeps the key it got when it was paired in the test before. */
+    /* Without this case's enrollment, no previous test can supply a bond. */
+    CHECK(access(DB, F_OK) != 0);
+    sim = sim_new(&pad);
+    h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_free(sim); return; }
+    CHECK(host_paired_count(h) == 0);
+    sim_power_on(sim);
+    run(h, 3000);
+    CHECK(s.connects == 0);
+    CHECK(!sim_link_up(sim));
+    host_close(h);
+    sim_free(sim);
+
+    pad.mode = SIM_WAIT_PAIRING;
+    memset(&s, 0, sizeof s);
+    sim = sim_new(&pad);
+    h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_free(sim); return; }
+    host_pair(h, 30);
+    run(h, 15000);
+    CHECK(s.connects == 1);
+    CHECK(host_paired_count(h) == 1);
+    host_close(h);
+    sim_free(sim);
+
+    /* Reopen only the bond produced by this case's own pairing. */
+    pad.mode = SIM_RECONNECT;
+    memset(&s, 0, sizeof s);
     {
         FILE *f = fopen(DB, "rb");
         unsigned char rec[8 + 64];      /* magic, then the first record */
@@ -195,7 +262,7 @@ static void test_reconnect(void)
     }
     h = open_host(sim, &s);
     CHECK(h != NULL);
-    if (!h) return;
+    if (!h) { sim_free(sim); return; }
 
     sim_power_on(sim);
     run(h, 8000);
@@ -638,7 +705,7 @@ static void test_pairing_event_lost(void)
         host_t *h;
         seen s;
 
-        unlink(DB);
+        next_db();
         memset(&pad, 0, sizeof pad);
         memset(&s, 0, sizeof s);
         pad.mode = SIM_WAIT_PAIRING;
@@ -769,7 +836,7 @@ static void test_dualsense_by_eir(void)
         host_t *h;
         seen s;
 
-        unlink(DB);
+        next_db();
         memset(&pad, 0, sizeof pad);
         memset(&s, 0, sizeof s);
         pad.mode = SIM_WAIT_PAIRING;
@@ -806,7 +873,7 @@ static void test_ban_list(void)
 
     printf("a banned address is never looked at; others pair as always\n");
     unlink(DB);
-    f = fopen("build/ban.txt", "w");
+    f = fopen(BAN, "w");
     CHECK(f != NULL);
     if (!f) return;
     fputs("# the console's own DualSense\n0A:0B:0C:0D:0E:0F\n06:05:04:03:02:01  # banned test pad\n", f);
@@ -831,7 +898,7 @@ static void test_ban_list(void)
     host_close(h);
     sim_free(sim);
 
-    unlink("build/ban.txt");                                    /* without the ban the same pad pairs */
+    unlink(BAN);                                              /* without the ban the same pad pairs */
     unlink(DB);
     memset(&s, 0, sizeof s);
     sim = sim_new(&pad);
@@ -883,7 +950,7 @@ static void test_unknown_call_left_alone(void)
 
     printf("an unpaired caller is neither taken nor turned down\n");
     for (round = 0; round < 2; round++) {
-        unlink(DB);
+        next_db();
         memset(&pad, 0, sizeof pad);
         memset(&s, 0, sizeof s);
         pad.mode = SIM_RECONNECT;
@@ -1246,7 +1313,7 @@ static void test_discovery_regressions(void)
         unsigned char r[255];
         static const unsigned char addr[6] = {1, 2, 3, 4, 5, 6};
         static const unsigned char ds[] = {9, 0x10, 2, 0, 0x4c, 5, 0xe6, 0x0c, 0, 1};
-        unlink(DB);
+        next_db();
         pad.mode = SIM_RECONNECT; /* no automatic discovery replies */
         memcpy(pad.addr, addr, 6);
         pad.cod = 0x002508; pad.vid = 0x054c; pad.pid = 0x05c4;
@@ -1310,39 +1377,49 @@ static void test_discovery_regressions(void)
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    test_discovery_regressions();
-    test_sdp_parse();
-    test_pairing(0);
-    test_reconnect();
-    test_ban_list();
-    test_forget_unplugs();
-    test_empty_answer_waits();
-    test_repage_after_timeout();
-    test_busy_radio_lightened();
-    test_calls_left_to_system();
-    test_idle_reads();
-    test_pad_own_call_turned_down();
-    test_fresh_link_on_no_resources();
-    test_pairing_event_lost();
-    test_dualsense_pending_cancelled();
-    test_pair_waits_for_pause();
-    test_inquiry_watchdog();
-    test_dualsense_by_eir();
-    test_unknown_call_left_alone();
-    test_pairing(7);
-    test_stale_link();
-    test_unknown_pad_refused();
-    test_transport_lost();
-    test_restore();
-    test_dead_controller();
-    test_garbage();
-    test_generic_pad();
-    test_switch_pad();
-    test_switch_pad_late();
-    test_sdp_two_step();
-    test_pairing_stress();
-    printf(g_fail ? "%d check(s) failed\n" : "all host checks passed\n", g_fail);
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--reconnect") != 0)) {
+        fprintf(stderr, "usage: %s [--reconnect]\n", argv[0]);
+        return 1;
+    }
+    if (!fixture_init()) return 1;
+    if (argc == 2) {
+        RUN_TEST(test_reconnect());
+    } else {
+        RUN_TEST(test_discovery_regressions());
+        RUN_TEST(test_sdp_parse());
+        RUN_TEST(test_pairing(0));
+        RUN_TEST(test_reconnect());
+        RUN_TEST(test_ban_list());
+        RUN_TEST(test_forget_unplugs());
+        RUN_TEST(test_empty_answer_waits());
+        RUN_TEST(test_repage_after_timeout());
+        RUN_TEST(test_busy_radio_lightened());
+        RUN_TEST(test_calls_left_to_system());
+        RUN_TEST(test_idle_reads());
+        RUN_TEST(test_pad_own_call_turned_down());
+        RUN_TEST(test_fresh_link_on_no_resources());
+        RUN_TEST(test_pairing_event_lost());
+        RUN_TEST(test_dualsense_pending_cancelled());
+        RUN_TEST(test_pair_waits_for_pause());
+        RUN_TEST(test_inquiry_watchdog());
+        RUN_TEST(test_dualsense_by_eir());
+        RUN_TEST(test_unknown_call_left_alone());
+        RUN_TEST(test_pairing(7));
+        RUN_TEST(test_stale_link());
+        RUN_TEST(test_unknown_pad_refused());
+        RUN_TEST(test_transport_lost());
+        RUN_TEST(test_restore());
+        RUN_TEST(test_dead_controller());
+        RUN_TEST(test_garbage());
+        RUN_TEST(test_generic_pad());
+        RUN_TEST(test_switch_pad());
+        RUN_TEST(test_switch_pad_late());
+        RUN_TEST(test_sdp_two_step());
+        RUN_TEST(test_pairing_stress());
+    }
+    fixture_cleanup();
+    printf("%d host checks, %d failed\n", g_checks, g_fail);
     return g_fail != 0;
 }

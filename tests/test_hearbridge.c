@@ -16,6 +16,7 @@ static void ready(void *ud, int slot, const pad_info *info)
 int main(void)
 {
     int kind, scenario;
+    if (!fixture_init()) return 1;
     for (kind = 0; kind < 2; kind++) for (scenario = 0; scenario < 5; scenario++) {
         sim_pad p = {0};
         seen s = {0};
@@ -24,7 +25,7 @@ int main(void)
         long start;
         host_events ev = { ready, on_state, on_disconnect, &s, NULL };
         unsigned char addr[6] = {1, 2, 3, 4, 5, 6};
-        unlink(DB);
+        next_db();
         p.mode = SIM_WAIT_PAIRING;
         memcpy(p.addr, addr, 6); p.cod = 0x002508;
         p.vid = kind ? 0x057e : 0x054c; p.pid = kind ? 0x2009 : 0x05c4;
@@ -40,7 +41,7 @@ int main(void)
         p.no_cfg_repeat = scenario == 2;
         p.refuse_count = scenario == 3 ? 2 : scenario == 4 ? -1 : 0;
         sim = sim_new(&p); h = host_open(sim_hci(sim), DB, &ev);
-        CHECK(h != NULL); if (!h) return 1;
+        CHECK(h != NULL); if (!h) { sim_free(sim); fixture_cleanup(); return 1; }
         start = sim_now(); ready_at = 0;
         host_pair(h, 5);
         run(h, 3000);
@@ -60,5 +61,7 @@ int main(void)
                sim_channel_requests(sim), sim_cfg_responses(sim), sim_tx_hash(sim), s.connects);
         host_close(h); sim_free(sim);
     }
+    fixture_cleanup();
+    printf("%d HearBridge checks, %d failed\n", g_checks, g_fail);
     return g_fail != 0;
 }
