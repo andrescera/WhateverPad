@@ -52,6 +52,9 @@ $(BUILD)/test_crypto: src/smp_crypto.c tests/test_crypto.c | $(BUILD)
 $(BUILD)/test_le: $(CORE) tests/sim_le.c tests/test_le.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DBOND_STORE_TEST -o $@ $^
+
 # The console source for virtual pads, against stand-ins for the console's libraries.
 $(BUILD)/test_vpad: src/ps5_vpad.c src/log.c src/util.c tests/test_vpad.c | $(BUILD)
 	cc -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE -o $@ $^
@@ -76,7 +79,8 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+test: $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+	./$(BUILD)/test_bond_store
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
