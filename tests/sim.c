@@ -1,6 +1,7 @@
 #include "sim.h"
 #include "../src/util.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,7 +37,11 @@ struct sim {
     int stale_cleared;
     int disconnect_requests, inquiry_during_setup, create_requests;
     sim_pad pad;
-    queue ev, acl;
+    queue ev, acl, system;
+    struct { unsigned char data[257]; int len; long due; unsigned order; } delayed[32];
+    unsigned schedule_order;
+    int delay_code, delay_left, delay_ms, foreign_commands, consumed_requests;
+    sim_lifetime life;
     int connected, enc, has_key, got_output;
     unsigned char key[16];
     rchan sdp, ctrl, intr;
@@ -102,18 +107,62 @@ static int q_get(queue *q, unsigned char *out, int max)
 
 /* ---- what the controller reports ------------------------------------------ */
 
-static void event(sim_t *s, unsigned char code, const unsigned char *p, int n)
+static void deliver_event(sim_t *s, const unsigned char *e, int n)
 {
-    unsigned char e[260];
+    if (!s->life.event_reads || sim_now() < s->yield_until || !s->ev_reads) {
+        assert(s->system.count < QLEN);
+        q_put(&s->system, e, n);
+        s->left_to_system++;
+    } else {
+        q_put(&s->ev, e, n);
+    }
+}
 
-    if (sim_now() < s->yield_until) return;     /* left to "the system" */
-    if (s->ev_reads == 0) { s->left_to_system++; return; }   /* no reads of ours pending */
-    if (s->drop_left > 0 && code == s->drop_code) { s->drop_left--; return; }
+void sim_schedule_event(sim_t *s, unsigned char code, const unsigned char *p, int n, int delay_ms)
+{
+    unsigned char e[257];
+    int i;
 
+    assert(n >= 0 && n <= 255 && delay_ms >= 0);
     e[0] = code;
     e[1] = (unsigned char)n;
     memcpy(e + 2, p, (size_t)n);
-    q_put(&s->ev, e, 2 + n);
+    if (!delay_ms) { deliver_event(s, e, n + 2); return; }
+    for (i = 0; i < 32 && s->delayed[i].len; i++) {}
+    assert(i < 32);
+    memcpy(s->delayed[i].data, e, (size_t)n + 2);
+    s->delayed[i].len = n + 2;
+    s->delayed[i].due = sim_now() + delay_ms;
+    s->delayed[i].order = ++s->schedule_order;
+}
+
+static void due_events(sim_t *s)
+{
+    int i, next;
+    for (;;) {
+        next = -1;
+        for (i = 0; i < 32; i++) {
+            if (!s->delayed[i].len || s->delayed[i].due > sim_now()) continue;
+            if (next < 0 || s->delayed[i].due < s->delayed[next].due ||
+                (s->delayed[i].due == s->delayed[next].due &&
+                 s->delayed[i].order < s->delayed[next].order)) next = i;
+        }
+        if (next < 0) return;
+        deliver_event(s, s->delayed[next].data, s->delayed[next].len);
+        s->delayed[next].len = 0;
+    }
+}
+
+static void event(sim_t *s, unsigned char code, const unsigned char *p, int n)
+{
+    if (s->drop_left > 0 && code == s->drop_code) { s->drop_left--; return; }
+    if (s->delay_left > 0 && code == s->delay_code) {
+        s->delay_left--;
+        if (s->delay_ms < 0) return;
+        sim_schedule_event(s, code, p, n, s->delay_ms);
+    } else {
+        sim_schedule_event(s, code, p, n, 0);
+    }
 }
 
 static void cmd_complete(sim_t *s, unsigned op, const unsigned char *ret, int n)
@@ -190,6 +239,7 @@ static void acl_to_host(sim_t *s, unsigned cid, const unsigned char *d, int n)
 {
     unsigned char pkt[PKT];
 
+    if (!s->life.acl_reads) return;
     put16(pkt, HANDLE | 0x2000);
     put16(pkt + 2, (unsigned)(4 + n));
     put16(pkt + 4, (unsigned)n);
@@ -452,8 +502,11 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     sim_t *s = ctx;
     const unsigned char *p = params;
 
-    (void)plen;
+    if (!s->life.acl_reads) return 0;
     if (s->deaf) return 1;
+    if ((op == 0x0405 || op == 0x0409 || op == 0x040A || op == 0x040B ||
+         op == 0x040C) && plen >= 6 && memcmp(p, s->pad.addr, 6) != 0)
+        s->foreign_commands++;
     trace_tx(s, op, p, plen);
     switch (op) {
     case 0x0C55: {      /* Read Simple Pairing Mode */
@@ -662,6 +715,7 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     int n;
     unsigned char ncp[5];
 
+    if (!s->life.acl_reads) return 0;
     trace_tx(s, 0x10000, pkt, len);
     if (len < 8 || !s->connected) return 1;
     n = (int)le16(pkt + 4);
@@ -763,6 +817,8 @@ static int op_pump(void *ctx, int timeout_ms)
     sim_t *s = ctx;
 
     g_clock += timeout_ms > 0 ? timeout_ms : 1;
+    due_events(s);
+    if (!s->life.acl_reads) return -1;
     if (s->deaf) return 0;
     pad_step(s);
     return s->ev.count || s->acl.count;
@@ -786,7 +842,10 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
     int n;
 
     while ((n = q_get(&s->ev, out, max)) > 0)
-        if (out[0] != 0x13 || !lose(s)) return n;
+        if (out[0] != 0x13 || !lose(s)) {
+            if (out[0] == 0x04) s->consumed_requests++;
+            return n;
+        }
     return 0;
 }
 
@@ -800,16 +859,40 @@ static int op_next_acl(void *ctx, unsigned char *out, int max)
     return 0;
 }
 
-static void op_close(void *ctx) { (void)ctx; }
+static void op_close(void *ctx)
+{
+    sim_t *s = ctx;
+    if (!s->life.acl_reads) return;
+    s->life.event_stops += sim_event_reads(s);
+    s->life.acl_stops += s->life.acl_reads;
+    s->life.event_reads = s->life.acl_reads = 0;
+    s->life.uninits++;
+    s->life.closes++;
+    /* Queued bridge traffic is discarded, never forwarded to the system. */
+    s->ev.count = s->acl.count = 0;
+}
 
 static int g_diag_calls;
 static void op_diag(void *ctx) { (void)ctx; g_diag_calls++; }
 int sim_diag_calls(void) { return g_diag_calls; }
 static int g_yields;
-static void op_yield(void *ctx, int ms) { g_yields++; ((sim_t *)ctx)->yield_until = sim_now() + ms; }
+static void op_yield(void *ctx, int ms)
+{
+    sim_t *s = ctx;
+    g_yields++;
+    s->life.event_stops += sim_event_reads(s);
+    s->yield_until = sim_now() + ms;
+}
 int sim_yields(void) { return g_yields; }
 
-static void op_event_reads(void *ctx, int n) { ((sim_t *)ctx)->ev_reads = n; }
+static void op_event_reads(void *ctx, int n)
+{
+    sim_t *s = ctx;
+    int before = sim_event_reads(s);
+    assert(n >= 0 && n <= 40);
+    s->ev_reads = n;
+    if (before > sim_event_reads(s)) s->life.event_stops += before - sim_event_reads(s);
+}
 
 static const hci_ops k_sim_ops = {
     op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, NULL, op_event_reads, NULL, NULL,
@@ -840,17 +923,28 @@ void sim_free(sim_t *s) { free(s); }
 hci_t sim_hci(sim_t *s)
 {
     hci_t h = { &k_sim_ops, s };
+    if (!s->life.acl_reads) {
+        s->life.opens++;
+        s->life.event_reads = s->ev_reads = 40;
+        s->life.acl_reads = 20;
+        s->yield_until = 0;
+    }
     return h;
 }
 
 void sim_power_on(sim_t *s)
 {
+    sim_peer_request(s, s->pad.addr, s->pad.cod);
+}
+
+void sim_peer_request(sim_t *s, const unsigned char addr[6], uint32_t cod)
+{
     unsigned char p[10];
 
-    memcpy(p, s->pad.addr, 6);
-    p[6] = (unsigned char)s->pad.cod;
-    p[7] = (unsigned char)(s->pad.cod >> 8);
-    p[8] = (unsigned char)(s->pad.cod >> 16);
+    memcpy(p, addr, 6);
+    p[6] = (unsigned char)cod;
+    p[7] = (unsigned char)(cod >> 8);
+    p[8] = (unsigned char)(cod >> 16);
     p[9] = 1;
     event(s, 0x04, p, 10);
 }
@@ -928,7 +1022,7 @@ void sim_set_page_scan(sim_t *s, unsigned iv, unsigned win) { s->ps_iv = iv; s->
 void sim_get_page_scan(const sim_t *s, unsigned *iv, unsigned *win) { *iv = s->ps_iv; *win = s->ps_win; }
 void sim_busy_radio(sim_t *s, int on) { s->busy_radio = on; }
 const unsigned char *sim_event_mask(const sim_t *s) { return s->evmask; }
-int sim_event_reads(const sim_t *s) { return s->ev_reads; }
+int sim_event_reads(const sim_t *s) { return s->life.event_reads && sim_now() >= s->yield_until ? s->ev_reads : 0; }
 void sim_pad_calls_pending(sim_t *s) { s->incoming_pending = 1; }
 int sim_left_to_system(const sim_t *s) { return s->left_to_system; }
 void sim_drop_events(sim_t *s, int code, int n) { s->drop_code = code; s->drop_left = n; }
@@ -949,3 +1043,17 @@ int sim_create_requests(const sim_t *s) { return s->create_requests; }
 int sim_channel_requests(const sim_t *s) { return s->channel_requests; }
 unsigned sim_tx_hash(const sim_t *s) { return s->tx_hash; }
 int sim_cfg_responses(const sim_t *s) { return s->cfg_responses; }
+
+void sim_delay_events(sim_t *s, int code, int count, int delay_ms)
+{
+    s->delay_code = code; s->delay_left = count; s->delay_ms = delay_ms;
+}
+int sim_system_event(sim_t *s, unsigned char *out, int max) { return q_get(&s->system, out, max); }
+int sim_consumed_requests(const sim_t *s) { return s->consumed_requests; }
+int sim_foreign_commands(const sim_t *s) { return s->foreign_commands; }
+sim_lifetime sim_resources(const sim_t *s)
+{
+    sim_lifetime life = s->life;
+    life.event_reads = sim_event_reads(s);
+    return life;
+}

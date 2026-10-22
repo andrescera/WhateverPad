@@ -76,8 +76,19 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+	cc $(HOST_CFLAGS) -Itests/usb_standin -Dopen=test_usb_open -Dclose=test_usb_close -Dioctl=test_usb_ioctl -Dusleep=test_usb_usleep -c -o $@ $<
+
+$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
+
+$(BUILD)/test_session: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+test: $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
 	./$(BUILD)/test_usb
+	./$(BUILD)/test_hci_usb
+	./$(BUILD)/test_session
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
 	./$(BUILD)/test_vpad
