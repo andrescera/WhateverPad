@@ -54,14 +54,23 @@ if [ "$selection" = all ] || [ "$selection" = b1-tags ]; then
 fi
 
 if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
-    run strict-xpass 2 clear-retry --expected-failures
-    grep -q '^XPASS .*property=undelivered-retry-is-not-admitted ' "$receipt"
-    grep -q '^STRICT expected=25 xfail=23 xpass=2$' "$receipt"
+    run strict-fixture-complete 1 none --strict-fixture complete
+    grep -q '^STRICT expected=2 xfail=2 xpass=0$' "$receipt"
+    run strict-xpass 2 none --strict-fixture missing
+    grep -q '^XPASS policy=fixture property=fixture-disappears todo=0$' "$receipt"
+    grep -q '^STRICT expected=2 xfail=1 xpass=1$' "$receipt"
     run strict-ledger 1 none --expected-failures
-    grep -q '^STRICT expected=25 xfail=25 xpass=0$' "$receipt"
-    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 13
+    grep -q '^STRICT expected=23 xfail=23 xpass=0$' "$receipt"
+    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 12
+    awk '
+      $1 == "PROPERTY" && $3 == "undelivered-retry-is-not-admitted" {
+        if ($4 != "violations=0/500" || $7 != "PASS") exit 1
+        passed++
+      }
+      END { if (passed != 2) exit 1 }
+    ' "$receipt"
     grep -q '^INTEGRATION .* hard=0 xpass=0 ' "$receipt"
-    echo 'ORACLE_REGRESSION strict-xpass PASS fault-exit=2 baseline-exit=1 expected=25'
+    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=23'
 fi
 
 if [ "$selection" = all ] || [ "$selection" = reassignment ]; then

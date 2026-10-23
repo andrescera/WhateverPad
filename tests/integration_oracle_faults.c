@@ -2,7 +2,6 @@
 #include "sim.h"
 #include "usb_standin/dev/usb/usb_ioctl.h"
 #include "../src/ps5_vpad.h"
-#include "../src/web.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -10,7 +9,6 @@
 #include <string.h>
 
 static unsigned injections;
-static volatile int *retry_request;
 
 static int fault(const char *name)
 {
@@ -31,22 +29,6 @@ int __wrap_test_usb_ioctl(int fd, unsigned long request, ...)
         result = __real_test_usb_ioctl(fd, request, arg);
     }
     return result;
-}
-
-web_t *__real_web_start(const web_cfg *cfg, int port);
-void __real_web_poll(web_t *web);
-web_t *__wrap_web_start(const web_cfg *cfg, int port)
-{
-    retry_request = cfg->retry;
-    return __real_web_start(cfg, port);
-}
-void __wrap_web_poll(web_t *web)
-{
-    __real_web_poll(web);
-    if (fault("clear-retry") && *retry_request) {
-        injections++;
-        *retry_request = 0;
-    }
 }
 
 void __real_vpad_update(int slot, const pad_state *state);

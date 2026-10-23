@@ -37,7 +37,7 @@ static const struct { const char *name; int todo; } properties[] = {
     {"disconnect-needs-fresh-owned-input", 14}, {"status-is-not-link-completion", 14},
     {"callback-per-generation-once", 14}, {"no-vpad-work-after-release", 15},
     {"one-ten-second-cleanup-budget", 15}, {"native-request-releases-transport", 15},
-    {"undelivered-retry-is-not-admitted", 15}, {"uncertain-link-reported-left-connected", 15},
+    {"undelivered-retry-is-not-admitted", 0}, {"uncertain-link-reported-left-connected", 15},
     {"exact-usb-acquisitions-and-finalization", 0}, {"delete-only-acquired-identity-once", 0},
     {"complete-http-framing", 0}, {"pairing-reaches-usable-virtual-input", 0}
 };
@@ -56,6 +56,42 @@ static const char *const actions[] = {
     "cutoff-9750", "deadline-10000"
 };
 typedef struct { unsigned char action; unsigned value; } step;
+typedef struct {
+    const char *policy, *property;
+    int todo;
+    unsigned failures;
+} expectation;
+
+static unsigned validate_expectations(const expectation *entries, unsigned count)
+{
+    unsigned unexpected = 0;
+    for (unsigned i = 0; i < count; i++) {
+        if (entries[i].failures) continue;
+        unexpected++;
+        printf("XPASS policy=%s property=%s todo=%d\n",
+            entries[i].policy, entries[i].property, entries[i].todo);
+    }
+    printf("STRICT expected=%u xfail=%u xpass=%u\n", count, count - unexpected, unexpected);
+    return unexpected;
+}
+
+static int integration_result(unsigned hard, unsigned unexpected, int expected_failures)
+{
+    if (unexpected) return 2;
+    return hard || expected_failures ? 1 : 0;
+}
+
+static int strict_fixture(int missing)
+{
+    expectation entries[] = {
+        {"fixture", "fixture-still-failing", 0, 1},
+        {"fixture", "fixture-disappears", 0, 1}
+    };
+    if (missing) entries[1].failures = 0;
+    unsigned unexpected = validate_expectations(entries, 2);
+    return integration_result(0, unexpected, 1);
+}
+
 typedef struct {
     unsigned op, n;
     unsigned char p[255];
@@ -593,6 +629,11 @@ static unsigned request(const char *method, const char *path, int blocked)
     REQUIRE(send(fd, raw, (size_t)n, 0) == n && shutdown(fd, SHUT_WR) == 0);
     f.serving = 1; f.refuse_send = blocked;
     web_poll(f.web);
+    web_action action;
+    while (web_take_pending(f.web, &action)) web_apply_pending(f.web, action);
+    web_poll(f.web);
+    while (web_take_pending(f.web, &action)) web_apply_pending(f.web, action);
+    web_poll(f.web);
     f.serving = f.refuse_send = 0;
     int bytes = 0;
     for (;;) {
@@ -676,7 +717,9 @@ static void execute(step s)
         host_set_output(f.host, 0, &out); break;
     }
     case STATE: request("GET", "/api/state", 0); break;
-    case RETRY: f.bt = WEB_BT_FAILED; request("POST", "/api/retry", 0); f.retry = 0; break;
+    case RETRY:
+        f.bt = WEB_BT_FAILED; request("POST", "/api/retry", 0);
+        REQUIRE(f.retry == 1); f.retry = 0; break;
     case BLOCKED_RETRY: f.bt = WEB_BT_FAILED; request("POST", "/api/retry", 1); f.retry = 0; break;
     case STOP: request("POST", "/api/stop", 0); break;
     case NATIVE: {
@@ -935,6 +978,11 @@ static void shrink(unsigned seed, step *steps, unsigned n, enum property propert
 }
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--strict-fixture")) {
+        if (!strcmp(argv[2], "complete")) return strict_fixture(0);
+        if (!strcmp(argv[2], "missing")) return strict_fixture(1);
+        return 2;
+    }
     unsigned seeds = 500, steps = 64, first = 0;
     int strict = 0, single = 0;
     for (int i = 1; i < argc; i++) {
@@ -993,18 +1041,15 @@ int main(int argc, char **argv)
         }
     }
     if (strict) {
+        expectation entries[2 * PROPERTY_COUNT];
         for (unsigned policy = 0; policy < 2; policy++) for (unsigned p = 0; p < PROPERTY_COUNT; p++) {
             if (!properties[p].todo || (policy && p == NO_RESTORE_UNDO)) continue;
-            expected_cases++;
-            if (!counts[policy][p]) {
-                unexpected_passes++;
-                printf("XPASS policy=%s property=%s todo=%d\n",
-                    policy ? "SINGLE_PRODUCER-projection" : "NO_RESTORE-projection",
-                    properties[p].name, properties[p].todo);
-            }
+            entries[expected_cases++] = (expectation){
+                policy ? "SINGLE_PRODUCER-projection" : "NO_RESTORE-projection",
+                properties[p].name, properties[p].todo, counts[policy][p]
+            };
         }
-        printf("STRICT expected=%u xfail=%u xpass=%u\n",
-            expected_cases, expected_cases - unexpected_passes, unexpected_passes);
+        unexpected_passes = validate_expectations(entries, expected_cases);
     }
     for (unsigned policy = 0; policy < 2; policy++) for (unsigned p = 0; p < PROPERTY_COUNT; p++) {
         printf("PROPERTY policy=%s %s violations=%u/%u eligible-violations=%u residual-violations=%u %s",
@@ -1031,7 +1076,5 @@ int main(int argc, char **argv)
         seeds, first, steps, seeds * steps, checks, submitted, generated_events, deliveries, empty_completions,
         positives[0], positives[1], positives[2], foreign_stimuli, reassignment_stimuli,
         duplicate_stimuli, hard, unexpected_passes, runs - seeds);
-    if (unexpected_passes) return 2;
-    if (mutation) return hard ? 1 : 0;
-    return hard || (strict && failing_properties) ? 1 : 0;
+    return integration_result(hard, unexpected_passes, strict && failing_properties);
 }
