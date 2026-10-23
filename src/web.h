@@ -1,7 +1,8 @@
 /* WhateverPad PS5's web page: status, pairing, forgetting pads, stopping, the log.
  *
  * Served from the main loop without threads or blocking: at most WEB_CLIENTS
- * connections, requests of at most 8 KB, three seconds each.
+ * connections, requests of at most 8 KB, three seconds to read/admit and
+ * one bounded second to write the reply.
  *
  * There is no PIN, by the user's choice: anyone on the local network can
  * open the page, pair, forget pads and stop WhateverPad PS5. Nothing else.
@@ -10,12 +11,16 @@
 #define PH_WEB_H
 
 #include "host.h"
+#include "session.h"
 
 #include <stddef.h>
 
 #define WEB_PORT 8095
 
 typedef struct web web_t;
+
+/* A single-use request identity, not a reusable client-slot number. */
+typedef struct { uint64_t id; } web_action;
 
 enum { WEB_BT_TRYING, WEB_BT_OK, WEB_BT_FAILED };
 
@@ -41,11 +46,24 @@ typedef struct {
     /* Sets it ("l1+l2+options"), removes it ("none"), or suspends it while
      * the user picks a new one ("capture"). Returns 1 if done. */
     int (*ps_combo_set)(int slot, const char *text);
+    session_t *session;         /* shared policy; NULL for legacy callers */
+    void (*service)(void *ud);  /* latch lifecycle events, never dispatch web actions */
+    void *ud;
+    /* Reserve the attempt lock before acknowledging Retry; release it on
+     * cancellation. A successful Retry transfers the reservation to the owner.
+     * Required for Retry when session is supplied. */
+    int (*retry_lock)(void *ud, int acquire);
 } web_cfg;
 
 /* Listens on `port` on every interface. Returns NULL if it cannot. */
 web_t *web_start(const web_cfg *cfg, int port);
 void   web_poll(web_t *w);
+/* Call only after host_poll has unwound, never from its idle/service callback.
+ * Take one action, then apply it exactly once. Both boundaries recheck admission.
+ * Retry is applied by a subsequent take, after its complete reply was written.
+ * The owner observes cfg.retry and starts initialization outside this call. */
+int    web_take_pending(web_t *w, web_action *action);
+void   web_apply_pending(web_t *w, web_action action);
 
 /* Is the page still being served? The listening socket must still listen and
  * a connection to this machine's own address must be taken. The console can
