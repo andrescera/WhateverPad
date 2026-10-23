@@ -327,8 +327,8 @@ int main(void)
     get("POST", "/api/stop", out, sizeof out);
     CHECK(stop == 1);
 
-    web_stop(g_web);
     host_close(g_host);
+    web_stop(g_web);
     sim_free(sim);
     printf(g_fail ? "%d check(s) failed\n" : "all web checks passed\n", g_fail);
     return g_fail != 0;
