@@ -39,8 +39,8 @@ maps the code.
 
 The compatibility bar is two controllers: a **DualShock 4** and an **8BitDo in Switch
 mode** (8BitDo SF30 Pro). A change that makes either of them connect less reliably does
-not ship, however good it looks for another pad. The README states the same rule for
-contributions (`README.md`: "must not alter how the DualShock 4 and the 8BitDo connect").
+not ship, however good it looks for another pad. The contribution guide states the same
+rule (`CONTRIBUTING.md:5`: "must not alter how the DualShock 4 and the 8BitDo connect").
 
 Supported ids live in `src/profiles.c:k_profiles`. The DualShock 4 ids are in
 `src/profiles.c:ds4_ids`; 8BitDo pads in Switch mode arrive as Switch Pro Controllers
