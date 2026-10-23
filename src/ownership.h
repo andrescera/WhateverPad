@@ -139,4 +139,32 @@ own_result own_detach_link(own_ledger *, link_ref);
 const char *own_invariant(const own_ledger *);
 size_t own_canonical(const own_ledger *, uint8_t *out, size_t capacity);
 
+/* Additive output capabilities; no existing record or canonical encoding changes.
+ * A lane borrows its ledger, holds one immutable packet, and must be freed first.
+ * ACL output never counts as profile-accepted input or refreshes Disconnect proof.
+ */
+#define OWN_ACL_MAX 1100
+typedef struct own_acl_lane own_acl_lane;
+typedef struct { uint64_t _opaque[4]; } own_acl_token;
+typedef struct {
+    link_ref link;
+    uint16_t handle, len;
+    uint8_t packet[OWN_ACL_MAX];
+} own_acl_effect;
+
+own_acl_lane *own_acl_new(own_ledger *);
+void own_acl_free(own_acl_lane *);
+own_result own_acl_prepare(own_acl_lane *, link_ref, const uint8_t *, size_t,
+                           uint64_t now, own_acl_token *);
+/* The expected ledger prevents a valid foreign lane from crossing a backend. */
+own_result own_acl_commit(own_ledger *, own_acl_lane *, const own_acl_token *,
+                          uint64_t now, own_acl_effect *);
+void own_acl_submitted(own_acl_lane *, const own_acl_token *, own_submit_result,
+                       uint64_t now);
+/* Typed final HCI boundary, including the exact phase's diagnostic ACK deadline. */
+own_result own_commit_hci(own_ledger *, const own_token *, uint64_t now,
+                          own_effect *, uint64_t *ack_by);
+/* Wire observation revokes an existing lease before any output can be committed. */
+void own_observe_disconnect(own_ledger *, uint16_t handle, uint64_t now);
+
 #endif

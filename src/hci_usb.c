@@ -13,6 +13,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -45,6 +46,7 @@ static const char *const k_nodes[] = { "/dev/ugen0.2", "/dev/ugen0.3", "/dev/uge
 #define N_XFER      (X_CMD + 1)
 
 #define RING        64
+_Static_assert(OWN_ACL_MAX == HCI_PKT_MAX, "ACL capability packet size");
 
 typedef struct {
     unsigned char pkt[RING][HCI_PKT_MAX];
@@ -236,6 +238,12 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
 
     if (c->ledger) {
         attrib_observe(ev, len, now_ms());
+        if (ev[0] == 5) {
+            if (len != 6 || le16(ev + 3) >= 0x0f00)
+                own_detector_trip(c->ledger, (uint64_t)now_ms());
+            else if (!ev[2])
+                own_observe_disconnect(c->ledger, (uint16_t)le16(ev + 3), (uint64_t)now_ms());
+        }
         if (ev[0] == OWN_CC || ev[0] == OWN_CS) {
             own_ack a = {.event = (own_ack_event)ev[0]};
             own_receipt receipt;
@@ -314,9 +322,13 @@ static int reap(usb_ctx *c, long deadline, unsigned *completed)
             continue;
         }
         if (done.ep_index == X_ACL_OUT || done.ep_index == X_ACL_OUT2) {
-            if (c->ep[done.ep_index].status)
+            if (c->ep[done.ep_index].status) {
                 log_line("usb: ACL out status %u", (unsigned)c->ep[done.ep_index].status);
-            else if (!c->out_done_logged) {
+                if (c->ledger) {
+                    c->dead = 1;
+                    own_detector_trip(c->ledger, (uint64_t)now_ms());
+                }
+            } else if (!c->out_done_logged) {
                 c->out_done_logged = 1;
                 log_line("usb: first ACL packet written on endpoint %#x",
                          done.ep_index == X_ACL_OUT ? c->ep_acl_out : c->ep_acl_out2);
@@ -383,7 +395,8 @@ static void keep_reads_pending(usb_ctx *c)
 
 /* ---- hci_ops ------------------------------------------------------------- */
 
-static int command_start(usb_ctx *c, unsigned opcode, const void *params, int plen)
+static int command_start(usb_ctx *c, unsigned opcode, const void *params, int plen,
+                         uint64_t ack_by)
 {
     struct usb_fs_start start = {.ep_index = X_CMD};
     unsigned char *pkt = c->buf[X_CMD];
@@ -415,6 +428,13 @@ static int command_start(usb_ctx *c, unsigned opcode, const void *params, int pl
         c->ep[X_CMD].timeout = (uint16_t)session_work_remaining(&s.runtime,
                                                               (uint64_t)now_ms(), 1000);
     }
+    if (ack_by) {
+        uint64_t now = (uint64_t)now_ms();
+        if (now >= ack_by) return 0;
+        if (ack_by - now < c->ep[X_CMD].timeout)
+            c->ep[X_CMD].timeout = (uint16_t)(ack_by - now);
+    }
+    if (!c->ep[X_CMD].timeout) return 0;
     c->ep[X_CMD].status = 0;
     if (ioctl(c->fd, USB_FS_START, &start) != 0) {
         log_line("usb: command %#06x: errno %d", opcode, errno);
@@ -434,34 +454,79 @@ static int op_cmd(void *ctx, unsigned opcode, const void *params, int plen)
         opcode == 0x200e || opcode == 0x0c03) return 0;
     reap(c, now_ms() + 1000, &completed);
     if (!accepts(c) || c->busy[X_CMD]) return 0;
-    return command_start(c, opcode, params, plen);
+    return command_start(c, opcode, params, plen, 0);
 }
 
-static own_submit_result op_submit(void *ctx, const own_token *token)
+static own_submit_result submit_command(usb_ctx *c, const own_token *token)
 {
-    usb_ctx *c = ctx;
     own_effect effect;
+    uint64_t ack_by;
     unsigned completed = 0;
+    long deadline = now_ms() + 1000;
     int sent;
     if (!c->ledger || !token || c->fd < 0 || c->dead) return OWN_NOT_SENT;
 #ifdef USB_MUTATE_NO_FINAL_CHECK
-    if (own_commit(c->ledger, token, (uint64_t)now_ms(), &effect) != OWN_OK)
+    if (own_commit_hci(c->ledger, token, (uint64_t)now_ms(), &effect, &ack_by) != OWN_OK)
         return OWN_NOT_SENT;
 #endif
-    reap(c, now_ms() + 1000, &completed);
-    if (c->dead || c->busy[X_CMD]) return OWN_NOT_SENT;
+    reap(c, deadline, &completed);
+    if (c->dead || c->busy[X_CMD] || now_ms() >= deadline) return OWN_NOT_SENT;
 #ifndef USB_MUTATE_NO_FINAL_CHECK
-    if (own_commit(c->ledger, token, (uint64_t)now_ms(), &effect) != OWN_OK)
+    if (own_commit_hci(c->ledger, token, (uint64_t)now_ms(), &effect, &ack_by) != OWN_OK)
         return OWN_NOT_SENT;
 #endif
-    if (effect.kind != OWN_EFFECT_HCI) return OWN_NOT_SENT;
     /* No callback between the consuming commit and USB_FS_START. */
-    sent = command_start(c, effect.opcode, effect.params, effect.plen);
+    sent = command_start(c, effect.opcode, effect.params, effect.plen, ack_by);
     own_submitted(c->ledger, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)now_ms());
     if (sent) {
         attrib_submit(effect.opcode, 1, now_ms());
+        attrib_deadline(effect.opcode, ack_by > LONG_MAX ? LONG_MAX : (long)ack_by);
     }
     return sent ? OWN_SENT : OWN_NOT_SENT;
+}
+
+static own_submit_result submit_acl(usb_ctx *c, own_acl_lane *lane,
+                                    const own_acl_token *token)
+{
+    own_acl_effect effect;
+    unsigned completed = 0;
+    long deadline = now_ms() + 500;
+    int sent;
+    if (!c->ledger || !lane || !token || c->fd < 0 || c->dead) return OWN_NOT_SENT;
+#ifdef USB_MUTATE_NO_FINAL_CHECK
+    if (own_acl_commit(c->ledger, lane, token, (uint64_t)now_ms(), &effect) != OWN_OK)
+        return OWN_NOT_SENT;
+#endif
+    do {
+        reap(c, deadline, &completed);
+        if (c->dead || now_ms() >= deadline || completed == 64) return OWN_NOT_SENT;
+#ifndef USB_MUTATE_NO_FINAL_CHECK
+        if (!accepts(c)) return OWN_NOT_SENT;
+#endif
+        if (!c->busy[c->out_idx]) break;
+        usleep(500);
+    } while (c->busy[c->out_idx]);
+#ifndef USB_MUTATE_NO_FINAL_CHECK
+    if (own_acl_commit(c->ledger, lane, token, (uint64_t)now_ms(), &effect) != OWN_OK)
+        return OWN_NOT_SENT;
+#endif
+    /* Immutable bytes and the link lease are checked after every callback. */
+    memcpy(c->buf[c->out_idx], effect.packet, effect.len);
+    sent = xfer_start(c, c->out_idx, effect.len);
+    own_acl_submitted(lane, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)now_ms());
+    return sent ? OWN_SENT : OWN_NOT_SENT;
+}
+
+static own_submit_result op_submit(void *ctx, const hci_submission *submission)
+{
+    if (!submission) return OWN_NOT_SENT;
+    switch (submission->kind) {
+    case HCI_SUBMIT_COMMAND:
+        return submit_command(ctx, submission->token.command);
+    case HCI_SUBMIT_ACL:
+        return submit_acl(ctx, submission->token.acl.lane, submission->token.acl.token);
+    }
+    return OWN_NOT_SENT;
 }
 
 static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
@@ -777,6 +842,7 @@ static int op_chip_product(void *ctx);
 static const hci_ops k_usb_ops = {
     op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, op_missing_reads,
     op_event_reads, op_event_len, op_chip_vendor, op_chip_product,
+    op_submit,
 };
 
 /* Opens one device node and reads its device descriptor. */
@@ -922,6 +988,7 @@ int hci_usb_bind_ownership(hci_t *h, own_ledger *ledger,
 
 own_submit_result hci_usb_submit(hci_t *h, const own_token *token)
 {
-    if (!h || h->ops != &k_usb_ops) return OWN_NOT_SENT;
-    return op_submit(h->ctx, token);
+    const hci_submission submission = {.kind = HCI_SUBMIT_COMMAND, .token.command = token};
+    if (!h || h->ctx != &g_ctx || h->ops != &k_usb_ops) return OWN_NOT_SENT;
+    return h->ops->op_submit(h->ctx, &submission);
 }
