@@ -95,10 +95,17 @@ These four decisions were approved with the product and are not open questions. 
 
 | Trade-off | What it means | State on this tree |
 | --- | --- | --- |
-| Native-first terminal release disconnects every bridged pad but preserves bonds | A native request may end bridged input; the pad is disconnected, not forgotten | Planned: todos 4, 13 to 16. Today the call is left to the system and events yield for 30 s (`src/host.c:on_event`, `src/host_int.h:T_YIELD`) |
+| Native-first terminal release ends bridged input but preserves bonds | Under both policies the release ends bridged input and keeps the pairings. Under the default `NO_RESTORE` policy it issues no controller-side undo and no Disconnect: the radio links are left for the controllers or the user to drop, and the page and the log say so. Only a probe-enabled `SINGLE_PRODUCER` policy may issue a guarded Disconnect | Planned: todos 4, 13 to 16. Today the call is left to the system and events yield for 30 s (`src/host.c:on_event`, `src/host_int.h:T_YIELD`) |
 | Manual payload relaunch is required after native release and rest | The payload does not resurrect itself | Partly today: rest mode stops the payload and asks for a relaunch (`src/ps5_main.c:main`, `src/ps5_power.c:power_state`) |
 | Automatic reconnect means reconnect while the service owns an active transport, not reacquisition after terminal release | The bridge keeps pairing state alive during a run; it does not silently take the radio back later | The call path for a known pad exists (`src/host.c:on_event`, `src/host.c:host_pair`); durable reconnect after relaunch is planned: todos 17 to 19 |
 | No automatic resident resume and no external-loader integration | WhateverPad starts when a person starts it | Planned: no work in this plan adds either |
+
+Release is stated as amended: OP:62's "disconnects every bridged pad" means the bridged input
+ends, not that the radio link is always torn down. Both policies are planned (todos 4 and
+13 to 16). `NO_RESTORE` is the default and needs no unmeasured assumption.
+`SINGLE_PRODUCER` exists only if the PS5 probe in todo 8 records that verdict; a guarded
+Disconnect then also needs a live handle lease and recent accepted input, and any
+ambiguity revokes it.
 
 ## 7. What the product promises, and what this tree does today
 
@@ -112,7 +119,7 @@ These four decisions were approved with the product and are not open questions. 
 | Disconnect without forgetting | Keep credentials, stop automatic reconnects until asked | Not yet | Planned: todos 20, 21, 24 |
 | Stop | Always stop from the page before power-off or relaunch | Works, with a ten-second cap | `src/ps5_main.c:T_STOP_MAX_S`, `src/web.c:handle` |
 | Rest mode | Stop before rest and say that a relaunch is needed | Works | `src/ps5_main.c:main`, `src/ps5_power.c:power_state` |
-| Settings | Hotkey, hold time, per-model PS combination | Works | `src/config.c:config_load`, `src/config.h:pscombo_set` |
+| Settings | Per-model PS combination; menu hotkey and hold time | The per-model combination works. The `config.ini` parser and the hotkey module exist, but the payload calls neither, so menu hotkey and hold time are not operating settings | `src/config.c:pscombo_set`, `src/config.c:pscombo_load`, `src/config.c:config_load`, `src/hotkey.c:hotkey_update`, `src/ps5_main.c:main` |
 | Diagnostics | State, live view, log, tuning, raw HCI for development | Works, with the limits in section 9 | `src/web.c:api_state`, `src/web.c:api_live`, `src/web.c:api_log`, `src/web.c:api_hci` |
 
 Nothing in this table says that a planned capability exists. When a todo lands, move the
@@ -145,10 +152,12 @@ row from "planned" to "works" with a citation and a test, not before.
   behaviour or send a raw command (`src/web.c:api_hci`,
   `src/host.c:host_raw_cmd`). They are development tools, not user features, and the plan
   closes them behind an opt-in developer mode (planned: todo 21).
-- Settings that a user owns: `menu_combo` and `menu_hold_ms`
-  (`src/config.h:whateverpad_config`), and the per-model PS combination in
-  `ps_combos.txt` (`src/config.h:pscombo_set`). New settings arrive only with a parser
-  test (planned: todo 7).
+- Settings that are live: the per-model PS-button combination in `ps_combos.txt`, loaded at
+  startup (`src/config.c:pscombo_load`, `src/ps5_main.c:main`) and set from the page
+  (`src/config.c:pscombo_set`). `menu_combo` and `menu_hold_ms` are parsed by
+  `src/config.c:config_load`, but the payload never calls that parser, and
+  `src/hotkey.c:hotkey_update` is never called either; `src/ps5_main.c` records that this
+  build has no console hotkey. Wiring the settings is planned: todos 7 and 17.
 - Migration from AnyPad copies supported configuration only when the destination is
   absent, preserves the originals, and reports conflicts (planned: todos 7 and 17). It
   never imports system bonds, adapter-unbound keys, or a legacy LAN/developer opt-in.
@@ -205,13 +214,14 @@ change.
 | Ink on gold | 10.37:1 | Body text 4.5:1 | Pass |
 | Gold on burgundy | 7.50:1 | Large text and focus 3:1 | Pass |
 | Gold on burgundy-deep | 8.01:1 | Focus ring 3:1 | Pass |
-| Teal on burgundy | 4.29:1 | Large text and status 3:1 | Pass for large text and status only |
+| Teal on burgundy | 4.29:1 | Large text and non-text indicators 3:1 | Pass for large text and non-text only |
 | Ink on teal | 5.93:1 | Body text 4.5:1 | Pass |
 | Cream on ink | 14.88:1 | Body text 4.5:1 | Pass |
 | Gold on ink | 10.37:1 | Focus ring 3:1 | Pass |
 
-Teal on burgundy sits at 4.29:1, under the 4.5:1 body-copy threshold. Use teal for
-connected badges, icons, and large status words, never for paragraphs.
+Teal on burgundy sits at 4.29:1, under the 4.5:1 threshold for normal text, so teal is not
+approved for small labels or paragraphs. Use it for large status words, icons, and
+non-text indicators; a small label sits in ink on a teal fill, at 5.93:1.
 
 Layout and interaction rules, as approved:
 

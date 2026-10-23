@@ -147,10 +147,12 @@ WhateverPad builds that device itself:
   the page's button, and `src/ps5_vpad.c:vpad_remove` deletes the pad.
 - `src/ps5_vpad.c:vpad_creds_restore` puts the process credentials back on shutdown.
 
-Around it: `src/hotkey.c:hotkey_update` detects the menu combination,
-`src/ps5_ui.c:ui_open_browser` opens the page, `src/ps5_apps.c:apps_install_launcher`
-registers the Media row entry, `src/launcher.c:launcher_write` writes its `param.json` and
-icon, and `src/ps5_sysinfo.c:sysinfo_log` records the console model and software version.
+Around it: `src/ps5_ui.c:ui_open_browser` opens the page,
+`src/ps5_apps.c:apps_install_launcher` registers the Media row entry,
+`src/launcher.c:launcher_write` writes its `param.json` and icon, and
+`src/ps5_sysinfo.c:sysinfo_log` records the console model and software version.
+`src/hotkey.c:hotkey_update` implements menu-combination detection, but the payload never
+calls it, and `src/ps5_main.c:main` states that this build has no console hotkey.
 
 ## 8. Configuration, bonds, and files
 
@@ -160,8 +162,8 @@ Everything the payload persists lives under `/data/whateverpad`
 | File | Written by | Notes |
 | --- | --- | --- |
 | `whateverpad.log` | `src/log.c:log_line` | Tail served at `/api/log` through `src/log.c:log_since` |
-| `config.ini` | `src/config.c:config_load` | Hotkey and hold time; unknown lines are reported and skipped |
-| `ps_combos.txt` | `src/config.c:pscombo_set` | One PS-button combination per controller model |
+| `config.ini` | `src/config.c:config_load` | Parser for `menu_combo` and `menu_hold_ms`; no production code calls it, so these are not operating settings in this build |
+| `ps_combos.txt` | `src/config.c:pscombo_set` | One PS-button combination per controller model; loaded at startup with `src/config.c:pscombo_load` and set from the page |
 | `pads.db` | `src/bond_store.c:bond_store_save` | Versioned, adapter-bound bond store; deleted at startup and stop by design in this build |
 | `whateverpad.lock` | `src/lock.c:lock_take` | Single-instance guard |
 | `pair`, `stop`, `no_icon`, `remove_icon` | `src/ps5_main.c:check_flags` and `main` | Small request files used by tooling and the launcher flow |
@@ -169,9 +171,12 @@ Everything the payload persists lives under `/data/whateverpad`
 
 The bond store is a real module even though this build discards the file each run:
 fixed-size records (`src/bond_store.h:BOND_MAX`), a 64-byte header, encode and decode
-against the adapter identity, CRC sealing (`src/crc32.c:crc32_seal_output`), atomic save
-through temporary file, fsync, rename, and directory fsync, with a fault-injection seam
-for tests (`src/bond_store.h:bond_store_test_fault`).
+checked against the adapter identity, and atomic persistence through temporary file,
+fsync, rename, and directory fsync, with a fault-injection seam for tests
+(`src/bond_store.h:bond_store_test_fault`). It stores no checksum: integrity rests on the
+fixed layout, the adapter match, and the atomic replace. The one CRC in the payload seals
+controller output reports instead (`src/crc32.c:crc32_seal_output`, used by the Sony
+profile encoders such as `src/profiles.c:ds4_output`).
 
 ## 9. Page and HTTP API
 
@@ -233,11 +238,11 @@ one recipe plus `make sanitize`, `make check-generated`, and CI is planned: todo
 | Transport contract | `src/hci.h` | Operations the protocol code is allowed to use | `src/hci.h:hci_ops` |
 | Classic | `src/host.c`, `src/host.h`, `src/host_int.h` | Inquiry, pairing, SDP, L2CAP, HID, links, bonds access | `src/host.c:host_poll`, `src/host.c:on_event`, `src/host.c:send_cmd` |
 | LE | `src/le.c`, `src/smp_crypto.c` | LE scan, connection, SMP, GATT HID | `src/le.c:le_on_meta`, `src/smp_crypto.c:smp_f5` |
-| Profiles | `src/profiles.c`, `src/generic.c`, `src/pad.h` | Controller families and descriptor-driven fallback | `src/profiles.c:k_profiles`, `src/generic.c:generic_setup`, `src/pad.h:pad_state` |
+| Profiles | `src/profiles.c`, `src/generic.c`, `src/pad.h`, `src/crc32.c` | Controller families, descriptor-driven fallback, output-report CRC sealing | `src/profiles.c:k_profiles`, `src/generic.c:generic_setup`, `src/pad.h:pad_state`, `src/profiles.c:ds5_output` |
 | Virtual pad | `src/ps5_vpad.c`, `src/ps5_vpad.h` | Virtual DualSense creation, identification, input, removal | `src/ps5_vpad.c:vpad_poll`, `src/ps5_vpad.c:vpad_update` |
-| Console glue | `src/ps5_ui.c`, `src/ps5_apps.c`, `src/launcher.c`, `src/hotkey.c`, `src/ps5_power.c`, `src/ps5_sysinfo.c` | Browser, launcher entry, menu hotkey, rest mode, info log | `src/launcher.h:LAUNCHER_TITLE_ID`, `src/ps5_power.c:power_state` |
-| Settings | `src/config.c` | `config.ini` and per-model PS combinations | `src/config.c:config_load`, `src/config.c:pscombo_set` |
-| Bonds | `src/bond_store.c`, `src/crc32.c` | Versioned credential store with atomic save | `src/bond_store.c:bond_store_save`, `src/crc32.c:crc32_calc` |
+| Console glue | `src/ps5_ui.c`, `src/ps5_apps.c`, `src/launcher.c`, `src/hotkey.c`, `src/ps5_power.c`, `src/ps5_sysinfo.c` | Browser, launcher entry, menu-combination module (not wired), rest mode, info log | `src/launcher.h:LAUNCHER_TITLE_ID`, `src/ps5_power.c:power_state`, `src/hotkey.c:hotkey_update` |
+| Settings | `src/config.c` | `config.ini` parser (not wired) and per-model PS combinations (loaded at startup) | `src/config.c:config_load`, `src/config.c:pscombo_load` |
+| Bonds | `src/bond_store.c` | Versioned credential store with adapter validation and atomic save | `src/bond_store.c:bond_store_save` |
 | Page and API | `src/web.c`, `src/web.h`, `web/index.html`, `src/web_page.c`, `src/icon_data.c` | HTTP, routes, embedded page and icon | `src/web.c:handle`, `src/web.c:api_state` |
 | Support | `src/log.c`, `src/lock.c`, `src/netinfo.c`, `src/util.c`, `src/version.h` | Log file with rotation and a live line buffer, lock, local address, helpers, version | `src/log.c:log_since`, `src/netinfo.c:local_ip` |
 | Tests and build | `tests/`, `Makefile`, `ps5.mk`, `tools/build-elf-docker.sh` | Simulators, binaries, payload recipe | `tests/sim.c:sim_new`, `tests/sim_le.c:sim_le_new`, `ps5.mk:SRCS` |
@@ -258,6 +263,10 @@ These are properties of this tree, not opinions. Each one is the gap a later tod
   `ps5_vpad.c`, and some lifecycle cases are still registered as expected failures
   (`tests/test_session.c:expected_failure`). This is the bug class the ledger replaces
   (section 13).
+- `config.ini` and the menu hotkey are not wired. `src/config.c:config_load` and
+  `src/hotkey.c:hotkey_update` have no production caller, and `src/ps5_main.c` states there
+  is no console hotkey; only `ps_combos.txt` is loaded (`src/config.c:pscombo_load`).
+  Wiring the settings is planned: todos 7 and 17.
 - There is no session module and no ownership module in this tree. Their absence is the
   point of the next section.
 - The page is a desktop dashboard with a 236 px sidebar (`web/index.html`), not the
@@ -318,8 +327,9 @@ ledger makes authority a data property instead of a convention.
 
 - Permanent effect-level reproducers for every historical failure, ported before any fix
   (todo 2).
-- A bounded exhaustive explorer over the production transition code at depth 12, plus a
-  seeded integration generator (todo 4).
+- A bounded exhaustive explorer over the production transition code at depth 12, plus
+  mutation checks (todo 4), and a seeded integration generator with an independent oracle
+  (todo 12).
 - Mutation checks: every deliberate mutation of the transition rules must make the suite
   fail (todo 4).
 - A static ownership check that fails when record internals are used outside
