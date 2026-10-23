@@ -17,6 +17,7 @@
 typedef struct {
     unsigned char d[QLEN][PKT];
     int len[QLEN];
+    sim_origin origin[QLEN];
     int head, count;
 } queue;
 
@@ -38,7 +39,12 @@ struct sim {
     int disconnect_requests, inquiry_during_setup, create_requests;
     sim_pad pad;
     queue ev, acl, system;
-    struct { unsigned char data[257]; int len; long due; unsigned order; } delayed[32];
+    struct { unsigned char data[257]; int len; long due; unsigned order; sim_origin origin; } delayed[32];
+    sim_observer observer;
+    void *observer_context;
+    sim_origin origin;
+    unsigned invocations, refuse_op;
+    int refuse_status;
     unsigned schedule_order;
     int delay_code, delay_left, delay_ms, foreign_commands, consumed_requests;
     sim_lifetime life;
@@ -107,13 +113,14 @@ static int q_get(queue *q, unsigned char *out, int max)
 
 /* ---- what the controller reports ------------------------------------------ */
 
-static void deliver_event(sim_t *s, const unsigned char *e, int n)
+static void deliver_event(sim_t *s, sim_origin origin, const unsigned char *e, int n)
 {
     if (!s->life.event_reads || sim_now() < s->yield_until || !s->ev_reads) {
         assert(s->system.count < QLEN);
         q_put(&s->system, e, n);
         s->left_to_system++;
     } else {
+        if (s->ev.count < QLEN) s->ev.origin[(s->ev.head + s->ev.count) % QLEN] = origin;
         q_put(&s->ev, e, n);
     }
 }
@@ -127,13 +134,15 @@ void sim_schedule_event(sim_t *s, unsigned char code, const unsigned char *p, in
     e[0] = code;
     e[1] = (unsigned char)n;
     memcpy(e + 2, p, (size_t)n);
-    if (!delay_ms) { deliver_event(s, e, n + 2); return; }
+    if (s->observer) s->observer(s->observer_context, SIM_GENERATED, s->origin, code, p, n);
+    if (!delay_ms) { deliver_event(s, s->origin, e, n + 2); return; }
     for (i = 0; i < 32 && s->delayed[i].len; i++) {}
     assert(i < 32);
     memcpy(s->delayed[i].data, e, (size_t)n + 2);
     s->delayed[i].len = n + 2;
     s->delayed[i].due = sim_now() + delay_ms;
     s->delayed[i].order = ++s->schedule_order;
+    s->delayed[i].origin = s->origin;
 }
 
 static void due_events(sim_t *s)
@@ -148,7 +157,7 @@ static void due_events(sim_t *s)
                  s->delayed[i].order < s->delayed[next].order)) next = i;
         }
         if (next < 0) return;
-        deliver_event(s, s->delayed[next].data, s->delayed[next].len);
+        deliver_event(s, s->delayed[next].origin, s->delayed[next].data, s->delayed[next].len);
         s->delayed[next].len = 0;
     }
 }
@@ -503,12 +512,30 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     const unsigned char *p = params;
 
     if (!s->life.acl_reads) return 0;
-    if (s->deaf) return 1;
+    s->origin.invocation = ++s->invocations;
+    if (s->observer) s->observer(s->observer_context, SIM_COMMAND, s->origin, op, p, plen);
+    if (s->deaf) { s->origin = (sim_origin){0}; return 1; }
+    if (s->refuse_op == op) {
+        s->refuse_op = 0;
+        if (op == 0x0405 || op == 0x0409 || op == 0x200D) cmd_status(s, op, (unsigned char)s->refuse_status);
+        else {
+            unsigned char status = (unsigned char)s->refuse_status;
+            cmd_complete(s, op, &status, 1);
+        }
+        s->origin = (sim_origin){0};
+        return 1;
+    }
     if ((op == 0x0405 || op == 0x0409 || op == 0x040A || op == 0x040B ||
          op == 0x040C) && plen >= 6 && memcmp(p, s->pad.addr, 6) != 0)
         s->foreign_commands++;
     trace_tx(s, op, p, plen);
     switch (op) {
+    case 0x2018: {
+        unsigned char r[9] = {0};
+        put32(r + 1, s->origin.invocation);
+        cmd_complete(s, op, r, sizeof r);
+        break;
+    }
     case 0x0C55: {      /* Read Simple Pairing Mode */
         unsigned char r[2] = { 0, (unsigned char)s->ssp };
         cmd_complete(s, op, r, 2);
@@ -704,6 +731,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         cmd_ok(s, op);
         break;
     }
+    s->origin = (sim_origin){0};
     return 1;
 }
 
@@ -841,11 +869,16 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
     sim_t *s = ctx;
     int n;
 
-    while ((n = q_get(&s->ev, out, max)) > 0)
+    sim_origin origin;
+    while (s->ev.count) {
+        origin = s->ev.origin[s->ev.head];
+        n = q_get(&s->ev, out, max);
         if (out[0] != 0x13 || !lose(s)) {
             if (out[0] == 0x04) s->consumed_requests++;
+            if (s->observer) s->observer(s->observer_context, SIM_DELIVERED, origin, out[0], out + 2, n - 2);
             return n;
         }
+    }
     return 0;
 }
 
@@ -1056,4 +1089,32 @@ sim_lifetime sim_resources(const sim_t *s)
     sim_lifetime life = s->life;
     life.event_reads = sim_event_reads(s);
     return life;
+}
+
+void sim_observe(sim_t *s, sim_observer observer, void *context)
+{
+    s->observer = observer; s->observer_context = context;
+}
+
+void sim_causal_event(sim_t *s, sim_origin origin, unsigned char code,
+                      const unsigned char *p, int n, int delay_ms)
+{
+    sim_origin before = s->origin;
+    s->origin = origin;
+    sim_schedule_event(s, code, p, n, delay_ms);
+    s->origin = before;
+}
+
+int sim_foreign_command(sim_t *s, unsigned op, const void *p, int n)
+{
+    sim_origin before = s->origin;
+    s->origin.foreign = 1;
+    int result = op_cmd(s, op, p, n);
+    s->origin = before;
+    return result;
+}
+
+void sim_refuse_command(sim_t *s, unsigned op, int status)
+{
+    s->refuse_op = op; s->refuse_status = status;
 }
