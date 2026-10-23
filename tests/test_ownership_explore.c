@@ -713,7 +713,8 @@ static int policy_cases(own_policy policy, size_t *states, int *g, int *h)
     return 0;
 #else
     enum { WORKERS = OWN_EXPLORE_WORKERS };
-    _Static_assert(WORKERS > 0 && WORKERS <= SCENARIOS, "bounded graph workers");
+    _Static_assert(WORKERS > 0 && (unsigned)WORKERS <= (unsigned)SCENARIOS,
+                   "bounded graph workers");
     pid_t pid[WORKERS] = {0};
     int fd[WORKERS] = {0};
     unsigned next = 0, active = 0;
