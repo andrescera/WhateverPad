@@ -34,6 +34,7 @@
 #include "config.h"
 #include "hci_usb.h"
 #include "host.h"
+#include "attrib.h"
 #include "lock.h"
 #include "log.h"
 #include "netinfo.h"
@@ -107,7 +108,9 @@ static int g_bt_plain_creds;            /* the chip answered only without raised
 static void on_stop_timeout(int sig)
 {
     (void)sig;
+#if !WHATEVERPAD_PROBE
     unlink(DB_PATH);                    /* nothing of this session is kept */
+#endif
     _exit(0);
 }
 
@@ -248,7 +251,7 @@ static void bt_try(long now)
         hci.ops->close(hci.ctx);
     }
     log_line("Bluetooth not ready (try %d of %d)", attempt, OPEN_TRIES);
-    if (attempt >= OPEN_TRIES) {
+    if (attempt >= (WHATEVERPAD_PROBE ? 1 : OPEN_TRIES)) {
         g_bt_state = WEB_BT_FAILED;
         snprintf(g_bt_reason, sizeof g_bt_reason,
                  "El chip Bluetooth no responde (%d intentos, con y sin credenciales elevadas). "
@@ -316,8 +319,12 @@ int main(void)
     /* One session per run: pads are paired anew each time WhateverPad starts, and
      * nothing is kept once it stops or the console restarts. The store lives
      * only while this run does (so pads still reconnect after rest mode). */
+#if !WHATEVERPAD_PROBE
     if (unlink(DB_PATH) == 0) log_line("session: pads of an earlier run discarded");
     log_line("session: pads are paired for this run only");
+#else
+    log_line("probe: observation profile; bond file preserved, Pair disabled, no radio rollback");
+#endif
     syscall(SYS_thr_set_name, -1, "whateverpad");    /* how others find us */
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
@@ -443,8 +450,13 @@ int main(void)
     web_stop(g_web);
     host_close(g_host);                 /* our links; removes our virtual pads */
     g_host = NULL;
+#if !WHATEVERPAD_PROBE
     unlink(DB_PATH);                    /* the session ends: nothing is kept */
     log_line("stopping: Bluetooth released, pads of this session discarded");
+#else
+    attrib_log_summary();
+    log_line("stopping: Bluetooth released, bond file preserved");
+#endif
     if (g_vpad_ok) {
         vpad_creds_restore();           /* leave the credentials as found */
     }

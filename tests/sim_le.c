@@ -37,6 +37,8 @@ struct sim_le {
     uint8_t cur_addr[6];        /* the address advertised now */
     uint8_t cur_type;
     int powered, scanning, connected, encrypted;
+    long busy_until;
+    int foreign_finishes;
     long t_adv, t_report;
 
     /* pairing, as the responder; MSB first like the spec */
@@ -798,6 +800,11 @@ static int op_pump(void *ctx, int timeout_ms)
     sim_le_t *s = ctx;
 
     g_clock += timeout_ms > 0 ? timeout_ms : 1;
+    if (s->busy_until && g_clock >= s->busy_until) {
+        if (s->pad.busy > 0) s->foreign_finishes++;
+        s->pad.busy = 0;
+        s->busy_until = 0;
+    }
     due_events(s);
     if (!s->life.acl_reads) return -1;
     if (s->powered && s->scanning && !s->connected && g_clock - s->t_adv >= 30) {
@@ -916,6 +923,8 @@ int sim_le_outputs(const sim_le_t *s) { return s->outputs; }
 int sim_le_identity(const sim_le_t *s) { return s->identity == 2; }
 int sim_le_creates(const sim_le_t *s) { return s->creates; }
 int sim_le_cancels(const sim_le_t *s) { return s->cancels; }
+void sim_le_busy_for(sim_le_t *s, int ms) { s->busy_until = sim_le_now() + ms; }
+int sim_le_foreign_finishes(const sim_le_t *s) { return s->foreign_finishes; }
 int sim_le_blob_reads(const sim_le_t *s) { return s->blob_reads; }
 const char *sim_le_error(const sim_le_t *s) { return s->error; }
 

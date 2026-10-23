@@ -6,15 +6,16 @@
 
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
+WHATEVERPAD_PROBE ?= 0
 
 OWN_CORE := src/ownership.c src/session.c
-CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
+CORE   := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
 WEB    := src/web.c src/web_page.c
-HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
 
 BUILD := build
 
-.PHONY: all test fuzz demo ps5 send clean check-generated sanitize ci
+.PHONY: all test test-attrib fuzz demo ps5 send clean check-generated sanitize ci
 
 all: test
 
@@ -60,12 +61,22 @@ $(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
 
 # The console source for virtual pads, against stand-ins for the console's libraries.
 # Keep the loader stand-ins from intercepting the sanitizer runtime's own calls.
-$(BUILD)/test_vpad: src/ps5_vpad.c src/log.c src/util.c tests/test_vpad.c | $(BUILD)
-	cc $(HOST_CFLAGS) -D_DARWIN_C_SOURCE -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -o $@ $^
+$(BUILD)/test_vpad.o: src/ps5_vpad.c | $(BUILD)
+	cc $(HOST_CFLAGS) -D_DARWIN_C_SOURCE -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -Dsocket=test_vpad_socket -Dconnect=test_vpad_connect -c -o $@ $<
+
+$(BUILD)/test_vpad_web.o: src/web.c | $(BUILD)
+	cc $(HOST_CFLAGS) -Dbind=test_vpad_web_bind -c -o $@ $<
+
+$(BUILD)/test_vpad: $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c tests/test_vpad.c | $(BUILD)
+	cc $(HOST_CFLAGS) -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -o $@ $^
 
 # Configuration, the console hotkey and the local address.
 $(BUILD)/test_config: src/config.c src/hotkey.c src/netinfo.c src/log.c src/util.c tests/test_config.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
+
+# Conservative legacy settings migration; fault injection is test-only.
+$(BUILD)/test_migrate: src/migrate.c src/config.c src/log.c src/util.c tests/test_migrate.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DMIGRATE_TEST -o $@ $^
 
 # The instance lock.
 $(BUILD)/test_lock: src/lock.c src/log.c src/util.c tests/test_lock.c | $(BUILD)
@@ -78,16 +89,23 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h | $(BUILD)
+$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/attrib.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h | $(BUILD)
 	cc $(HOST_CFLAGS) -Itests/usb_standin -include tests/usb_standin/syscalls.h -c -o $@ $<
 
-$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
+
+$(BUILD)/test_attrib: $(CORE) $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c tests/sim.c tests/test_attrib.c tests/test_hci_usb.c src/attrib.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
+
+test-attrib: $(BUILD)/test_attrib
+	./$(BUILD)/test_attrib
 
 $(BUILD)/test_session: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
-test: $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_migrate $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+	./$(BUILD)/test_attrib
 	./$(BUILD)/test_bond_store
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_hci_usb
@@ -103,6 +121,7 @@ test: $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUIL
 	./$(BUILD)/test_web
 	./$(BUILD)/test_launcher
 	./$(BUILD)/test_hearbridge
+	./$(BUILD)/test_migrate
 
 # Malformed input through every parser, under the sanitizers.
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
@@ -114,6 +133,7 @@ ci:
 	$(MAKE) sanitize
 	$(MAKE) fuzz
 	$(MAKE) check-generated
+	$(MAKE) test-attrib BUILD=build/probe WHATEVERPAD_PROBE=1
 	@checks="$$( $(MAKE) -qp | awk -F: '/^check-(ownership|mutations):/ { print $$1 }' )"; \
 	  if [ -n "$$checks" ]; then $(MAKE) $$checks; fi
 
@@ -122,6 +142,8 @@ fuzz: | $(BUILD)
 	./$(BUILD)/test_fuzz
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_bond_store_fuzz src/bond_store.c tests/test_bond_store_fuzz.c
 	./$(BUILD)/test_bond_store_fuzz
+	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_config_fuzz src/config.c src/hotkey.c src/netinfo.c src/log.c src/util.c tests/test_config.c
+	./$(BUILD)/test_config_fuzz --fuzz
 
 # ---- the console payload ----------------------------------------------------
 
@@ -144,12 +166,15 @@ $(BUILD)/test_hearbridge: $(CORE) tests/sim.c tests/test_hearbridge.c tests/test
 OWN_HEADERS := src/ownership.h src/session.h
 OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_ownership_explore $(BUILD)/test_session_policy
 
-.PHONY: test-ownership check-mutations check-ownership
+.PHONY: test-ownership check-mutations check-ownership sanitize-ownership
 test: test-ownership
 test-ownership: $(OWN_TESTS)
 	./$(BUILD)/test_ownership
 	./$(BUILD)/test_ownership_explore
 	./$(BUILD)/test_session_policy
+
+sanitize-ownership:
+	$(MAKE) test-ownership BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
 $(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)

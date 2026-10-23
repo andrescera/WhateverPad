@@ -2,6 +2,12 @@
  *
  *   menu_combo   = options+l2+r2      buttons held to open the menu on the console
  *   menu_hold_ms = 1500                how long they are held (500..5000)
+ *   auto_reconnect = 1                 reconnect while the transport is active
+ *   lan_access = 0                     trusted-LAN control (not authentication)
+ *   developer_mode = 0                 developer diagnostics
+ *   notifications = 1                  console notifications
+ *
+ * Booleans accept exactly 0 or 1.
  *
  * Button names: l1 r1 l2 r2 l3 r3 cross circle square triangle up down left
  * right options create touchpad. At least two. The PS button cannot be read.
@@ -17,12 +23,22 @@
 typedef struct {
     uint32_t menu_combo;
     int menu_hold_ms;
+    int auto_reconnect;
+    int lan_access;
+    int developer_mode;
+    int notifications;
 } whateverpad_config;
 
 void config_defaults(whateverpad_config *c);
 
+#define CONFIG_MAX_BYTES 4096
+#define CONFIG_LINE_MAX 159
+/* Bounded, non-NUL-terminated input. Invalid lines leave their settings alone;
+ * oversized input is rejected as a whole. Returns the invalid-line count. */
+int config_parse(whateverpad_config *c, const char *bytes, size_t len);
+
 /* Reads `path`. Returns the number of lines not understood; a missing file
- * is not an error (returns 0, defaults kept). */
+ * is not an error (returns 0, defaults kept). I/O errors return 1. */
 int config_load(whateverpad_config *c, const char *path);
 
 /* "options+l2+r2" -> mask. Returns 0 if a name is unknown or fewer than two
