@@ -12,6 +12,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Opaque value storage reuse, not production resource/host cloning. */
+extern void own_model_copy(own_ledger *, const own_ledger *);
+
 #define DEPTH 12
 #define KEY_MAX 8192
 #ifndef OWN_EXPLORE_WORKERS
@@ -600,6 +603,41 @@ static size_t key_of(const world *w, uint8_t out[KEY_MAX])
     if (w->o[HELD]) { memcpy(out+n, &w->held, sizeof w->held); n += sizeof w->held; }
     return n;
 }
+
+/* These are the same oracle-only early returns in apply(), before any production
+ * transition. Avoid copying 28 KiB just to discover an event is disabled. */
+static int oracle_disabled(const world *w, enum scenario s, unsigned a)
+{
+    if (a == PREPARE_OLD) return s == VIRTUAL || w->o[REF_S];
+    if (a == PREPARE_NEW) return s == VIRTUAL || w->o[REF_S+1] || !w->o[REF_S];
+    if (a == COMMIT_HELD) return !w->o[HELD];
+    if (a == LOCAL_SUCCESS || a == LOCAL_REFUSAL) return !w->o[PENDING_I];
+    if (a == RAND) return !w->o[BARRIER_I] || w->o[PENDING_I];
+    if (a == OLD_RAND) return !w->o[BARRIER_I] || !w->o[OLD_RANDOM];
+    if (a == OLD_ACK || a == FOREIGN_ACK || a == OLD_REFUSAL) {
+        if (!w->o[PENDING_I] || w->o[PENDING_PHASE] != OWN_FORWARD ||
+            w->o[FOREIGN_USED]) return 1;
+        if (a == OLD_ACK) return !w->o[OLD_OP] || w->o[OLD_OP] != w->o[PENDING_OP];
+        if (a == OLD_REFUSAL)
+            return !w->o[OLD_REFUSAL_OP] || w->o[OLD_REFUSAL_OP] != w->o[PENDING_OP];
+    }
+    if (a == TERMINAL_OK || a == TERMINAL_FAIL || a == OLD_TERMINAL || a == REUSED_HANDLE) {
+        unsigned i = a == OLD_TERMINAL ? 0 : w->o[REF_S+1] ? 1 : 0;
+        return !w->o[REF_S+i] || w->o[TERMINALS+i] || !w->o[SENDS+i] ||
+               is_setting(s) || s == QUERY || s == VIRTUAL ||
+               (a == REUSED_HANDLE && (!is_create(s) || i != 1));
+    }
+    if (a == IDENTITY || a == UNPROVEN_ID)
+        return !(w->o[ADDS] && !w->o[IDENTIFIED]) &&
+               !(w->o[ADDS+1] && !w->o[IDENTIFIED+1]);
+    if (a == READBACK || a == READBACK_FOREIGN)
+        return !is_setting(s) || !w->o[REF_S] ||
+               (w->o[NOISE] & (a == READBACK ? 2 : 8));
+    if (a == FOREIGN_WRITE) return !is_setting(s) || !w->o[REF_S];
+    if (a == INPUT || a == OLD_INPUT || a == DISCONNECT || a == OLD_DISCONNECT || a == DETACH)
+        return !is_create(s) && s != VIRTUAL && s != AUTH && s != ENCRYPT && s != DHKEY;
+    return 0;
+}
 static uint64_t hash_key(const uint8_t *key, size_t n)
 {
     uint64_t hash = UINT64_C(1469598103934665603);
@@ -663,14 +701,17 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
 {
     search q = {0};
     world root = initial(policy, s);
+    own_ledger *base_storage = own_clone(root.l);
+    own_ledger *next_storage = own_clone(root.l);
+    if (!base_storage || !next_storage) exit(2);
     insert(&q, &root, NULL, 0);
     uint64_t edges = 0;
     for (size_t head = 0; head < q.count; head++) {
         node current = q.nodes[head];
         if (current.depth == DEPTH) continue;
         world base = root;
-        base.l = own_clone(root.l);
-        if (!base.l) exit(2);
+        base.l = base_storage;
+        own_model_copy(base.l, root.l);
         const char *error;
         for (unsigned k = 0; k < current.depth; k++) {
             if (!apply(&base, s, (enum action)current.path[k], &error) || error) exit(2);
@@ -681,25 +722,25 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
             fputs("nondeterministic replay\n", stderr); exit(2);
         }
         for (unsigned a = 0; a < ACTIONS; a++) {
+            if (oracle_disabled(&base, s, a)) continue;
             world next = base;
-            next.l = own_clone(base.l);
-            if (!next.l) exit(2);
+            next.l = next_storage;
+            own_model_copy(next.l, base.l);
             if (apply(&next, s, (enum action)a, &error)) {
                 edges++;
                 if (!error) error = own_invariant(next.l);
                 if (error) { trace(s, policy, &current, a, error); exit(1); }
                 insert(&q, &next, &current, a);
             }
-            own_free(next.l);
         }
-        own_free(base.l);
     }
     printf("class=%s policy=%d states=%zu edges=%llu\n", scenario_names[s], policy,
            q.count, (unsigned long long)edges);
     *saw_g |= q.saw_g; *saw_h |= q.saw_h;
     size_t count = q.count;
     for (size_t i = 0; i < q.count; i++) free(q.nodes[i].key);
-    free(q.nodes); free(q.slots); own_free(root.l);
+    free(q.nodes); free(q.slots);
+    own_free(next_storage); own_free(base_storage); own_free(root.l);
     return count;
 }
 

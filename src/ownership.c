@@ -214,6 +214,13 @@ own_ledger *own_clone(const own_ledger *l)
     return out;
 }
 
+/* Model-only value copy; no native pointers/resources exist in the ledger.
+ * Kept out of the production header and source-gated to tests. */
+void own_model_copy(own_ledger *out, const own_ledger *in)
+{
+    memcpy(out, in, sizeof *out);
+}
+
 int own_activate(own_ledger *l)
 {
     if (!admits(l)) return 0;

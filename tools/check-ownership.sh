@@ -31,7 +31,7 @@ function scan(path, original, allowLegacy = true) {
     }
   }
   if (path !== "src/ownership.c" && path !== "src/ownership.h" && !path.startsWith("tests/")) {
-    for (const m of text.matchAll(/\b(?:own_clone|own_canonical)\b/g))
+    for (const m of text.matchAll(/\b(?:own_clone|own_canonical|own_model_copy)\b/g))
       fail(m.index, "test-only ledger representation outside model tests");
     for (const m of text.matchAll(/\b(own_backend_receipt|own_backend_local_result|own_backend_identity)\b/g)) {
       const allowed = m[1] === "own_backend_receipt" ? "src/hci_usb.c" : "src/ps5_vpad.c";
@@ -88,6 +88,7 @@ const controls = [
   ["src/foreign.c", "void *hook = &own_backend_receipt;"],
   ["src/foreign.c", "void f(void) { own_clone(l); }"],
   ["src/foreign.c", "void f(void) { own_canonical(l, out, n); }"],
+  ["src/foreign.c", "void f(void) { own_model_copy(a, b); }"],
   ["src/host.c", "void f(void) { send_cmd(h, OP_RESET, 0, 0); }"]
 ];
 for (const [path,text] of controls) {
