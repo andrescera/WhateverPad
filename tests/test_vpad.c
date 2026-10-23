@@ -8,17 +8,43 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-static int g_fail;
+static int g_fail, pending, strict_mode;
 #define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+
+static void expected_failure(int todo, const char *name, int desired, const char *effect)
+{
+    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
+    if (!desired) {
+        pending++;
+        if (strict_mode) printf("FAIL %s: %s (todo-%d)\n", name, effect, todo);
+    }
+}
+#define EFFECT(todo, name, c) expected_failure(todo, name, (c), #c)
 
 /* What the stand-ins were asked, in order. */
 static char g_calls[64];
 static int g_inited, g_priv_result_after_init, g_init_result;
 static uint64_t g_authid = 0x4800000000000001ull;
 static uint8_t g_caps[16];
+static int log_pipe[2], adds, binds, deletes, frames;
+static int fail_library, fail_symbol, add_result, bind_result;
+static int32_t deleted_handle;
+
+int test_vpad_socket(int domain, int type, int protocol)
+{
+    (void)domain; (void)type; (void)protocol;
+    return dup(log_pipe[0]);
+}
+
+int test_vpad_connect(int fd, const struct sockaddr *addr, socklen_t n)
+{
+    (void)fd; (void)addr; (void)n;
+    return 0;
+}
 
 static long g_now = 100000;
 static long fake_clock(void) { return g_now; }
@@ -70,18 +96,26 @@ int32_t scePadReadState(int32_t h, void *d)
     p[76] = (unsigned char)g_pad_connected;
     return 0;
 }
-int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t) { (void)p; (void)t; return 0; }
-int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; return 0; }
-int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { (void)h; return 0; }
+int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t)
+{
+    static const char candidate[] =
+        "SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x11112222][type:1][subType:22][capabilityBattery:0]\n";
+    (void)p; (void)t;
+    adds++;
+    if (!add_result) CHECK(write(log_pipe[1], candidate, sizeof candidate - 1) == sizeof candidate - 1);
+    return add_result;
+}
+int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; frames++; return 0; }
+int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { deleted_handle = h; deletes++; return 0; }
 uint64_t kernel_get_ucred_authid(pid_t pid) { (void)pid; return g_authid; }
 int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a) { (void)pid; g_authid = a; return 0; }
 int32_t kernel_get_ucred_caps(pid_t pid, uint8_t c[16]) { (void)pid; memcpy(c, g_caps, 16); return 0; }
 int32_t kernel_set_ucred_caps(pid_t pid, const uint8_t c[16]) { (void)pid; memcpy(g_caps, c, 16); return 0; }
 int sceKernelSendNotificationRequest(int a, void *r, size_t n, int b) { (void)a; (void)r; (void)n; (void)b; return 0; }
 
-static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; (void)u; return 0; }
-void *dlopen(const char *path, int mode) { (void)path; (void)mode; return (void *)1; }
-void *dlsym(void *h, const char *name) { (void)h; (void)name; return (void *)fake_bind; }
+static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; (void)u; binds++; return bind_result; }
+void *dlopen(const char *path, int mode) { (void)path; (void)mode; return fail_library ? NULL : (void *)1; }
+void *dlsym(void *h, const char *name) { (void)h; (void)name; return fail_symbol ? NULL : (void *)fake_bind; }
 
 static void reset(int init_result, int priv_after_init)
 {
@@ -91,8 +125,66 @@ static void reset(int init_result, int priv_after_init)
     g_priv_result_after_init = priv_after_init;
 }
 
-int main(void)
+static void test_refused_vendor_libraries(void)
 {
+    fail_library = 1;
+    CHECK(!vpad_init() && !vpad_add(0));
+    fail_library = 0; fail_symbol = 1;
+    CHECK(!vpad_init() && !vpad_add(0));
+    fail_symbol = 0;
+}
+
+/* T:164-211: vendor effects only, with real identification from a pipe. */
+static void test_refused_vendor_acquisitions_do_not_invent_ownership(void)
+{
+    CHECK(pipe(log_pipe) == 0);
+    ph_clock_hook = fake_clock;
+    reset(0, 0);
+    CHECK(vpad_init());
+    add_result = -1;
+    CHECK(vpad_add(0));
+    vpad_poll(g_now);
+    CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+    add_result = 0;
+    CHECK(vpad_add(1));
+    vpad_poll(g_now);
+    EFFECT(10, "refused-vendor-add-does-not-block-next-add", adds == 2);
+    vpad_remove(0);
+    g_now += 3001;
+    vpad_poll(g_now);
+    vpad_poll(g_now);
+    CHECK(adds == 2);
+    bind_result = -1;
+    vpad_poll(g_now);
+    g_now += 301;
+    vpad_poll(g_now);
+    CHECK(binds == 1 && deletes == 1 && frames == 0);
+    CHECK(deleted_handle == 0x11112222);
+    vpad_remove(1); vpad_remove(1);
+    CHECK(deletes == 1);
+    bind_result = 0;
+    vpad_close_physical();
+    g_pad_opened = 1; /* GetHandle supplies a borrowed handle. */
+    int before = g_closed;
+    uint32_t buttons;
+    g_now += 6000;
+    CHECK(vpad_read_physical(&buttons));
+    vpad_close_physical();
+    CHECK(g_closed == before && g_pad_opened == 1);
+    g_pad_opened = 0; g_open_result = -1; g_now += 6000;
+    CHECK(!vpad_read_physical(&buttons));
+    vpad_close_physical();
+    CHECK(g_closed == before);
+    g_open_result = 7;
+    close(log_pipe[0]); close(log_pipe[1]);
+}
+
+int main(int argc, char **argv)
+{
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    strict_mode = argc == 2 && !strcmp(argv[1], "--expected-failures");
+    if (argc > 2 || (argc == 2 && !strict_mode)) return 2;
+    test_refused_vendor_libraries();
     printf("vpad_init: libScePad is initialised before its privilege is set\n");
     reset(0, 0);
     CHECK(vpad_init() == 1);
@@ -223,6 +315,9 @@ int main(void)
         CHECK(vpad_choose_user(none, 0x1111, 0x1111, "other") == -1);       /* nobody signed in */
     }
 
+    test_refused_vendor_acquisitions_do_not_invent_ownership();
+    ph_clock_hook = NULL;
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
-    return g_fail != 0;
+    printf("%d expected-failing vpad cases\n", pending);
+    return g_fail != 0 || (strict_mode && pending != 0);
 }

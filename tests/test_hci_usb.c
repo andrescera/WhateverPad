@@ -11,8 +11,19 @@
 #include <unistd.h>
 
 enum { EVENTS = 40, ACL = 20, OUT = 60, XFERS = 62, FD = 73 };
-static int failures, checks;
+static int failures, checks, pending, strict_mode;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL %d: %s\n", __LINE__, #c); failures++; } } while (0)
+
+static void expected_failure(int todo, const char *name, int desired, const char *effect)
+{
+    checks++;
+    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
+    if (!desired) {
+        pending++;
+        if (strict_mode) printf("FAIL %s: %s (todo-%d)\n", name, effect, todo);
+    }
+}
+#define EFFECT(todo, name, c) expected_failure(todo, name, (c), #c)
 
 static struct {
     struct usb_fs_endpoint *ep;
@@ -24,6 +35,8 @@ static struct {
     int fail_index, stop_failures, virtual_waits;
     struct { const char *name; int index; } trace[2048];
     int ntrace;
+    int empty_stream, empty_completions;
+    int reject_node, node_attempts, alternate_out;
 } usb;
 static long clock_ms;
 static long clock_now(void) { return clock_ms; }
@@ -59,7 +72,10 @@ static void reset(void)
 int test_usb_open(const char *path, int flags, ...)
 {
     (void)flags;
-    assert(strcmp(path, "/dev/ugen0.2") == 0 && !usb.fd_open);
+    assert(!usb.fd_open);
+    usb.node_attempts++;
+    if (usb.reject_node) { errno = ENXIO; return -1; }
+    assert(strcmp(path, "/dev/ugen0.2") == 0);
     record("OPEN", -1);
     usb.opens++;
     usb.fd_open = 1;
@@ -139,6 +155,14 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         assert(d->ugd_maxlen >= sizeof cfg);
         memcpy(d->ugd_data, cfg, sizeof cfg);
         d->ugd_actlen = sizeof cfg;
+        if (usb.alternate_out) {
+            static const uint8_t spare[] = {7, 5, 0x02, 2, 0, 2, 0};
+            uint8_t *out = d->ugd_data;
+            assert(d->ugd_maxlen >= sizeof cfg + sizeof spare);
+            out[2] += sizeof spare; out[13] = 4; out[34] = 0x01;
+            memcpy(out + sizeof cfg, spare, sizeof spare);
+            d->ugd_actlen += sizeof spare;
+        }
         return 0;
     }
     case USB_FS_INIT: {
@@ -158,6 +182,7 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         assert(usb.initialized && usb.opened[index] && !usb.busy[index] && !usb.queued[index]);
         usb.busy[index] = 1; usb.starts[index]++;
         record("START", index);
+        if (index == 0 && usb.empty_stream) completion(0, NULL, 0);
         return 0;
     case USB_FS_STOP:
         assert(usb.initialized && usb.opened[index]);
@@ -178,6 +203,10 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         usb.busy[index] = usb.queued[index] = 0;
         usb.head = (usb.head + 1) % 128; usb.count--;
         record("COMPLETE", index);
+        if (index == 0 && usb.empty_stream) {
+            clock_ms += 100;
+            if (++usb.empty_completions == 120) usb.empty_stream = 0;
+        }
         return 0;
     }
     case USB_FS_UNINIT:
@@ -365,15 +394,74 @@ static void test_event_read_operations(void)
     transcript("partial-event-open-topup-then-close-all");
 }
 
-int main(void)
+/* Appendix B / T:433-451, using pump's existing per-call timeout on M. */
+static void test_empty_completion_stream_observes_deadline(void)
 {
+    hci_t h;
+    reset(); h = start();
+    long deadline = clock_ms + 10000;
+    completion(0, NULL, 0);
+    usb.empty_stream = 1;
+    CHECK(h.ops->pump(h.ctx, 10000) == 0);
+    EFFECT(9, "empty-completion-stream-deadline", clock_ms <= deadline && usb.empty_stream);
+    usb.empty_stream = 0;
+    closed_once(h);
+}
+
+static void test_refused_usb_initialization_has_no_uninit_authority(void)
+{
+    hci_t h;
+    reset(); usb.fail_request = USB_FS_INIT;
+    CHECK(!hci_usb_open(&h));
+    CHECK(usb.inits == 0 && usb.closes == 1);
+    EFFECT(9, "refused-USB-init-no-uninit", usb.uninits == 0);
+}
+
+static void test_refused_transfer_opens_never_authorize_stops(void)
+{
+    static const int indices[] = {OUT, 0, EVENTS};
+    for (unsigned i = 0; i < sizeof indices / sizeof indices[0]; i++) {
+        hci_t h;
+        reset(); usb.fail_request = USB_FS_OPEN; usb.fail_index = indices[i];
+        CHECK(!hci_usb_open(&h));
+        CHECK(usb.inits == 1 && usb.uninits == 1 && usb.closes == 1);
+        for (int j = 0; j < XFERS; j++) CHECK(usb.stops[j] == 0);
+    }
+}
+
+static void test_node_and_alternate_output_ownership(void)
+{
+    static const unsigned char acl[] = {0x41, 0x20, 1, 0, 0xaa};
+    hci_t h;
+    reset(); usb.reject_node = 1;
+    CHECK(!hci_usb_open(&h));
+    CHECK(usb.node_attempts == 5 && usb.opens == 0 && usb.uninits == 0 && usb.closes == 0);
+    for (int refused = 0; refused < 2; refused++) {
+        reset(); usb.alternate_out = 1;
+        if (refused) { usb.fail_request = USB_FS_OPEN; usb.fail_index = OUT + 1; }
+        h = start();
+        CHECK(h.ops->acl_send(h.ctx, acl, sizeof acl));
+        closed_once(h);
+        CHECK(usb.stops[OUT + 1] == !refused && usb.stops[OUT] == refused);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    strict_mode = argc == 2 && !strcmp(argv[1], "--expected-failures");
+    if (argc > 2 || (argc == 2 && !strict_mode)) return 2;
     test_close_busy_reads();
     test_expected_current_yield_is_not_close();
     test_late_response_and_missing_stop_completion();
     test_ioctl_failures();
     test_busy_acl_out();
     test_event_read_operations();
+    test_empty_completion_stream_observes_deadline();
+    test_refused_usb_initialization_has_no_uninit_authority();
+    test_refused_transfer_opens_never_authorize_stops();
+    test_node_and_alternate_output_ownership();
     ph_clock_hook = NULL;
-    printf("%d USB lifetime checks, %d failed\n", checks, failures);
-    return failures != 0;
+    printf("%d USB lifetime checks, %d failed; %d expected-failing cases\n", checks, failures, pending);
+    return failures != 0 || (strict_mode && pending != 0);
 }

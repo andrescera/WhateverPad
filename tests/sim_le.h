@@ -63,6 +63,8 @@ int  sim_le_blob_reads(const sim_le_t *s);
 int  sim_le_identity(const sim_le_t *s);        /* the host's identity was received */
 int  sim_le_creates(const sim_le_t *s);         /* LE Create Connection commands */
 int  sim_le_cancels(const sim_le_t *s);         /* LE Create Connection Cancel commands */
+void sim_le_busy_for(sim_le_t *s, int ms);     /* foreign procedure ends on virtual time */
+int  sim_le_foreign_finishes(const sim_le_t *s);
 const char *sim_le_error(const sim_le_t *s);    /* what the pad found wrong */
 
 #endif

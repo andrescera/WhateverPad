@@ -10,13 +10,25 @@
 #include <arpa/inet.h>
 
 #include <signal.h>
+#include <poll.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static int g_fail;
+static int g_fail, pending, strict_mode;
 #define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+
+static void expected_failure(int todo, const char *name, int desired, const char *effect)
+{
+    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
+    if (!desired) {
+        pending++;
+        if (strict_mode) printf("FAIL %s: %s (todo-%d)\n", name, effect, todo);
+    }
+}
+#define EFFECT(todo, name, c) expected_failure(todo, name, (c), #c)
 
 /* A port per run, so two runs at once do not collide. */
 static int g_port;
@@ -59,7 +71,8 @@ static void run(int ms)
 static int request(const char *raw, size_t rawlen, char *out, int max)
 {
     struct sockaddr_in sin;
-    int fd = socket(AF_INET, SOCK_STREAM, 0), n = 0, i;
+    int fd = socket(AF_INET, SOCK_STREAM, 0), n = 0;
+    struct pollfd ready = {.fd = fd, .events = POLLIN};
 
     memset(&sin, 0, sizeof sin);
     sin.sin_family = AF_INET;
@@ -69,15 +82,16 @@ static int request(const char *raw, size_t rawlen, char *out, int max)
         close(fd);
         return -1;
     }
-    if (rawlen) send(fd, raw, rawlen, 0);
-    for (i = 0; i < 400; i++) {             /* the server runs in this thread */
+    if (rawlen) CHECK(send(fd, raw, rawlen, 0) == (ssize_t)rawlen);
+    CHECK(shutdown(fd, SHUT_WR) == 0);
+    web_poll(g_web);                      /* all request bytes or EOF are available */
+    web_poll(g_web);                      /* truncated input now exposes the write-half EOF */
+    while (n < max - 1) {
         ssize_t k;
-        web_poll(g_web);
-        if (g_host) host_poll(g_host, 1);
-        k = recv(fd, out + n, (size_t)(max - 1 - n), MSG_DONTWAIT);
+        if (poll(&ready, 1, 1000) <= 0) { CHECK(0); break; }
+        k = recv(fd, out + n, (size_t)(max - 1 - n), 0);
         if (k > 0) n += (int)k;
-        else if (k == 0) break;
-        usleep(1000);
+        else { CHECK(k == 0 || (k < 0 && errno == ECONNRESET)); break; }
     }
     out[n] = '\0';
     close(fd);
@@ -97,8 +111,125 @@ static int get_with(const char *head, char *out, int max)
     return request(head, strlen(head), out, max);
 }
 
-int main(void)
+static int complete_response(const char *out, int bytes, int code)
 {
+    const char *body = strstr(out, "\r\n\r\n");
+    const char *length = strstr(out, "\r\nContent-Length: ");
+    unsigned n = 0;
+    int actual = 0;
+    return bytes > 0 && sscanf(out, "HTTP/1.1 %d", &actual) == 1 && actual == code &&
+        body && length && sscanf(length, "\r\nContent-Length: %u", &n) == 1 &&
+        (size_t)bytes == (size_t)(body + 4 - out) + n;
+}
+
+static int matrix_combo_set(int slot, const char *text)
+{
+    return slot == 0 && !strcmp(text, "none");
+}
+
+/* F / T:152-202: use an actual failure, then age the old cleanup budget. */
+static void test_failed_startup_reports_after_cleanup_deadline(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    hci_t io = sim_hci(sim);
+    volatile int stop = 0;
+    char out[2048];
+    web_cfg cfg = {.host = &g_host, .stop = &stop, .retry = &g_retry,
+        .bt_state = &g_bt_state, .bt_reason = "startup failed", .version = "failure"};
+    unlink("build/test_web_failed.db");
+    sim_go_deaf(sim);
+    g_host = host_open(io, "build/test_web_failed.db", NULL);
+    CHECK(!g_host);
+    EFFECT(15, "failed-startup-transport-cleanup", sim_resources(sim).closes == 1);
+    io.ops->close(io.ctx); /* M's caller must finish the failed attempt. */
+    CHECK(sim_resources(sim).closes == 1);
+    g_bt_state = WEB_BT_FAILED; g_retry = 0;
+    g_web = web_start(&cfg, PORT);
+    CHECK(g_web != NULL);
+    if (g_web) {
+        int bytes = get("GET", "/api/state", out, sizeof out);
+        CHECK(complete_response(out, bytes, 200));
+        io.ops->pump(io.ctx, 10001);
+        bytes = get("GET", "/api/state", out, sizeof out);
+        CHECK(complete_response(out, bytes, 200));
+        CHECK(strstr(out, "\"bluetooth\":\"failed\"") && strstr(out, "\"reason\":\"startup failed\""));
+        bytes = get("POST", "/api/retry", out, sizeof out);
+        CHECK(complete_response(out, bytes, 200) && strstr(out, "{\"ok\":true}") && g_retry == 1);
+        web_stop(g_web); g_web = NULL;
+    }
+    sim_free(sim); g_retry = 0; g_bt_state = WEB_BT_OK;
+    unlink("build/test_web_failed.db");
+}
+
+/* T:236-357: M's expressible states; session-only rows are in task-2.md. */
+static void test_routes_reply_completely_in_available_states(void)
+{
+    static const struct { const char *method, *path; int active, absent; } routes[] = {
+        {"GET", "/", 200, 200}, {"GET", "/index.html", 200, 200},
+        {"GET", "/api/state", 200, 200}, {"GET", "/api/tune", 200, 200},
+        {"GET", "/api/log", 200, 200}, {"GET", "/api/live?from=0", 200, 200},
+        {"POST", "/api/hci?op=1009", 200, 404}, {"POST", "/api/hci?op=0C03", 400, 404},
+        {"POST", "/api/forget?addr=06:05:04:03:02:01", 404, 404},
+        {"POST", "/api/forget?addr=zz", 400, 404},
+        {"POST", "/api/ps?slot=1", 200, 200}, {"POST", "/api/ps?slot=9", 400, 400},
+        {"POST", "/api/pscombo?slot=1&combo=none", 200, 200},
+        {"POST", "/api/pscombo?slot=1", 400, 400},
+        {"POST", "/api/tune?trace=0", 200, 200}, {"POST", "/api/tune?bad", 400, 400},
+        {"POST", "/api/missing", 404, 404}, {"GET", "/api/missing", 404, 404},
+        {"GET", "/missing", 404, 404},
+        {"GET", "/api/retry", 404, 404}, {"OPTIONS", "/api/stop", 404, 404},
+        {"POST", "/api/pair", 200, 404}
+    };
+    extern const unsigned int web_page_html_len;
+    int capacity = (int)web_page_html_len + 65536;
+    char *out = malloc((size_t)capacity);
+    CHECK(out != NULL);
+    if (!out) return;
+    {
+        FILE *log = fopen("build/test_web.log", "w");
+        CHECK(log != NULL);
+        if (log) { fputs("matrix\n", log); fclose(log); }
+    }
+    for (int state = 0; state < 3; state++) {
+        sim_pad pad = {0};
+        sim_t *sim = sim_new(&pad);
+        hci_t io = sim_hci(sim);
+        volatile int stop = 0;
+        web_cfg cfg = {.host = &g_host, .stop = &stop, .retry = &g_retry,
+            .bt_state = &g_bt_state, .version = "matrix", .press_ps = fake_press_ps,
+            .log_path = "build/test_web.log", .ps_combo_set = matrix_combo_set};
+        g_host = state == 1 ? host_open(io, "build/test_web_matrix.db", NULL) : NULL;
+        if (state == 1) CHECK(g_host != NULL);
+        g_bt_state = state == 0 ? WEB_BT_TRYING : state == 1 ? WEB_BT_OK : WEB_BT_FAILED;
+        g_web = web_start(&cfg, PORT); CHECK(g_web != NULL);
+        if (g_web) {
+            for (unsigned i = 0; i < sizeof routes / sizeof routes[0]; i++) {
+                int bytes = get(routes[i].method, routes[i].path, out, capacity);
+                if (!complete_response(out, bytes, state == 1 ? routes[i].active : routes[i].absent))
+                    printf("ROUTE state=%d path=%s bytes=%d header=%.80s\n", state, routes[i].path, bytes, out);
+                CHECK(complete_response(out, bytes, state == 1 ? routes[i].active : routes[i].absent));
+            }
+            int bytes = get("POST", "/api/retry", out, capacity);
+            CHECK(complete_response(out, bytes, state == 2 ? 200 : 400));
+            CHECK(g_retry == (state == 2));
+            g_retry = 0;
+            web_stop(g_web); g_web = NULL;
+        }
+        if (g_host) host_close(g_host); else io.ops->close(io.ctx);
+        g_host = NULL;
+        CHECK(sim_resources(sim).closes == 1);
+        sim_free(sim);
+    }
+    g_bt_state = WEB_BT_OK;
+    g_ps_calls = 0; g_ps_slot = -1;
+    free(out);
+    unlink("build/test_web_matrix.db");
+}
+
+int main(int argc, char **argv)
+{
+    setvbuf(stdout, NULL, _IOLBF, 0);
     static const unsigned char addr[6] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
     static char out[70000];
     volatile int stop = 0;
@@ -107,8 +238,12 @@ int main(void)
     web_cfg wc;
     int i;
 
+    strict_mode = argc == 2 && !strcmp(argv[1], "--expected-failures");
+    if (argc > 2 || (argc == 2 && !strict_mode)) return 2;
     signal(SIGPIPE, SIG_IGN);
     g_port = 20000 + (int)(getpid() % 20000);
+    test_failed_startup_reports_after_cleanup_deadline();
+    test_routes_reply_completely_in_available_states();
     unlink("build/test_web.db");
     memset(&pad, 0, sizeof pad);
     pad.mode = SIM_WAIT_PAIRING;
@@ -330,6 +465,8 @@ int main(void)
     web_stop(g_web);
     host_close(g_host);
     sim_free(sim);
+    g_host = NULL; g_web = NULL; ph_clock_hook = NULL;
     printf(g_fail ? "%d check(s) failed\n" : "all web checks passed\n", g_fail);
-    return g_fail != 0;
+    printf("%d expected-failing web cases\n", pending);
+    return g_fail != 0 || (strict_mode && pending != 0);
 }

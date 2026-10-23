@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-static int failures, checks, pending;
+static int failures, checks, pending, strict_mode;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL %d: %s\n", __LINE__, #c); failures++; } } while (0)
 static char directory[] = "/tmp/whateverpad-session-XXXXXX";
 static char db[160];
@@ -21,9 +21,24 @@ static void expected_failure(int task, const char *name, int desired)
 {
     /* --expected-failures makes these real failing assertions, separately
      * from the green tests of today's transport and observable behavior. */
-    printf("%s expected-failing-until-task-%d %s\n", desired ? "XPASS" : "XFAIL", task, name);
-    if (!desired) pending++;
+    int todo = task == 3 ? 15 : task == 4 ? 16 : task;
+    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
+    if (!desired) {
+        pending++;
+        if (strict_mode) printf("FAIL %s: desired observable effect absent (todo-%d)\n", name, todo);
+    }
 }
+
+static void expected_effect(int todo, const char *name, int desired, const char *effect)
+{
+    checks++;
+    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
+    if (!desired) {
+        pending++;
+        if (strict_mode) printf("FAIL %s: %s (todo-%d)\n", name, effect, todo);
+    }
+}
+#define EFFECT(todo, name, c) expected_effect(todo, name, (c), #c)
 
 static void clear_db(void)
 {
@@ -339,10 +354,442 @@ static void test_expected_current_le_status_loses_pending_ownership(void)
     sim_le_free(s);
 }
 
+static const hci_ops *effect_base;
+static int foreign_order, inquiry_commands, inquiry_cancels;
+static int foreign_create(void *ctx, unsigned op, const void *p, int n)
+{
+    static const unsigned char success[] = {0, 1, 0x0d, 0x20};
+    if (op == 0x200d && foreign_order == 1)
+        sim_le_inject_event(ctx, 0x0f, success, sizeof success);
+    if (op == 0x200d && foreign_order == 3)
+        sim_le_delay_events(ctx, 0x0f, -1, 1, -1);
+    int result = effect_base->cmd(ctx, op, p, n);
+    if (op == 0x200d && foreign_order >= 2)
+        sim_le_inject_event(ctx, 0x0f, success, sizeof success);
+    return result;
+}
+
+/* Appendix A and T:675-717: retain real busy refusals in all four orders. */
+static void test_foreign_create_status_never_authorizes_cancel(void)
+{
+    static const char *const names[] = {
+        "foreign-create-busy-control", "foreign-create-success-before-busy",
+        "foreign-create-success-after-busy", "foreign-create-local-status-lost"
+    };
+    for (foreign_order = 0; foreign_order < 4; foreign_order++) {
+        sim_le_pad p = {0};
+        memcpy(p.addr, third_party, 6);
+        p.vid = 0x045e; p.pid = 0x0b13; p.busy = 1;
+        sim_le_t *sim = sim_le_new(&p);
+        hci_t io = sim_le_hci(sim);
+        hci_ops ops = *io.ops;
+        effect_base = io.ops; ops.cmd = foreign_create; io.ops = &ops;
+        seen callbacks = {0};
+        host_events ev = observers(&callbacks);
+        next_db();
+        host_t *h = host_open(io, db, &ev);
+        CHECK(h != NULL);
+        if (!h) { io.ops->close(io.ctx); sim_le_free(sim); continue; }
+        CHECK(host_pair(h, 30));
+        long end = sim_le_now() + 200;
+        while (!sim_le_creates(sim) && sim_le_now() < end) host_poll(h, 5);
+        host_poll(h, 5);
+        CHECK(sim_le_creates(sim) == 1);
+        sim_le_busy_for(sim, 600);
+        host_close(h);
+        io.ops->pump(io.ctx, 600);
+        if (foreign_order == 0 || foreign_order == 2)
+            EFFECT(14, names[foreign_order], sim_le_cancels(sim) == 0 && sim_le_foreign_finishes(sim) == 1);
+        else CHECK(sim_le_cancels(sim) == 0 && sim_le_foreign_finishes(sim) == 1);
+        CHECK(sim_le_resources(sim).closes == 1);
+        CHECK(callbacks.connects == 0 && callbacks.disconnects == 0);
+        sim_le_free(sim);
+    }
+}
+
+static int busy_inquiry(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == OP_INQUIRY) {
+        static const unsigned char busy[] = {0x0c, 1, 1, 4};
+        inquiry_commands++;
+        sim_inject_event(ctx, 0x0f, busy, sizeof busy);
+        return 1;
+    }
+    if (op == OP_INQUIRY_CANCEL) inquiry_cancels++;
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static void test_foreign_inquiry_untouched(void)
+{
+    sim_pad p = pad_fixture();
+    sim_t *sim = sim_new(&p);
+    hci_t io = sim_hci(sim);
+    hci_ops ops = *io.ops;
+    effect_base = io.ops; ops.cmd = busy_inquiry; io.ops = &ops;
+    inquiry_commands = inquiry_cancels = 0;
+    next_db();
+    host_t *h = host_open(io, db, NULL);
+    CHECK(h != NULL);
+    if (h) {
+        CHECK(host_pair(h, 30));
+        for (int i = 0; i < 5; i++) host_poll(h, 5);
+        CHECK(inquiry_commands > 0);
+        host_close(h);
+    } else io.ops->close(io.ctx);
+    EFFECT(14, "foreign-inquiry-untouched", inquiry_cancels == 0);
+    CHECK(sim_resources(sim).closes == 1);
+    sim_free(sim);
+}
+
+static int forbidden_commands;
+static int observe_forbidden(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == 0x0402 || op == 0x0408 || op == 0x200e) forbidden_commands++;
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static void test_raw_cancels_never_reach_controller(void)
+{
+    static const unsigned opcodes[] = {0x0402, 0x0408, 0x200e};
+    sim_pad p = {0};
+    sim_t *sim = sim_new(&p);
+    hci_t io = sim_hci(sim);
+    hci_ops ops = *io.ops;
+    effect_base = io.ops; ops.cmd = observe_forbidden; io.ops = &ops;
+    next_db();
+    host_t *h = host_open(io, db, NULL);
+    CHECK(h != NULL);
+    if (h) {
+        for (unsigned i = 0; i < 3; i++) {
+            unsigned char reply[300], peer[6] = {1, 2, 3, 4, 5, 6};
+            int n;
+            forbidden_commands = 0;
+            int result = host_raw_cmd(h, opcodes[i], peer, opcodes[i] == 0x0408 ? 6 : 0, reply, &n);
+            char name[64];
+            snprintf(name, sizeof name, "raw-forbidden-cancel-%04x", opcodes[i]);
+            EFFECT(14, name, !result && forbidden_commands == 0);
+        }
+        host_close(h);
+    } else io.ops->close(io.ctx);
+    CHECK(sim_resources(sim).closes == 1);
+    sim_free(sim);
+}
+
+static int late_disconnects;
+static int suppress_disconnect(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == OP_DISCONNECT) { late_disconnects++; return 1; }
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static void test_late_link_during_close(void)
+{
+    sim_pad p = pad_fixture();
+    sim_t *sim = sim_new(&p);
+    hci_t io = sim_hci(sim);
+    hci_ops ops = *io.ops;
+    effect_base = io.ops; ops.cmd = suppress_disconnect; io.ops = &ops;
+    seen callbacks = {0};
+    host_events ev = observers(&callbacks);
+    next_db();
+    host_t *h = host_open(io, db, &ev);
+    CHECK(h != NULL);
+    if (!h) { io.ops->close(io.ctx); sim_free(sim); return; }
+    sim_delay_events(sim, 0x03, 1, 300);
+    CHECK(host_pair(h, 60));
+    long end = sim_now() + 1000;
+    while (!sim_create_requests(sim) && sim_now() < end) host_poll(h, 5);
+    CHECK(sim_create_requests(sim) == 1);
+    late_disconnects = 0;
+    long start = sim_now();
+    host_close(h);
+    CHECK(sim_now() - start <= 10000);
+    CHECK(late_disconnects == 0 && sim_resources(sim).closes == 1);
+    CHECK(sim_foreign_commands(sim) == 0 && callbacks.connects == 0 && callbacks.disconnects == 0);
+    io.ops->pump(io.ctx, 300);
+    unsigned char packet[300];
+    CHECK(sim_system_event(sim, packet, sizeof packet) == 13);
+    CHECK(packet[0] == 0x03 && !memcmp(packet + 5, third_party, 6));
+    sim_free(sim);
+}
+
+static int connection_le, connection_mode, connection_sends, connection_disconnects;
+static int connection_cmd(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == (connection_le ? 0x200dU : OP_CREATE_CONNECTION)) {
+        connection_sends++;
+        if (connection_mode == 0) return 0;
+        if (connection_le)
+            sim_le_delay_events(ctx, connection_mode == 1 ? 0x0f : 0x3e,
+                                connection_mode == 1 ? -1 : 1, 1, -1);
+        else sim_delay_events(ctx, connection_mode == 1 ? 0x0f : 0x03, 1, -1);
+    }
+    if (op == OP_DISCONNECT) connection_disconnects++;
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static void test_unacknowledged_connections_never_authorize_disconnect(void)
+{
+    for (connection_le = 0; connection_le < 2; connection_le++)
+        for (connection_mode = 0; connection_mode < 3; connection_mode++) {
+            sim_pad p = pad_fixture();
+            sim_le_pad lp = {0};
+            memcpy(lp.addr, third_party, 6); lp.vid = 0x045e; lp.pid = 0x0b13;
+            void *sim = connection_le ? (void *)sim_le_new(&lp) : (void *)sim_new(&p);
+            hci_t io = connection_le ? sim_le_hci(sim) : sim_hci(sim);
+            hci_ops ops = *io.ops;
+            effect_base = io.ops; ops.cmd = connection_cmd; io.ops = &ops;
+            connection_sends = connection_disconnects = 0;
+            seen callbacks = {0};
+            host_events ev = observers(&callbacks);
+            next_db();
+            host_t *h = host_open(io, db, &ev);
+            CHECK(h != NULL);
+            if (h) {
+                CHECK(host_pair(h, 30));
+                long end = now_ms() + 1000;
+                while (!connection_sends && now_ms() < end) host_poll(h, 5);
+                CHECK(connection_sends == 1);
+                host_poll(h, 1);
+                host_close(h);
+            } else io.ops->close(io.ctx);
+            char name[80];
+            snprintf(name, sizeof name, "unacknowledged-connection-%s-mode-%d",
+                     connection_le ? "LE" : "Classic", connection_mode);
+            if (connection_mode == 1)
+                EFFECT(14, name, connection_disconnects == 0 && callbacks.connects == 0);
+            else CHECK(connection_disconnects == 0 && callbacks.connects == 0);
+            CHECK((connection_le ? sim_le_resources(sim).closes : sim_resources(sim).closes) == 1);
+            if (connection_le) {
+                CHECK(sim_le_cancels(sim) == 0);
+                sim_le_free(sim);
+            } else sim_free(sim);
+        }
+}
+
+enum { SET_REFUSED, SET_ERROR, SET_LOST, SET_ACKED };
+static unsigned setting_target;
+static int setting_mode, setting_enabled, setting_attempts, setting_cleanup, closing_effects;
+static int setting_cmd(void *ctx, unsigned op, const void *p, int n)
+{
+    if (closing_effects && (op == setting_target ||
+        (setting_target == OP_WRITE_SCAN_ENABLE && op == OP_READ_SCAN_ENABLE) ||
+        (setting_target == OP_WRITE_PAGE_SCAN_ACT && op == OP_READ_PAGE_SCAN_ACT)))
+        setting_cleanup++;
+    if (!closing_effects && setting_enabled && op == setting_target) {
+        setting_attempts++;
+        if (setting_mode == SET_REFUSED) return 0;
+        if (setting_mode == SET_ERROR) {
+            unsigned char refused[] = {1, (unsigned char)op, (unsigned char)(op >> 8), 0x0c};
+            sim_inject_event(ctx, 0x0e, refused, sizeof refused);
+            return 1;
+        }
+        if (setting_mode == SET_LOST) sim_drop_events(ctx, 0x0e, 1);
+    }
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static void test_only_acknowledged_settings_authorize_restoration(void)
+{
+    static const unsigned targets[] = {OP_SET_EVENT_MASK, OP_WRITE_SCAN_ENABLE, OP_WRITE_PAGE_SCAN_ACT, 0x200c};
+    for (unsigned i = 0; i < 4; i++) for (int mode = SET_REFUSED; mode <= SET_ACKED; mode++) {
+        sim_pad p = {0};
+        sim_t *sim = sim_new(&p);
+        hci_t io = sim_hci(sim);
+        hci_ops ops = *io.ops;
+        effect_base = io.ops; ops.cmd = setting_cmd; io.ops = &ops;
+        setting_target = targets[i]; setting_mode = mode;
+        setting_attempts = setting_cleanup = closing_effects = 0;
+        setting_enabled = i < 2;
+        next_db();
+        host_t *h = host_open(io, db, NULL);
+        if (i >= 2) {
+            CHECK(h != NULL);
+            if (h) {
+                setting_enabled = 1;
+                if (i == 2) sim_set_page_scan(sim, 0x029c, 0x014e);
+                CHECK(host_pair(h, 30));
+                if (i == 2) host_poll(h, 5); else le_poll(h, sim_now());
+            }
+        } else CHECK((h != NULL) == (mode == SET_ACKED));
+        CHECK(setting_attempts > 0);
+        closing_effects = 1;
+        if (h) host_close(h);
+        char name[80];
+        snprintf(name, sizeof name, "setting-%04x-mode-%d", targets[i], mode);
+        /* A wire ACK without the A8 barrier is not an undo lease. */
+        if (h)
+            EFFECT(13, name, setting_cleanup == 0);
+        else CHECK(setting_cleanup == 0);
+        if (!h)
+            EFFECT(15, name, sim_resources(sim).closes == 1);
+        else CHECK(sim_resources(sim).closes == 1);
+        io.ops->close(io.ctx);
+        CHECK(sim_resources(sim).closes == 1 && sim_foreign_commands(sim) == 0);
+        sim_free(sim);
+    }
+}
+
+static void test_failed_setting_rewrite_retires_previous_authority(void)
+{
+    static const unsigned targets[] = {OP_SET_EVENT_MASK, OP_WRITE_SCAN_ENABLE, OP_WRITE_PAGE_SCAN_ACT, 0x200c};
+    static const unsigned char mask[8] = {0xf7,0xff,0xff,0xff,0xff,0xff,0xff,0x3f};
+    static const unsigned char scan[] = {1}, page[] = {0,4,0x12,0}, le[] = {0,0};
+    const unsigned char *params[] = {mask, scan, page, le};
+    const int lengths[] = {8, 1, 4, 2};
+    for (unsigned i = 0; i < 4; i++) {
+        sim_pad p = {0};
+        sim_t *sim = sim_new(&p);
+        hci_t io = sim_hci(sim);
+        hci_ops ops = *io.ops;
+        effect_base = io.ops; ops.cmd = setting_cmd; io.ops = &ops;
+        setting_target = targets[i]; setting_mode = SET_LOST;
+        setting_enabled = setting_attempts = setting_cleanup = closing_effects = 0;
+        next_db();
+        host_t *h = host_open(io, db, NULL);
+        CHECK(h != NULL);
+        if (!h) { io.ops->close(io.ctx); sim_free(sim); continue; }
+        if (i >= 2) {
+            if (i == 2) sim_set_page_scan(sim, 0x029c, 0x014e);
+            CHECK(host_pair(h, 30));
+            if (i == 2) host_poll(h, 5); else le_poll(h, sim_now());
+        }
+        {
+            unsigned char reply[300];
+            int n;
+            CHECK(host_raw_cmd(h, 0x1009, NULL, 0, reply, &n));
+        }
+        setting_enabled = 1;
+        CHECK(!hci_sync(h, targets[i], params[i], lengths[i]));
+        closing_effects = 1;
+        host_close(h);
+        char name[80];
+        snprintf(name, sizeof name, "failed-setting-rewrite-%04x", targets[i]);
+        EFFECT(13, name, setting_cleanup == 0);
+        CHECK(sim_resources(sim).closes == 1);
+        sim_free(sim);
+    }
+}
+
+static void test_refused_scan_does_not_flood_or_acquire_a_lease(void)
+{
+    sim_pad p = {0};
+    sim_t *sim = sim_new(&p);
+    hci_t io = sim_hci(sim);
+    hci_ops ops = *io.ops;
+    effect_base = io.ops; ops.cmd = setting_cmd; io.ops = &ops;
+    setting_target = 0x200c; setting_mode = SET_REFUSED;
+    setting_enabled = setting_attempts = setting_cleanup = closing_effects = 0;
+    next_db();
+    host_t *h = host_open(io, db, NULL);
+    CHECK(h != NULL);
+    if (!h) { io.ops->close(io.ctx); sim_free(sim); return; }
+    CHECK(host_pair(h, 30)); setting_enabled = 1;
+    for (int i = 0; i < 50; i++) le_poll(h, sim_now());
+    CHECK(setting_attempts == 1);
+    closing_effects = 1; host_close(h);
+    EFFECT(13, "refused-scan-no-cleanup", setting_cleanup == 0);
+    CHECK(sim_resources(sim).closes == 1);
+    sim_free(sim);
+}
+
+static unsigned ack_target;
+static int ack_reject, ack_cleanup, ack_refusals, ack_closing, ack_delay;
+static int ack_cmd(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == ack_target) {
+        CHECK(n == (op == 0x200c ? 2 : 8));
+        if (ack_closing) {
+            ack_cleanup++;
+            if (op == 0x200c) CHECK(((const unsigned char *)p)[0] == 0);
+        } else if (ack_reject) {
+            unsigned char refused[] = {1, (unsigned char)op, (unsigned char)(op >> 8), 0x0c};
+            ack_refusals++;
+            CHECK(((const unsigned char *)p)[0] == (op == 0x200c ? 1 : 0xf7));
+            sim_schedule_event(ctx, 0x0e, refused, sizeof refused, ack_delay);
+            return 1;
+        }
+    }
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+/* G/H: preserve old wire ACKs; use the real scan caller instead of a private lease flag. */
+static void test_old_setting_ack_never_authorizes_replacement(void)
+{
+    static const unsigned targets[] = {0x200c, OP_SET_EVENT_MASK};
+    static const unsigned char off[] = {0, 0};
+    static const unsigned char old_mask[] = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x3f};
+    static const unsigned char new_mask[] = {0xf7,0xff,0xff,0xff,0xff,0xff,0xff,0x3f};
+    for (unsigned family = 0; family < 2; family++)
+        for (int appendix = 0; appendix < 2; appendix++)
+            for (int interleaved = 0; interleaved < 2; interleaved++) {
+                sim_pad p = {0};
+                sim_t *sim = sim_new(&p);
+                hci_t io = sim_hci(sim);
+                hci_ops ops = *io.ops;
+                effect_base = io.ops; ops.cmd = ack_cmd; io.ops = &ops;
+                ack_target = targets[family];
+                ack_reject = ack_cleanup = ack_refusals = ack_closing = 0;
+                ack_delay = appendix == 0 && interleaved ? 2000 : 0;
+                next_db();
+                host_t *h = host_open(io, db, NULL);
+                CHECK(h != NULL);
+                if (!h) { io.ops->close(io.ctx); sim_free(sim); continue; }
+                if (appendix == 0 && interleaved) sim_delay_events(sim, 0x0e, 3, 6000);
+                int old_result = hci_sync(h, ack_target, family ? old_mask : off, family ? 8 : 2);
+                CHECK(old_result == !(appendix == 0 && interleaved));
+                if (appendix == 1 && interleaved) {
+                    unsigned char duplicate[] = {1, (unsigned char)ack_target, (unsigned char)(ack_target >> 8), 0};
+                    sim_inject_event(sim, 0x0e, duplicate, sizeof duplicate);
+                }
+                ack_reject = 1;
+                if (family) (void)hci_sync(h, ack_target, new_mask, sizeof new_mask);
+                else { CHECK(host_pair(h, 30)); le_poll(h, sim_now()); }
+                io.ops->pump(io.ctx, 2000);
+                unsigned char reply[300];
+                int n;
+                (void)host_raw_cmd(h, 0x1009, NULL, 0, reply, &n);
+                CHECK(ack_refusals == 1);
+                ack_closing = 1;
+                host_close(h);
+                char name[80];
+                snprintf(name, sizeof name, "appendix-%c-%04x-%s",
+                         appendix ? 'H' : 'G', ack_target,
+                         interleaved ? (appendix ? "duplicate" : "delayed") : "control");
+                EFFECT(13, name, ack_cleanup == 0);
+                CHECK(sim_resources(sim).closes == 1);
+                sim_free(sim);
+            }
+}
+
+static void test_retained_completion_reply(void)
+{
+    sim_pad p = pad_fixture();
+    sim_t *sim = sim_new(&p);
+    hci_t io = sim_hci(sim);
+    next_db();
+    host_t *h = host_open(io, db, NULL);
+    CHECK(h != NULL);
+    if (h) {
+        static const unsigned char unrelated[] = {1, 0x03, 0x10, 0};
+        static const unsigned char wanted[] = {0, 0, 8, 0x12, 0};
+        unsigned char reply[300];
+        int n;
+        sim_schedule_event(sim, 0x0e, unrelated, sizeof unrelated, 1);
+        int result = host_raw_cmd(h, 0x0c1b, NULL, 0, reply, &n);
+        EFFECT(15, "retained-completion-reply", result && n == sizeof wanted && !memcmp(reply, wanted, sizeof wanted));
+        host_close(h);
+    } else io.ops->close(io.ctx);
+    CHECK(sim_resources(sim).closes == 1);
+    sim_free(sim);
+}
+
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IOLBF, 0);
     int strict = argc == 2 && strcmp(argv[1], "--expected-failures") == 0;
     if (argc > 2 || (argc == 2 && !strict)) return 2;
+    strict_mode = strict;
     if (!mkdtemp(directory)) { perror("mkdtemp"); return 1; }
     test_consume_once_and_distinct_peers();
     test_classic_terminal_order();
@@ -354,10 +801,20 @@ int main(int argc, char **argv)
     test_classic_close_callbacks(1);
     test_le_terminal_seams();
     test_expected_current_le_status_loses_pending_ownership();
+    test_foreign_create_status_never_authorizes_cancel();
+    test_foreign_inquiry_untouched();
+    test_raw_cancels_never_reach_controller();
+    test_late_link_during_close();
+    test_unacknowledged_connections_never_authorize_disconnect();
+    test_only_acknowledged_settings_authorize_restoration();
+    test_failed_setting_rewrite_retires_previous_authority();
+    test_refused_scan_does_not_flood_or_acquire_a_lease();
+    test_old_setting_ack_never_authorizes_replacement();
+    test_retained_completion_reply();
     clear_db();
     CHECK(rmdir(directory) == 0);
     ph_clock_hook = NULL;
-    printf("%d session seam checks, %d failed; %d expected-failing-until-task-3/4 cases%s\n",
+    printf("%d session seam checks, %d failed; %d expected-failing cases%s\n",
            checks, failures, pending, strict ? " (strict)" : "");
     return failures != 0 || (strict && pending != 0);
 }
