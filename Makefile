@@ -13,19 +13,21 @@ HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 
 BUILD := build
 
-.PHONY: all test fuzz demo ps5 send clean
+.PHONY: all test fuzz demo ps5 send clean check-generated sanitize ci
 
 all: test
 
 $(BUILD):
 	@mkdir -p $(BUILD)
 
-# The web page, embedded as a byte array (kept in git, so the console build
-# does not need xxd).
-src/web_page.c: web/index.html
-	{ echo '/* Generated from web/index.html by make. */'; \
-	  echo 'const unsigned char web_page_html[] = {'; xxd -i < $<; echo '};'; \
-	  echo 'const unsigned int web_page_html_len = sizeof web_page_html;'; } > $@
+# Tracked embeds are updated explicitly, never as a side effect of a build.
+check-generated: | $(BUILD)
+	sh tools/generate-assets.sh $(BUILD)/generated
+	@status=0; for file in web_page.c icon_data.c; do \
+	  if ! cmp -s src/$$file $(BUILD)/generated/$$file; then \
+	    echo "generated file differs: src/$$file" >&2; status=1; \
+	  fi; \
+	done; exit $$status
 
 $(BUILD)/test_web: $(CORE) $(WEB) tests/sim.c tests/test_web.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
@@ -56,8 +58,9 @@ $(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DBOND_STORE_TEST -o $@ $^
 
 # The console source for virtual pads, against stand-ins for the console's libraries.
+# Keep the loader stand-ins from intercepting the sanitizer runtime's own calls.
 $(BUILD)/test_vpad: src/ps5_vpad.c src/log.c src/util.c tests/test_vpad.c | $(BUILD)
-	cc -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE -o $@ $^
+	cc $(HOST_CFLAGS) -D_DARWIN_C_SOURCE -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -o $@ $^
 
 # Configuration, the console hotkey and the local address.
 $(BUILD)/test_config: src/config.c src/hotkey.c src/netinfo.c src/log.c src/util.c tests/test_config.c | $(BUILD)
@@ -66,11 +69,6 @@ $(BUILD)/test_config: src/config.c src/hotkey.c src/netinfo.c src/log.c src/util
 # The instance lock.
 $(BUILD)/test_lock: src/lock.c src/log.c src/util.c tests/test_lock.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
-
-src/icon_data.c: assets/icon0.png
-	{ echo '/* Generated from assets/icon0.png by make. */'; \
-	  echo 'const unsigned char icon_png_data[] = {'; xxd -i < $<; echo '};'; \
-	  echo 'const unsigned int icon_png_data_len = sizeof icon_png_data;'; } > $@
 
 $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
@@ -107,6 +105,17 @@ test: $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUIL
 
 # Malformed input through every parser, under the sanitizers.
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+sanitize:
+	$(MAKE) test BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
+
+ci:
+	$(MAKE) test
+	$(MAKE) sanitize
+	$(MAKE) fuzz
+	$(MAKE) check-generated
+	@checks="$$( $(MAKE) -qp | awk -F: '/^check-(ownership|mutations):/ { print $$1 }' )"; \
+	  if [ -n "$$checks" ]; then $(MAKE) $$checks; fi
+
 fuzz: | $(BUILD)
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
 	./$(BUILD)/test_fuzz
@@ -115,7 +124,7 @@ fuzz: | $(BUILD)
 
 # ---- the console payload ----------------------------------------------------
 
-ps5:
+ps5: check-generated
 ifndef PS5_PAYLOAD_SDK
 	$(error PS5_PAYLOAD_SDK is undefined)
 endif
