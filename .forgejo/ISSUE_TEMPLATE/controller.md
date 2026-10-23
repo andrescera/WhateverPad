@@ -1,6 +1,6 @@
 ---
 name: "Controller report or new compatibility"
-about: "A controller that works, does not work, or that you adapted (with or without an AI)"
+about: "A controller that works, does not work, or that you adapted"
 title: "[controller] brand and model: works / does not work / adapted"
 labels:
   - controller
@@ -19,10 +19,9 @@ labels:
 ```
 ```
 
-**If you changed something (yourself or with an AI):**
+**If you changed something:**
 
 - what you changed and why:
 - how you tested it (simulator test, real console):
-- AI used (if any):
 
 _Please do not paste tokens or passwords, and do not attach `pads.db`._
