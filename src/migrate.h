@@ -40,6 +40,8 @@ typedef enum {
 #ifdef MIGRATE_TEST
 /* Test-only I/O fault or real process interruption at an exact transaction step. */
 int migrate_test_fault(migrate_stage stage);
+/* Wraps actual fsync calls; the test implementation delegates to the syscall. */
+int migrate_test_fsync(int fd);
 #endif
 
 #endif

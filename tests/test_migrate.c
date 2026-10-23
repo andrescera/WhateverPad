@@ -21,6 +21,9 @@ static unsigned checks;
 
 static char root[128], legacy[160], dest[160];
 static int fail_stage, crash_stage, race;
+static dev_t sync_parent_dev;
+static ino_t sync_parent_ino;
+static int sync_parent_armed, sync_fail_once, sync_attempts, sync_successes, premature_copy;
 static struct { migrate_status status; char path[256]; } reports[512];
 static unsigned nreports;
 static const char config[] = "menu_combo=l1+r1\nmenu_hold_ms=2400\n"
@@ -110,6 +113,8 @@ static void fixture(void)
 static void report(void *ud, const char *name, migrate_status status)
 {
     (void)ud;
+    if (sync_parent_armed && status == MIGRATE_COPIED && !sync_successes)
+        premature_copy = 1;
     CHECK(nreports < sizeof reports / sizeof reports[0]);
     reports[nreports].status = status;
     CHECK(strlen(name) < sizeof reports[0].path);
@@ -139,6 +144,27 @@ int migrate_test_fault(migrate_stage stage)
         race = 0;
     }
     return (int)stage == fail_stage;
+}
+
+int migrate_test_fsync(int fd)
+{
+    struct stat st;
+    int matched = 0, result;
+    if (sync_parent_armed) {
+        CHECK(fstat(fd, &st) == 0);
+        matched = st.st_dev == sync_parent_dev && st.st_ino == sync_parent_ino;
+        if (matched) {
+            sync_attempts++;
+            if (sync_fail_once) {
+                sync_fail_once = 0;
+                errno = EIO;
+                return -1;
+            }
+        }
+    }
+    result = fsync(fd);
+    if (matched && !result) sync_successes++;
+    return result;
 }
 
 static void clean_destination(void)
@@ -315,6 +341,53 @@ static void failures(void)
     puts("migration: durability faults, unwritable destination, concurrent destination and destination symlink passed");
 }
 
+static void parent_sync_recovery(void)
+{
+    int maps;
+    for (maps = 0; maps < 2; maps++) {
+        struct stat st;
+        char p[512];
+        int retry;
+        unsigned copied;
+        setup();
+        if (maps) {
+            CHECK(mkdir(dest, 0700) == 0);
+            path(p, legacy, "maps"); CHECK(mkdir(p, 0700) == 0);
+            text(legacy, "maps/1234_5678.map", "button1=cross\n");
+            CHECK(stat(dest, &st) == 0);
+        } else {
+            text(legacy, "config.ini", config);
+            CHECK(stat(root, &st) == 0);
+        }
+        sync_parent_dev = st.st_dev;
+        sync_parent_ino = st.st_ino;
+        sync_parent_armed = sync_fail_once = 1;
+        sync_attempts = sync_successes = premature_copy = 0;
+        CHECK(migrate_legacy(legacy, dest, report, NULL) == 1);
+        CHECK(count(MIGRATE_IO_ERROR) == 1 && count(MIGRATE_COPIED) == 0);
+        CHECK(sync_attempts == 1 && sync_successes == 0);
+        CHECK(exists(dest, maps ? "maps" : "."));
+        CHECK(!exists(dest, maps ? "maps/1234_5678.map" : "config.ini"));
+        nreports = 0;
+        retry = migrate_legacy(legacy, dest, report, NULL);
+        copied = count(MIGRATE_COPIED);
+        sync_parent_armed = 0;
+        if (maps) {
+            same(legacy, "maps/1234_5678.map", "button1=cross\n");
+            same(dest, "maps/1234_5678.map", "button1=cross\n");
+        } else {
+            same(legacy, "config.ini", config);
+            CHECK(exists(dest, "config.ini"));
+        }
+        clean_destination();
+        remove_tree(root);
+        printf("parent-sync recovery: %s retry=%d copied=%u attempts=%d successes=%d premature=%d\n",
+               maps ? "maps" : "destination-root", retry, copied,
+               sync_attempts, sync_successes, premature_copy);
+        CHECK(retry == 0 && copied == 1 && sync_successes > 0 && !premature_copy);
+    }
+}
+
 static void maps_and_staging(void)
 {
     char p[512], q[512], name[64];
@@ -370,7 +443,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    happy(); conflicts(); interrupted(); bad_inputs(); failures(); maps_and_staging();
+    happy(); conflicts(); interrupted(); bad_inputs(); failures(); parent_sync_recovery(); maps_and_staging();
     printf("%u migration checks, 0 failed; all fixtures removed\n", checks);
     return 0;
 }

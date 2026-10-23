@@ -12,6 +12,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef MIGRATE_TEST
+#define fsync migrate_test_fsync
+#endif
+
 typedef struct {
     migrate_report report;
     void *ud;
@@ -49,11 +53,12 @@ static int directory_at(int parent, const char *name, int create)
     struct stat st;
     if (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW)) {
         if (!create || errno != ENOENT || mkdirat(parent, name, 0700)) return -1;
-        if (fsync(parent)) return -1;
     } else if (S_ISLNK(st.st_mode)) {
         errno = ELOOP;
         return -1;
     }
+    /* An existing name can be left by a failed or interrupted creation. */
+    if (create && fsync(parent)) return -1;
     return openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
 }
 
