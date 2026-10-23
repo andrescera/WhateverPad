@@ -6,6 +6,7 @@
 #include "host.h"
 #include "profiles.h"
 #include "bond_store.h"
+#include "attrib.h"
 
 #include <stdint.h>
 
@@ -243,6 +244,9 @@ typedef struct {
 
 struct host {
     hci_t hci;
+#if WHATEVERPAD_PROBE
+    unsigned probe_commands;
+#endif
     host_events ev;
     char db_path[256];
     char map_dir[256];

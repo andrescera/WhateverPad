@@ -7,11 +7,18 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 WHATEVERPAD_PROBE ?= 0
+WHATEVERPAD_PROBE_CREDS ?= raised
 
 OWN_CORE := src/ownership.c src/session.c
-CORE   := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
+CORE   := src/util.c src/log.c src/attrib.c src/probe.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
 WEB    := src/web.c src/web_page.c
 HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
+ifeq ($(WHATEVERPAD_PROBE),1)
+ifeq ($(filter $(WHATEVERPAD_PROBE_CREDS),raised original),)
+$(error WHATEVERPAD_PROBE_CREDS must be raised or original)
+endif
+HOST_CFLAGS += -DWHATEVERPAD_PROBE_ORIGINAL=$(if $(filter original,$(WHATEVERPAD_PROBE_CREDS)),1,0)
+endif
 
 BUILD := build
 
@@ -89,10 +96,10 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/attrib.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h | $(BUILD)
+$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/attrib.h src/probe.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h | $(BUILD)
 	cc $(HOST_CFLAGS) -Itests/usb_standin -include tests/usb_standin/syscalls.h -c -o $@ $<
 
-$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 
 $(BUILD)/test_attrib: $(CORE) $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c tests/sim.c tests/test_attrib.c tests/test_hci_usb.c src/attrib.h | $(BUILD)
@@ -100,6 +107,24 @@ $(BUILD)/test_attrib: $(CORE) $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstrea
 
 test-attrib: $(BUILD)/test_attrib
 	./$(BUILD)/test_attrib
+
+$(BUILD)/test_probe_main: $(CORE) src/config.c tests/sim.c tests/test_probe_main.c src/ps5_main.c src/probe.h | $(BUILD)
+	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -o $@ $(filter-out src/ps5_main.c,$(filter %.c,$^))
+
+.PHONY: test-probe-main test-probe
+test-probe-main: $(BUILD)/test_probe_main
+	./$(BUILD)/test_probe_main
+
+# Separate output directories prevent stale objects from crossing credential modes.
+test-probe:
+	$(MAKE) test-attrib test-probe-main $(BUILD)/probe-raised/test_vpad $(BUILD)/probe-raised/test_hci_usb BUILD=$(BUILD)/probe-raised WHATEVERPAD_PROBE=1 WHATEVERPAD_PROBE_CREDS=raised
+	./$(BUILD)/probe-raised/test_vpad
+	./$(BUILD)/probe-raised/test_hci_usb
+	$(MAKE) test-attrib test-probe-main $(BUILD)/probe-original/test_vpad $(BUILD)/probe-original/test_hci_usb BUILD=$(BUILD)/probe-original WHATEVERPAD_PROBE=1 WHATEVERPAD_PROBE_CREDS=original
+	./$(BUILD)/probe-original/test_vpad
+	./$(BUILD)/probe-original/test_hci_usb
+
+test: test-probe-main
 
 $(BUILD)/test_session: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
@@ -133,7 +158,8 @@ ci:
 	$(MAKE) sanitize
 	$(MAKE) fuzz
 	$(MAKE) check-generated
-	$(MAKE) test-attrib BUILD=build/probe WHATEVERPAD_PROBE=1
+	$(MAKE) test-probe
+	$(MAKE) test-probe BUILD=build/probe-san CPPFLAGS="$(SAN)"
 	@checks="$$( $(MAKE) -qp | awk -F: '/^check-(ownership|mutations):/ { print $$1 }' )"; \
 	  if [ -n "$$checks" ]; then $(MAKE) $$checks; fi
 
@@ -142,7 +168,8 @@ quick:
 	$(MAKE) test OWN_EXPLORE=0
 	$(MAKE) sanitize OWN_EXPLORE=0
 	$(MAKE) fuzz check-generated
-	$(MAKE) test-attrib BUILD=build/probe WHATEVERPAD_PROBE=1
+	$(MAKE) test-probe
+	$(MAKE) test-probe BUILD=build/probe-san CPPFLAGS="$(SAN)"
 	$(MAKE) check-mutations OWN_EXPLORE=0
 	$(MAKE) check-integration check-integration-mutations
 

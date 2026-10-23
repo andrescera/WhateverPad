@@ -4,6 +4,7 @@
 #include "../src/ps5_vpad.h"
 #include "../src/util.h"
 #include "../src/web.h"
+#include "../src/log.h"
 
 
 #include <stdint.h>
@@ -35,6 +36,9 @@ static uint64_t g_authid = 0x4800000000000001ull;
 static uint8_t g_caps[16];
 static int log_pipe[2], adds, binds, deletes, frames;
 static int fail_library, fail_symbol, add_result, bind_result;
+#if WHATEVERPAD_PROBE
+static int fail_authid, fail_caps_read;
+#endif
 static int32_t deleted_handle;
 static int web_port;
 
@@ -125,8 +129,22 @@ int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t)
 int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; frames++; return 0; }
 int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { deleted_handle = h; deletes++; return 0; }
 uint64_t kernel_get_ucred_authid(pid_t pid) { (void)pid; return g_authid; }
-int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a) { (void)pid; g_authid = a; return 0; }
-int32_t kernel_get_ucred_caps(pid_t pid, uint8_t c[16]) { (void)pid; memcpy(c, g_caps, 16); return 0; }
+int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a)
+{
+    (void)pid;
+#if WHATEVERPAD_PROBE
+    if (fail_authid) return -1;
+#endif
+    g_authid = a; return 0;
+}
+int32_t kernel_get_ucred_caps(pid_t pid, uint8_t c[16])
+{
+    (void)pid;
+#if WHATEVERPAD_PROBE
+    if (fail_caps_read) return -1;
+#endif
+    memcpy(c, g_caps, 16); return 0;
+}
 int32_t kernel_set_ucred_caps(pid_t pid, const uint8_t c[16]) { (void)pid; memcpy(g_caps, c, 16); return 0; }
 int sceKernelSendNotificationRequest(int a, void *r, size_t n, int b) { (void)a; (void)r; (void)n; (void)b; return 0; }
 
@@ -149,6 +167,36 @@ static void test_refused_vendor_libraries(void)
     fail_library = 0; fail_symbol = 1;
     CHECK(!vpad_init() && !vpad_add(0));
     fail_symbol = 0;
+}
+
+static void test_probe_credentials(void)
+{
+#if WHATEVERPAD_PROBE
+    unsigned long from = log_seq();
+    char logs[16000];
+    CHECK(vpad_creds_restore());
+    CHECK(!strcmp(vpad_creds_mode(), "original"));
+    CHECK(vpad_creds_raise());
+    CHECK(!strcmp(vpad_creds_mode(), "raised"));
+    fail_authid = 1;
+    CHECK(!vpad_creds_restore());
+    CHECK(!strcmp(vpad_creds_mode(), "unknown")); /* original caps, raised authid */
+    fail_authid = 0;
+    CHECK(vpad_creds_restore());
+    CHECK(!strcmp(vpad_creds_mode(), "original"));
+    fail_caps_read = 1;
+    CHECK(!vpad_creds_raise());
+    CHECK(!strcmp(vpad_creds_mode(), "unknown"));
+    fail_caps_read = 0;
+    CHECK(vpad_creds_restore());
+    log_since(from, logs, sizeof logs);
+    CHECK(strstr(logs, "authid_rc=-1") != NULL);
+    CHECK(strstr(logs, "caps_read_rc=-1") != NULL);
+    CHECK(strstr(logs, "checked=0 actual=unknown") != NULL);
+    CHECK(strstr(logs, "target=raised") != NULL && strstr(logs, "target=original") != NULL);
+    CHECK(strstr(logs, "4800000000000001") == NULL && strstr(logs, "3800000000010003") == NULL);
+    puts("16 probe credential checks: readback, setter/read failure, honest unknown mode and restore");
+#endif
 }
 
 /* T:164-211: vendor effects only, with real identification from a pipe. */
@@ -489,6 +537,7 @@ int main(int argc, char **argv)
     test_refused_vendor_acquisitions_do_not_invent_ownership();
     test_web_stop_preempts_queued_and_pending_effects();
     test_pending_removal_preserves_unidentified_devices();
+    test_probe_credentials();
     ph_clock_hook = NULL;
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
     printf("%d expected-failing vpad cases\n", pending);

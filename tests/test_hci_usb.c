@@ -403,7 +403,11 @@ static void test_empty_completion_stream_observes_deadline(void)
     completion(0, NULL, 0);
     usb.empty_stream = 1;
     CHECK(h.ops->pump(h.ctx, 10000) == 0);
+#if WHATEVERPAD_PROBE
+    CHECK(clock_ms <= deadline && usb.empty_stream);
+#else
     EFFECT(9, "empty-completion-stream-deadline", clock_ms <= deadline && usb.empty_stream);
+#endif
     usb.empty_stream = 0;
     closed_once(h);
 }

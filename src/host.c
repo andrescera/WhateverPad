@@ -1,5 +1,6 @@
 #include "host_int.h"
 #include "attrib.h"
+#include "probe.h"
 #include "log.h"
 #include "util.h"
 
@@ -65,6 +66,10 @@ int send_cmd(host_t *h, unsigned op, const void *p, int len)
 #if WHATEVERPAD_PROBE
     /* Also covers LE and raw/developer callers of the common submit path. */
     if (op == 0x0402 || op == 0x0408 || op == 0x200e || op == 0x0c03) return 0;
+    if (op != OP_READ_BUFFER_SIZE || h->probe_commands) return 0;
+    h->probe_commands++;
+    log_line("probe submission opcode=0x%04x attempts=%u mono_ms=%ld deadline_ms=%ld",
+             op, h->probe_commands, now_ms(), probe_deadline_ms);
 #endif
     if (h->reads_now < HOST_EV_READS) {
         h->full_reads_until = now_ms() + 2000;
@@ -79,6 +84,10 @@ int send_cmd(host_t *h, unsigned op, const void *p, int len)
     }
     sent = h->hci.ops->cmd(h->hci.ctx, op, p, len);
     attrib_submit(op, sent, now_ms());
+#if WHATEVERPAD_PROBE
+    log_line("probe command_result attempts=%u submitted=%lu sent=%d mono_ms=%ld",
+             h->probe_commands, attrib_get()->submitted, sent, now_ms());
+#endif
     return sent;
 }
 
@@ -1402,7 +1411,15 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     link_t *l;
     int i;
 
+#if WHATEVERPAD_PROBE
+    {
+        enum attrib_class kind = attrib_observe(ev, len, now_ms());
+        if (kind == ATTRIB_LATE)
+            log_line("probe arrival class=late event=0x%02x mono_ms=%ld", ev[0], now_ms());
+    }
+#else
     attrib_observe(ev, len, now_ms());
+#endif
     if (len < 2) return;
     if (g_tune.trace && ev[0] != 0x13) {
         unsigned char c[64];
@@ -1880,7 +1897,7 @@ static void pump(host_t *h, int timeout_ms)
     }
     while ((n = h->hci.ops->next_acl(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
-        on_acl(h, buf, n);
+        if (!WHATEVERPAD_PROBE) on_acl(h, buf, n);
     }
 }
 
@@ -2309,6 +2326,29 @@ int host_forget_all(host_t *h)
  * safe to repeat. */
 int hci_sync(host_t *h, unsigned op, const void *p, int plen)
 {
+#if WHATEVERPAD_PROBE
+    long deadline = now_ms() + 1000;
+    long tail_end = deadline + PROBE_TAIL_MS;
+
+    probe_deadline_ms = deadline;
+    h->cc_op = 0;
+    if (!send_cmd(h, op, p, plen)) return 0;
+    attrib_deadline(op, deadline);
+    while (!h->dead && h->cc_op != op && now_ms() < deadline)
+        pump(h, (int)(deadline - now_ms() < 20 ? deadline - now_ms() : 20));
+    if (h->cc_op == op && now_ms() < deadline)
+        return h->cc_len > 5 && h->cc[5] == 0;
+    attrib_poll(now_ms());
+    log_line("probe deadline mono_ms=%ld deadline_ms=%ld tail_end_ms=%ld submitted=%lu",
+             now_ms(), deadline, tail_end, attrib_get()->submitted);
+    /* A late ACK remains quarantined: classification is not acquisition success. */
+    while (!h->dead && now_ms() < tail_end)
+        pump(h, (int)(tail_end - now_ms() < 20 ? tail_end - now_ms() : 20));
+    log_line("probe tail_complete mono_ms=%ld submitted=%lu late=%lu",
+             now_ms(), attrib_get()->submitted, attrib_get()->classes[ATTRIB_LATE]);
+    if (h->hci.ops->diag) h->hci.ops->diag(h->hci.ctx);
+    return 0;
+#else
     int attempt;
 
     for (attempt = 1; attempt <= (WHATEVERPAD_PROBE ? 1 : 3); attempt++) {
@@ -2326,6 +2366,7 @@ int hci_sync(host_t *h, unsigned op, const void *p, int plen)
         h->hci.ops->diag(h->hci.ctx);
     }
     return 0;
+#endif
 }
 
 /* Diagnostics only: reads a setting of the controller (a read command, which
@@ -2412,6 +2453,7 @@ static int setup(host_t *h)
     h->acl_mtu = le16(h->cc + 6);
     h->br.credits = h->br.max = (int)le16(h->cc + 9);
     log_line("controller: %d ACL buffers of %u bytes", h->br.max, h->acl_mtu);
+    if (WHATEVERPAD_PROBE) return 1; /* T8-v2: one query, then metadata only. */
 
     if (!g_tune.mask_conn) mask[0] = 0xFF;
     if (!hci_sync(h, OP_SET_EVENT_MASK, mask, 8)) return 0;
@@ -2489,6 +2531,7 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
         free(h);
         return NULL;
     }
+    if (WHATEVERPAD_PROBE) return h; /* No store/IRK work or further setup commands. */
     memcpy(h->store.adapter.addr, h->bdaddr, 6);
     if (hci.ops->chip_vendor) h->store.adapter.vid = (uint16_t)hci.ops->chip_vendor(hci.ctx);
     if (hci.ops->chip_product) h->store.adapter.pid = (uint16_t)hci.ops->chip_product(hci.ctx);
