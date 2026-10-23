@@ -438,6 +438,79 @@ static void test_rejected_dhkey_cannot_claim_foreign_result(void)
     }
 }
 
+static int reuse_mode, reuse_requests, reuse_checks, reuse_encryptions;
+static int reuse_cmd(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == 0x2026) {
+        reuse_requests++;
+        /* Only the first (retired) request may answer: 500 ms later in mode 0,
+         * never in mode 1, and normally in mode 2's retained original link. */
+        sim_le_delay_events(ctx, 0x3e, 9, 1, reuse_requests == 1 && reuse_mode != 1 ? 500 : -1);
+    }
+    if (op == 0x2019) reuse_encryptions++;
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static int reuse_acl(void *ctx, const unsigned char *p, int n)
+{
+    if (n >= 9 && le16(p + 6) == 6 && p[8] == 0x0d) reuse_checks++;
+    return effect_base->acl_send(ctx, p, n);
+}
+
+/* Review r2 Appendix A / T:455-484: a retired link's delayed result must not
+ * drive the replacement's SMP, with lost-result and retained-link controls. */
+static void test_late_dhkey_cannot_claim_retired_result(void)
+{
+    for (reuse_mode = 0; reuse_mode < 3; reuse_mode++) {
+        sim_le_pad p = {0};
+        memcpy(p.addr, third_party, 6);
+        p.sc = 1; p.vid = 0x045e; p.pid = 0x0b13;
+        p.map[0] = 5; p.map_len = 1; p.report_len = 16;
+        p.rid_in = 1; p.rid_out = 3; p.mtu = 185;
+        sim_le_t *sim = sim_le_new(&p);
+        hci_t io = sim_le_hci(sim);
+        hci_ops ops = *io.ops;
+        effect_base = io.ops; ops.cmd = reuse_cmd; ops.acl_send = reuse_acl; io.ops = &ops;
+        seen callbacks = {0};
+        host_events ev = {connected, pairing_state, disconnected, &callbacks, NULL};
+        reuse_requests = reuse_checks = reuse_encryptions = 0;
+        next_db();
+        host_t *h = host_open(io, db, &ev);
+        CHECK(h != NULL);
+        if (h) {
+            CHECK(host_pair(h, 30));
+            long end = sim_le_now() + 1000;
+            while (!reuse_requests && sim_le_now() < end) host_poll(h, 5);
+            CHECK(reuse_requests == 1);
+            if (reuse_mode != 2) {
+                sim_le_power_off(sim);      /* real Disconnection Complete */
+                host_poll(h, 5);
+                sim_le_power_on(sim);       /* replacement through normal admission */
+            }
+            end = sim_le_now() + (reuse_mode == 2 ? 8000 : 1000);
+            while (sim_le_now() < end) host_poll(h, 5);
+            CHECK(sim_le_creates(sim) == (reuse_mode == 2 ? 1 : 2));
+            if (!reuse_mode) {
+                EFFECT(14, "late-dhkey-cannot-claim-retired-result",
+                       reuse_checks == 0 && reuse_encryptions == 0);
+                CHECK(callbacks.connects == 0 && callbacks.states == 0);
+            } else if (reuse_mode == 1) {
+                CHECK(reuse_checks == 0 && reuse_encryptions == 0);
+                CHECK(callbacks.connects == 0 && callbacks.states == 0);
+            } else {
+                CHECK(reuse_checks > 0 && reuse_encryptions > 0);
+                CHECK(callbacks.connects == 1 && callbacks.states > 0 && sim_le_encrypted(sim));
+            }
+            printf("LATE_REUSE mode=%d creates=%d dhkey_requests=%d smp_checks=%d encryptions=%d connects=%d states=%d\n",
+                   reuse_mode, sim_le_creates(sim), reuse_requests, reuse_checks,
+                   reuse_encryptions, callbacks.connects, callbacks.states);
+            host_close(h);
+        } else io.ops->close(io.ctx);
+        CHECK(sim_le_resources(sim).closes == 1);
+        sim_le_free(sim);
+    }
+}
+
 static int foreign_order, inquiry_commands, inquiry_cancels;
 static int foreign_create(void *ctx, unsigned op, const void *p, int n)
 {
@@ -886,6 +959,7 @@ int main(int argc, char **argv)
     test_le_status_retains_pending_ownership(0);
     test_le_status_retains_pending_ownership(1);
     test_rejected_dhkey_cannot_claim_foreign_result();
+    test_late_dhkey_cannot_claim_retired_result();
     test_foreign_create_status_never_authorizes_cancel();
     test_foreign_inquiry_untouched();
     test_raw_cancels_never_reach_controller();
