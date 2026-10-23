@@ -20,41 +20,15 @@ Aucun adaptateur USB n'est nécessaire.
 
 ## À propos de ce projet
 
-WhateverPad PS5 a commencé le 3 octobre 2026 vers 14 h 20 (heure espagnole), le jour où j'ai publié sa première version. L'idée vient de MissionControl, qui permet d'utiliser sur la Nintendo Switch des manettes d'autres consoles. WhateverPad n'a peut-être pas été le premier projet à utiliser d'autres manettes sur la PS5 : il existait déjà des projets qui les connectaient en USB. Mais aucun ne les connectait en Bluetooth, et WhateverPad a été le premier à le faire. J'ai eu une idée et je l'ai menée à bien.
-
 L'objectif est maintenant que WhateverPad fonctionne avec davantage de manettes. Si vous l'essayez, envoyez-moi votre journal (voir « Aidez-nous à confirmer la compatibilité » plus bas) : chaque journal aide.
 
-Le code source complet est publié dans ce dépôt sous licence GPL-3.0-or-later (voir « Code ouvert et travail avec une IA » plus bas). Si vous développez un émulateur et souhaitez intégrer WhateverPad, vous pouvez le faire sous cette licence. Écrivez-moi à [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com) si vous avez besoin d'aide.
+Le code source complet est publié dans ce dépôt sous licence GPL-3.0-or-later. Si vous développez un émulateur et souhaitez intégrer WhateverPad, vous pouvez le faire sous cette licence. Écrivez-moi à [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com) si vous avez besoin d'aide.
 
 Il reste un problème connu : si la DualSense est éteinte pendant que WhateverPad fonctionne, elle peut rester en bleu clignotant. J'espère que les futurs projets ne l'auront pas. Les projets dérivés d'WhateverPad, à partir du code que j'ai publié, hériteront très probablement de ce problème. Cela fait partie de l'héritage d'WhateverPad, et c'est un signe qu'au moins pour leur partie Bluetooth, ce sont des forks d'WhateverPad.
 
 ---
 
-## Code ouvert et travail avec une IA
-
-Depuis la version 0.9.5, tout le code source d'WhateverPad PS5 est publié dans ce dépôt, sous licence GPL-3.0-or-later : l'hôte Bluetooth, les profils de manettes, la page d'WhateverPad, les tests et les scripts de compilation. Il comprend un simulateur : on peut vérifier une manette sur un ordinateur, sans console.
-
-Ce que, selon moi, WhateverPad apporte vraiment, plus que le pont lui-même, c'est **son système de communication pour intégrer de nouvelles manettes avec l'aide d'une IA**. Tant qu'WhateverPad fonctionne, sa page propose sur votre réseau local :
-
-- le journal, en temps réel ;
-- quelques réglages de la connexion Bluetooth modifiables à chaud, sans redémarrer ni recompiler ;
-- le bouton d'appairage.
-
-Un assistant IA disposant d'un terminal sur un ordinateur du même réseau (par exemple Claude Code, Codex CLI ou Gemini CLI) peut suivre ce que fait WhateverPad pendant que vous allumez une manette, proposer une modification, recompiler l'ELF, l'envoyer à la console et vérifier le résultat à l'exécution suivante. C'est ainsi qu'WhateverPad lui-même a été amélioré.
-
-Le fichier **[AI-WORKFLOW.md](AI-WORKFLOW.md)** (en anglais) est un guide écrit pour cet assistant : comment se connecter, ce qu'il peut et ne peut pas toucher, comment tester une modification et comment ajouter une nouvelle manette. Vous pouvez le donner à l'assistant comme première instruction.
-
-À garder à l'esprit :
-
-- Un chat dans un navigateur ne peut pas atteindre votre console. L'assistant a besoin d'un terminal sur un ordinateur connecté au même réseau local que la PS5. WhateverPad ne se connecte jamais à internet.
-- La page n'a pas de code PIN, comme dans toutes les versions : toute personne de votre réseau local peut lire le journal et envoyer des commandes à WhateverPad. Utilisez-le uniquement sur un réseau de confiance et arrêtez WhateverPad quand vous avez terminé.
-- Le journal contient les adresses Bluetooth de vos manettes et l'identifiant de votre utilisateur de la console. Relisez-le avant de le partager.
-
-### Partagez ce que vous (et votre IA) apprenez
-
-Si vous adaptez WhateverPad à une manette, avec ou sans IA, ouvrez s'il vous plaît un [ticket](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues) avec le modèle de la manette, le firmware de la console, le jailbreak, la version d'WhateverPad, ce que vous avez modifié et pourquoi, ainsi que le journal. Si une IA vous a aidé, dites-le et laissez-la rédiger l'explication : ce que la manette fait différemment, ce qui a été modifié et comment cela a été testé. J'examinerai chaque proposition et j'intégrerai les compatibles dans les versions suivantes. Une modification doit continuer à réussir `make test` et ne doit pas changer la façon dont la DualShock 4 et la 8BitDo se connectent.
-
-### Compiler depuis le code
+## Compiler depuis le code
 
 Il vous faut le [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk).
 
@@ -64,11 +38,7 @@ make ps5 PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk       # l'ELF dans dist/
 tools/build-elf-docker.sh /path/to/ps5-payload-sdk      # ou la même chose, dans un conteneur
 ```
 
-### Merci de me mentionner
-
-Si vous réalisez votre propre version d'WhateverPad, ou si vous l'intégrez (en tout ou en partie) dans un émulateur, un HEN, un payload ou tout autre programme, je vous serais très reconnaissant de mentionner **elmonomalvad0** et de faire un lien vers ce projet. La licence, GPL-3.0-or-later, exige déjà de conserver les mentions de copyright et de distribuer vos modifications sous la même licence. La mention est une demande, pas une condition, et c'est ce qui donne envie de continuer à partager le travail.
-
-### Dans le code
+## Dans le code
 
 | Où | Ce que cela fait |
 | --- | --- |
@@ -82,41 +52,7 @@ Si vous réalisez votre propre version d'WhateverPad, ou si vous l'intégrez (en
 | `src/ps5_main.c` | La boucle principale du payload |
 | `tests/` | Les simulateurs Bluetooth (`sim.c`, `sim_le.c`) et tous les tests |
 
-Ajouter une manette revient, la plupart du temps, à ajouter un profil dans `src/profiles.c` et un test avec le simulateur. [AI-WORKFLOW.md](AI-WORKFLOW.md) donne les détails.
-
----
-
-## Nouveautés de la 0.9.5
-
-- **Code ouvert :** tout le code est publié, avec un guide pour travailler avec un assistant IA.
-
-## Nouveautés de la 0.9
-
-- **Plus compatible :** davantage de manettes prises en charge, et compatibilité avec les deux puces Bluetooth présentes dans les PS5.
-- **Corrections de bugs.**
-- **Nouvelle interface graphique** pour la page d'WhateverPad.
-
-## Nouveautés de la 0.8
-
-### Association plus rapide
-
-L'association est maintenant beaucoup plus rapide et fiable. Dans nos essais, la DualShock 4 et la 8BitDo sont trouvées en quelques secondes et prêtes quelques secondes plus tard, alors qu'avant il fallait souvent plusieurs tentatives.
-
-### Plus stable
-
-- **Réponse fluide :** les manettes réagissent avec souplesse pendant le jeu, sans latence.
-- **Manettes allumées normalement** (au lieu du mode association) : elles sont maintenant associées dès la première tentative.
-- **Gestion plus intelligente** des manettes qui tardent à répondre ou refusent une étape.
-
-### Configurer PS
-
-Pour les manettes sans touche PS utilisable (Switch Pro, 8BitDo et autres), le bouton **Configurer PS** permet de choisir **une touche ou une combinaison de trois** qui servira de touche PS. Choisissez combien, appuyez dessus sur la manette et maintenez-les une seconde : WhateverPad les détecte tout seul. Le réglage est enregistré pour ce modèle de manette.
-
-Les DualShock 4 et DualSense ont leur propre touche PS, cette option n'apparaît donc pas pour elles.
-
-### Douze langues
-
-La page d'WhateverPad suit la langue de la console : anglais, espagnol, français, italien, portugais, allemand, russe, chinois simplifié, chinois traditionnel, japonais, coréen et arabe (de droite à gauche). Toute autre langue utilise l'anglais.
+Ajouter une manette revient, la plupart du temps, à ajouter un profil dans `src/profiles.c` et un test avec le simulateur. Les détails sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -165,7 +101,7 @@ Il **ne** modifie **ni** les jeux, **ni** le firmware de la PS5, **ni** le jailb
 
 # Utilisation
 
-1. **Chargez WhateverPad.** Téléchargez `WhateverPad-PS5-0.9.5-beta.elf` depuis les [Releases](https://codeberg.org/elmonomalva0/Any-Pad-ps5/releases) et chargez-le avec votre chargeur de payloads habituel.
+1. **Chargez WhateverPad.** Téléchargez `WhateverPad-PS5-0.9.5-beta.elf` depuis les [Releases](https://github.com/andrescera/WhateverPad/releases) et chargez-le avec votre chargeur de payloads habituel.
 2. **Ouvrez la page.** Ouvrez **WhateverPad** dans la rangée Médias de la console, ou `http://<ip-de-la-console>:8095` depuis un téléphone ou un ordinateur du même réseau.
 3. **Associez.** Appuyez sur **Associer**, puis mettez la manette en mode association, près de la console.
 
@@ -226,7 +162,7 @@ Beaucoup de personnes me demandent d'essayer d'autres manettes et d'autres versi
 
 # Remerciements
 
-WhateverPad PS5 est un code original. Ces projets ont été étudiés pour comprendre le fonctionnement des choses, et leurs idées ont été réécrites pour WhateverPad. Merci à leurs auteurs :
+WhateverPad PS5 est un fork d'[AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5) par elmonomalva0. Ces projets ont été étudiés pour comprendre le fonctionnement des choses, et leurs idées ont été réécrites pour WhateverPad. Merci à leurs auteurs :
 
 - **[FGG-PlayPods](https://github.com/FGGstore/FGG-PlayPods)** (FGGstore) : l'idée de la partie Bluetooth, partager la puce Bluetooth de la PS5 avec le système.
 - **[MissionControl](https://github.com/ndeadly/MissionControl)** (ndeadly) : les profils de manettes par fabricant et modèle, et le format des rapports de nombreuses manettes.
@@ -237,5 +173,5 @@ WhateverPad PS5 est un code original. Ces projets ont été étudiés pour compr
 
 Licence : GPL-3.0-or-later ([LICENSE](LICENSE)).
 
-Auteur : **elmonomalvad0**, le même auteur que *sinfiltros* (l'WhateverPad PS5 original sur GitHub).
+Auteur : **elmonomalvad0**, auteur d'[AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5).
 X : [@elmonomalvad0](https://x.com/elmonomalvad0) · Contact : exposed.ct.ws@gmail.com

@@ -20,41 +20,15 @@ Kein USB-Adapter nötig.
 
 ## Über dieses Projekt
 
-WhateverPad PS5 begann am 3. Oktober 2026 gegen 14:20 Uhr (spanische Zeit), an dem Tag, an dem ich die erste Version veröffentlichte. Die Idee stammt von MissionControl, mit dem man an der Nintendo Switch Controller anderer Konsolen nutzen kann. WhateverPad war vielleicht nicht das erste Projekt, das andere Controller an der PS5 nutzbar machte: Es gab bereits Projekte, die sie per USB verbanden. Aber keines verband sie per Bluetooth, und WhateverPad war das erste, das es tat. Ich hatte eine Idee und habe sie umgesetzt.
-
 Das Ziel ist jetzt, dass WhateverPad mit mehr Controllern funktioniert. Wenn du es ausprobierst, schick mir bitte dein Log (siehe „Hilf uns, die Kompatibilität zu bestätigen“ weiter unten): Jedes Log hilft.
 
-Der vollständige Quellcode ist in diesem Repository unter GPL-3.0-or-later veröffentlicht (siehe „Open Source und die Arbeit mit einer KI“ weiter unten). Wenn du einen Emulator entwickelst und WhateverPad integrieren möchtest, kannst du das unter dieser Lizenz tun. Schreib mir an [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com), wenn du Hilfe brauchst.
+Der vollständige Quellcode ist in diesem Repository unter GPL-3.0-or-later veröffentlicht. Wenn du einen Emulator entwickelst und WhateverPad integrieren möchtest, kannst du das unter dieser Lizenz tun. Schreib mir an [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com), wenn du Hilfe brauchst.
 
 Ein bekanntes Problem bleibt: Wird der DualSense ausgeschaltet, während WhateverPad läuft, kann er blau blinkend hängen bleiben. Ich hoffe, dass künftige Projekte es nicht haben. Projekte, die auf dem von mir veröffentlichten Code von WhateverPad aufbauen (Forks), werden dieses Problem sehr wahrscheinlich erben. Es gehört zum Vermächtnis von WhateverPad und ist ein Zeichen dafür, dass sie zumindest in ihrem Bluetooth-Teil Forks von WhateverPad sind.
 
 ---
 
-## Open Source und die Arbeit mit einer KI
-
-Ab Version 0.9.5 ist der gesamte Quellcode von WhateverPad PS5 in diesem Repository veröffentlicht, unter GPL-3.0-or-later: der Bluetooth-Host, die Controller-Profile, die WhateverPad-Seite, die Tests und die Build-Skripte. Dazu gehört ein Simulator, sodass sich ein Controller ohne Konsole an einem Computer prüfen lässt.
-
-Was WhateverPad meiner Meinung nach wirklich beiträgt, mehr als die Brücke selbst, ist **sein Kommunikationssystem, um neue Controller mit Hilfe einer KI einzubinden**. Solange WhateverPad läuft, bietet seine Seite in deinem lokalen Netzwerk:
-
-- das Log in Echtzeit;
-- einige Einstellungen der Bluetooth-Verbindung, die sich im laufenden Betrieb ändern lassen, ohne Neustart und ohne Neukompilieren;
-- die Schaltfläche zum Koppeln.
-
-Ein KI-Assistent mit einem Terminal auf einem Computer im selben Netzwerk (zum Beispiel Claude Code, Codex CLI oder Gemini CLI) kann verfolgen, was WhateverPad tut, während du einen Controller einschaltest, eine Änderung vorschlagen, die ELF neu bauen, sie auf die Konsole laden und das Ergebnis beim nächsten Lauf prüfen. So wurde WhateverPad selbst verbessert.
-
-Die Datei **[AI-WORKFLOW.md](AI-WORKFLOW.md)** (auf Englisch) ist eine Anleitung für diesen Assistenten: wie man sich verbindet, was er anfassen darf und was nicht, wie man eine Änderung testet und wie man einen neuen Controller hinzufügt. Du kannst sie dem Assistenten als erste Anweisung geben.
-
-Bitte beachte:
-
-- Ein Chat im Browser erreicht deine Konsole nicht. Der Assistent braucht ein Terminal auf einem Computer, der im selben lokalen Netzwerk wie die PS5 ist. WhateverPad selbst verbindet sich nie mit dem Internet.
-- Die Seite hat wie in jeder Version keine PIN: Jeder in deinem lokalen Netzwerk kann das Log lesen und Befehle an WhateverPad senden. Benutze es nur in einem vertrauenswürdigen Netzwerk und beende WhateverPad, wenn du fertig bist.
-- Das Log enthält die Bluetooth-Adressen deiner Controller und die ID deines Konsolen-Benutzers. Sieh es durch, bevor du es teilst.
-
-### Teile, was ihr (du und deine KI) lernt
-
-Wenn du WhateverPad an einen Controller anpasst, mit oder ohne KI, eröffne bitte ein [Issue](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues) mit dem Controller-Modell, der Konsolen-Firmware, dem Jailbreak, der WhateverPad-Version, was du geändert hast und warum, sowie dem Log. Wenn dir eine KI geholfen hat, sag es und lass sie die Erklärung schreiben: was der Controller anders macht, was geändert wurde und wie es getestet wurde. Ich prüfe jeden Vorschlag und übernehme die kompatiblen in spätere Versionen. Eine Änderung muss weiterhin `make test` bestehen und darf nicht verändern, wie sich der DualShock 4 und der 8BitDo verbinden.
-
-### Aus dem Quellcode bauen
+## Aus dem Quellcode bauen
 
 Du brauchst das [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk).
 
@@ -64,11 +38,7 @@ make ps5 PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk       # die ELF in dist/
 tools/build-elf-docker.sh /path/to/ps5-payload-sdk      # oder dasselbe in einem Container
 ```
 
-### Bitte erwähne mich
-
-Wenn du eine eigene Version von WhateverPad erstellst oder es (oder einen Teil davon) in einen Emulator, ein HEN, einen Payload oder ein anderes Programm einbaust, wäre ich sehr dankbar, wenn du **elmonomalvad0** erwähnst und auf dieses Projekt verlinkst. Die Lizenz GPL-3.0-or-later verlangt bereits, die Copyright-Hinweise beizubehalten und deine Änderungen unter derselben Lizenz zu verbreiten. Die Erwähnung ist eine Bitte, keine Bedingung, und sie macht es lohnend, die Arbeit weiter zu teilen.
-
-### Im Code
+## Im Code
 
 | Wo | Was es tut |
 | --- | --- |
@@ -82,41 +52,7 @@ Wenn du eine eigene Version von WhateverPad erstellst oder es (oder einen Teil d
 | `src/ps5_main.c` | Die Hauptschleife des Payloads |
 | `tests/` | Die Bluetooth-Simulatoren (`sim.c`, `sim_le.c`) und alle Tests |
 
-Einen Controller hinzuzufügen heißt meistens, ein Profil in `src/profiles.c` und einen Test mit dem Simulator hinzuzufügen. [AI-WORKFLOW.md](AI-WORKFLOW.md) erklärt die Einzelheiten.
-
----
-
-## Neu in 0.9.5
-
-- **Open Source:** der gesamte Code ist veröffentlicht, mit einer Anleitung für die Arbeit mit einem KI-Assistenten.
-
-## Neu in 0.9
-
-- **Kompatibler:** mehr unterstützte Controller und Unterstützung für die beiden Bluetooth-Chips, die in PS5-Konsolen verbaut sind.
-- **Fehlerbehebungen.**
-- **Neue grafische Oberfläche** für die WhateverPad-Seite.
-
-## Neu in 0.8
-
-### Schnelleres Koppeln
-
-Das Koppeln ist jetzt deutlich schneller und zuverlässiger. In unseren Tests werden der DualShock 4 und der 8BitDo in wenigen Sekunden gefunden und sind wenige Sekunden später bereit, während frühere Versionen oft mehrere Versuche brauchten.
-
-### Stabiler
-
-- **Flüssige Reaktion:** Die Controller reagieren beim Spielen geschmeidig, ohne Verzögerung.
-- **Normal eingeschaltete Controller** (statt im Kopplungsmodus) werden jetzt beim ersten Versuch gekoppelt.
-- **Klügere Behandlung** von Controllern, die langsam antworten oder einen Schritt ablehnen.
-
-### PS einrichten
-
-Für Controller ohne brauchbare PS-Taste (Switch Pro, 8BitDo und andere) kannst du mit der Schaltfläche **PS einrichten** **eine Taste oder eine Kombination aus drei** wählen, die als PS-Taste dient. Wähle, wie viele, drücke sie am Controller und halte sie eine Sekunde: WhateverPad erkennt sie von selbst. Die Einstellung wird für dieses Controller-Modell gespeichert.
-
-DualShock 4 und DualSense haben eine eigene PS-Taste, daher erscheint die Option für sie nicht.
-
-### Zwölf Sprachen
-
-Die WhateverPad-Seite folgt der Sprache der Konsole: Englisch, Spanisch, Französisch, Italienisch, Portugiesisch, Deutsch, Russisch, vereinfachtes Chinesisch, traditionelles Chinesisch, Japanisch, Koreanisch und Arabisch (von rechts nach links). Jede andere Sprache fällt auf Englisch zurück.
+Einen Controller hinzuzufügen heißt meistens, ein Profil in `src/profiles.c` und einen Test mit dem Simulator hinzuzufügen. Die Einzelheiten stehen in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -165,7 +101,7 @@ Es verändert **weder** Spiele, **noch** die Firmware der PS5, **noch** den Jail
 
 # Verwendung
 
-1. **WhateverPad laden.** Lade `WhateverPad-PS5-0.9.5-beta.elf` von den [Releases](https://codeberg.org/elmonomalva0/Any-Pad-ps5/releases) herunter und lade es mit dem Payload-Loader, den du üblicherweise nutzt.
+1. **WhateverPad laden.** Lade `WhateverPad-PS5-0.9.5-beta.elf` von den [Releases](https://github.com/andrescera/WhateverPad/releases) herunter und lade es mit dem Payload-Loader, den du üblicherweise nutzt.
 2. **Seite öffnen.** Öffne **WhateverPad** in der Medien-Zeile der Konsole oder `http://<Konsolen-IP>:8095` von einem Handy oder Computer im selben Netzwerk.
 3. **Koppeln.** Drücke **Koppeln** und versetze den Controller dann in den Kopplungsmodus, nahe an der Konsole.
 
@@ -226,7 +162,7 @@ Viele Leute bitten mich, andere Controller und andere Konsolenversionen zu teste
 
 # Danksagung
 
-WhateverPad PS5 ist Originalcode. Diese Projekte wurden studiert, um zu verstehen, wie die Dinge funktionieren, und ihre Ideen wurden für WhateverPad neu geschrieben. Dank an ihre Autoren:
+WhateverPad PS5 ist ein Fork von [AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5) von elmonomalva0. Diese Projekte wurden studiert, um zu verstehen, wie die Dinge funktionieren, und ihre Ideen wurden für WhateverPad neu geschrieben. Dank an ihre Autoren:
 
 - **[FGG-PlayPods](https://github.com/FGGstore/FGG-PlayPods)** (FGGstore): die Idee des Bluetooth-Teils, den Bluetooth-Chip der PS5 mit dem System zu teilen.
 - **[MissionControl](https://github.com/ndeadly/MissionControl)** (ndeadly): Controller-Profile nach Hersteller und Modell sowie das Berichtsformat vieler Controller.
@@ -237,5 +173,5 @@ WhateverPad PS5 ist Originalcode. Diese Projekte wurden studiert, um zu verstehe
 
 Lizenz: GPL-3.0-or-later ([LICENSE](LICENSE)).
 
-Autor: **elmonomalvad0**, derselbe Autor wie *sinfiltros* (das ursprüngliche WhateverPad PS5 auf GitHub).
+Autor: **elmonomalvad0**, Autor von [AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5).
 X: [@elmonomalvad0](https://x.com/elmonomalvad0) · Kontakt: exposed.ct.ws@gmail.com
