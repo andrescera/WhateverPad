@@ -40,6 +40,7 @@ static volatile int g_bt_state = WEB_BT_OK, g_retry;
 static char g_reason[200] = "";
 static int g_phys_readable = 1;
 static int refuse_response, refused_sends, block_response, short_response, send_calls;
+static int block_next_response, blocked_response_fd = -1;
 
 /* Interpose only the OS send boundary; ordinary traffic still uses real TCP. */
 ssize_t send(int fd, const void *buf, size_t n, int flags)
@@ -50,6 +51,11 @@ ssize_t send(int fd, const void *buf, size_t n, int flags)
         errno = EPIPE;
         return -1;
     }
+    if (block_next_response) {
+        block_next_response = 0;
+        blocked_response_fd = fd;
+    }
+    if (fd == blocked_response_fd) { errno = EAGAIN; return -1; }
     if (block_response) { errno = EAGAIN; return -1; }
     if (short_response && n > (size_t)short_response) n = (size_t)short_response;
     return sendto(fd, buf, n, flags, NULL, 0);
@@ -280,6 +286,9 @@ static void test_idle_only_queues_mutations(void)
     g_ps_calls = 0;
 }
 
+static int post_pending(const char *path);
+static int read_framed(int fd, char *out, int max, int code);
+
 /* T route matrix / review Appendix 2: admission and request time use real sockets. */
 static void test_client_saturation_and_timeout(void)
 {
@@ -298,7 +307,36 @@ static void test_client_saturation_and_timeout(void)
         for (int i = 0; i < 8; i++) clients[i] = idle_client();
         int bytes = get("POST", "/api/retry", out, sizeof out);
         CHECK(complete_response(out, bytes, 429) && !g_retry && !stop);
-        for (int i = 0; i < 8; i++) close(clients[i]);
+        short_response = 7;
+        int rejected = post_pending("/api/retry");
+        bytes = read_framed(rejected, out, sizeof out, 429);
+        printf("SATURATION_SHORT_WRITE bytes=%d framed_429=%d retry=%d\n",
+               bytes, complete_response(out, bytes, 429), g_retry);
+        CHECK(!g_retry && !stop);
+        short_response = 0;
+        close(rejected);
+
+        block_next_response = 1;
+        rejected = post_pending("/api/retry");
+        struct pollfd blocked = {.fd = rejected, .events = POLLIN};
+        CHECK(blocked_response_fd >= 0 && !block_next_response);
+        CHECK(poll(&blocked, 1, 0) == 0);
+        int calls = send_calls;
+        web_poll(g_web);
+        CHECK(send_calls - calls <= 1); /* EAGAIN yields instead of spinning. */
+        static const char state[] = "GET /api/state HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        CHECK(sendto(clients[0], state, sizeof state - 1, 0, NULL, 0) == sizeof state - 1);
+        read_framed(clients[0], out, sizeof out, 200); /* existing slots still run */
+        close(clients[0]); clients[0] = -1;
+        io.ops->pump(io.ctx, 999); web_poll(g_web);
+        CHECK(poll(&blocked, 1, 0) == 0);
+        io.ops->pump(io.ctx, 1); web_poll(g_web);
+        bytes = response(&blocked, out, sizeof out);
+        CHECK(bytes == 0 && !g_retry && !stop);
+        printf("SATURATION_BACKPRESSURE deadline_ms=1000 bytes=%d retry=%d\n", bytes, g_retry);
+        blocked_response_fd = -1;
+        close(rejected);
+        for (int i = 0; i < 8; i++) if (clients[i] >= 0) close(clients[i]);
         web_poll(g_web);
         bytes = get("GET", "/api/state", out, sizeof out);
         CHECK(complete_response(out, bytes, 200));

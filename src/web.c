@@ -53,6 +53,7 @@ struct web {
     int fd;
     int polling, applying;
     client c[WEB_CLIENTS];
+    client rejected; /* Response only; never a ninth request/action slot. */
 };
 
 static int g_allow_any_peer;            /* tests only */
@@ -658,6 +659,7 @@ web_t *web_start(const web_cfg *cfg, int port)
     if (!w) return NULL;
     w->cfg = *cfg;
     for (i = 0; i < WEB_CLIENTS; i++) w->c[i].fd = -1;
+    w->rejected.fd = -1;
 
     w->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (w->fd < 0) {
@@ -693,7 +695,7 @@ static void web_poll_once(web_t *w, long now)
 {
     int i;
 
-    for (int accepted = 0; accepted <= WEB_CLIENTS; accepted++) {
+    for (int accepted = 0; accepted <= WEB_CLIENTS && w->rejected.fd < 0; accepted++) {
         struct sockaddr_in peer;
         socklen_t plen = sizeof peer;
         int fd = accept(w->fd, (struct sockaddr *)&peer, &plen), slot = -1;
@@ -711,12 +713,11 @@ static void web_poll_once(web_t *w, long now)
         set_nonblock(fd);
         for (i = 0; i < WEB_CLIENTS; i++) if (w->c[i].fd < 0) { slot = i; break; }
         if (slot < 0) {
-            static const char busy[] = "HTTP/1.1 429 Too Many Requests\r\n"
-                "Content-Type: application/json\r\nContent-Length: 16\r\n"
-                "Connection: close\r\n\r\n{\"error\":\"busy\"}";
-            send(fd, busy, sizeof busy - 1, 0);
-            close(fd);
-            continue;
+            client *c = &w->rejected;
+            memset(c, 0, sizeof *c);
+            c->fd = fd;
+            c->deadline = now + T_REQUEST;
+            break;
         }
         memset(&w->c[slot], 0, sizeof w->c[slot]);
         w->c[slot].fd = fd;
@@ -724,8 +725,8 @@ static void web_poll_once(web_t *w, long now)
         w->c[slot].id = ++g_next_id;
     }
 
-    for (i = 0; i < WEB_CLIENTS; i++) {
-        client *c = &w->c[i];
+    for (i = 0; i <= WEB_CLIENTS; i++) {
+        client *c = i == WEB_CLIENTS ? &w->rejected : &w->c[i];
         ssize_t k;
 
         if (c->fd < 0) continue;
@@ -745,6 +746,10 @@ static void web_poll_once(web_t *w, long now)
 
         if (strstr(c->buf, "\r\n\r\n")) {
             if (now >= c->deadline) unavailable(c, 503);
+            else if (i == WEB_CLIENTS) {
+                c->sequence = ++g_sequence;
+                respond_text(c, 429, "{\"error\":\"busy\"}");
+            }
             else handle(w, c);
         } else if (k == 0 || (k < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
             respond_text(c, 400, "{\"error\":\"incomplete request\"}");
@@ -784,6 +789,7 @@ void web_stop(web_t *w)
 
     if (!w) return;
     for (i = 0; i < WEB_CLIENTS; i++) close_client(w, &w->c[i]);
+    close_client(w, &w->rejected);
     close(w->fd);
     free(w);
 }
