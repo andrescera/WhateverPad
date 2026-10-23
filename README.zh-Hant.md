@@ -20,41 +20,15 @@ WhateverPad PS5 讓你在 PS5 上使用其他平台的控制器。它透過主�
 
 ## 關於這個專案
 
-WhateverPad PS5 開始於 2026 年 10 月 3 日 14:20 左右（西班牙時間），也就是我發布第一個版本的那一天。靈感來自 MissionControl，它讓 Nintendo Switch 可以使用其他主機的控制器。WhateverPad 或許不是第一個讓 PS5 使用其他控制器的專案：先前已有透過 USB 連接的專案。但沒有任何一個透過藍牙連接，WhateverPad 是第一個做到的。我有了一個想法，並且把它做了出來。
-
 現在的目標是讓 WhateverPad 支援更多控制器。如果你試用了它，請把你的記錄檔寄給我（見下文「協助我們確認相容性」）：每一份記錄檔都有幫助。
 
-完整的原始碼已在本儲存庫中以 GPL-3.0-or-later 授權發布（見下文「開源，以及與 AI 協作」）。如果你開發模擬器並想整合 WhateverPad，可以在該授權下進行。如需協助，請來信至 [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com)。
+完整的原始碼已在本儲存庫中以 GPL-3.0-or-later 授權發布。如果你開發模擬器並想整合 WhateverPad，可以在該授權下進行。如需協助，請來信至 [exposed.ct.ws@gmail.com](mailto:exposed.ct.ws@gmail.com)。
 
 仍有一個已知問題：如果在 WhateverPad 執行時關閉 DualSense，它可能會一直藍燈閃爍。我希望今後的專案不會有這個問題。以我發布的 WhateverPad 程式碼為基礎的分支（fork）很可能會繼承這個問題。這是 WhateverPad 留下的印記，也說明至少在藍牙部分，它們是 WhateverPad 的分支。
 
 ---
 
-## 開源，以及與 AI 協作
-
-從 0.9.5 版本起，WhateverPad PS5 的全部原始碼都發布在這個儲存庫中，採用 GPL-3.0-or-later 授權：藍牙主機、控制器設定檔、WhateverPad 頁面、測試和建置腳本。其中包含一個模擬器，因此無需主機也能在電腦上檢查控制器。
-
-我認為 WhateverPad 真正的貢獻，比橋接本身更重要的是 **藉助 AI 整合新控制器的通訊系統**。WhateverPad 執行時，它的頁面會在你的區域網路中提供：
-
-- 即時記錄檔；
-- 一些可以在執行中修改的藍牙連線設定，無需重新啟動，也無需重新編譯；
-- 配對按鈕。
-
-只要 AI 助理在同一網路的電腦上有終端機（例如 Claude Code、Codex CLI 或 Gemini CLI），就可以在你開啟控制器時追蹤 WhateverPad 的行為，提出修改，重新編譯 ELF，上傳到主機，並在下一次執行時檢查結果。WhateverPad 本身就是這樣改進的。
-
-檔案 **[AI-WORKFLOW.md](AI-WORKFLOW.md)**（英文）是為這類助理寫的指南：如何連線、可以更動什麼和不可以更動什麼、如何測試修改，以及如何新增控制器。你可以把它當作第一則指令交給助理。
-
-請注意：
-
-- 瀏覽器裡的聊天視窗無法連到你的主機。助理需要在與 PS5 處於同一區域網路的電腦上使用終端機。WhateverPad 本身從不連接網際網路。
-- 與所有版本一樣，頁面沒有 PIN：你區域網路中的任何人都可以讀取記錄檔並向 WhateverPad 傳送指令。請只在可信的網路中使用，用完後停止 WhateverPad。
-- 記錄檔中包含你控制器的藍牙位址和主機使用者的 ID。分享前請先檢查。
-
-### 分享你（和你的 AI）的發現
-
-如果你讓 WhateverPad 適配了某款控制器，無論是否藉助 AI，請提交一個 [issue](https://codeberg.org/elmonomalva0/Any-Pad-ps5/issues)，寫明控制器型號、主機韌體、越獄方式、WhateverPad 版本、你改了什麼以及原因，並附上記錄檔。如果有 AI 幫助了你，請說明，並讓它來撰寫說明：控制器有什麼不同、改了什麼、如何測試。我會審閱每個提議，並在之後的版本中整合相容的部分。修改必須仍能通過 `make test`，並且不得改變 DualShock 4 和 8BitDo 的連線方式。
-
-### 從原始碼建置
+## 從原始碼建置
 
 你需要 [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)。
 
@@ -64,11 +38,7 @@ make ps5 PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk       # 在 dist/ 中產生 EL
 tools/build-elf-docker.sh /path/to/ps5-payload-sdk      # 或者在容器中完成同樣的事
 ```
 
-### 請提及我
-
-如果你製作了自己的 WhateverPad 版本，或者把它（或其中一部分）放進模擬器、HEN、payload 或其他程式中，如果你能提及 **elmonomalvad0** 並連結到本專案，我會非常感激。GPL-3.0-or-later 授權本來就要求你保留版權聲明，並以相同授權發布你的修改。提及只是請求，不是條件，正是它讓繼續分享這項工作變得有意義。
-
-### 程式碼結構
+## 程式碼結構
 
 | 位置 | 作用 |
 | --- | --- |
@@ -82,41 +52,7 @@ tools/build-elf-docker.sh /path/to/ps5-payload-sdk      # 或者在容器中完�
 | `src/ps5_main.c` | payload 的主迴圈 |
 | `tests/` | 藍牙模擬器（`sim.c`、`sim_le.c`）和所有測試 |
 
-新增一款控制器，大多數情況下就是在 `src/profiles.c` 中新增一個設定檔，並用模擬器寫一個測試。詳情見 [AI-WORKFLOW.md](AI-WORKFLOW.md)。
-
----
-
-## 0.9.5 的新內容
-
-- **開源：** 全部程式碼已公開，並附有與 AI 助理協作的指南。
-
-## 0.9 的新內容
-
-- **相容性更好：** 支援更多控制器，並相容 PS5 中使用的兩種藍牙晶片。
-- **修正了若干錯誤。**
-- WhateverPad 頁面採用**全新的圖形介面**。
-
-## 0.8 的新內容
-
-### 更快的配對
-
-配對現在更快、更可靠。在我們的測試中，DualShock 4 和 8BitDo 幾秒鐘內就能被找到，再過幾秒就能使用，而以前往往需要多次嘗試。
-
-### 更穩定
-
-- **回應流暢：** 遊戲時控制器反應順暢，沒有延遲。
-- **正常開機的控制器**（而不是進入配對模式）現在第一次就能配對。
-- **更聰明的處理：** 針對回應緩慢或拒絕某一步的控制器。
-
-### 設定 PS
-
-對於沒有可用 PS 鍵的控制器（Switch Pro、8BitDo 等），**設定 PS** 按鈕可讓你選擇**一個按鍵或三個按鍵的組合**來充當 PS 鍵。選擇數量，在控制器上按下這些按鍵並保持一秒：WhateverPad 會自動偵測。該設定會針對此控制器型號儲存。
-
-DualShock 4 和 DualSense 本身就有 PS 鍵，因此不會顯示此選項。
-
-### 十二種語言
-
-WhateverPad 頁面跟隨主機語言：英語、西班牙語、法語、義大利語、葡萄牙語、德語、俄語、簡體中文、繁體中文、日語、韓語和阿拉伯語（由右至左）。其他語言使用英語。
+新增一款控制器，大多數情況下就是在 `src/profiles.c` 中新增一個設定檔，並用模擬器寫一個測試。詳情見 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
@@ -165,7 +101,7 @@ WhateverPad PS5 以常駐 payload 的形式執行在已越獄的 PS5 上。它�
 
 # 使用方法
 
-1. **載入 WhateverPad。** 從 [Releases](https://codeberg.org/elmonomalva0/Any-Pad-ps5/releases) 下載 `WhateverPad-PS5-0.9.5-beta.elf`，用你平常使用的 payload 載入器載入。
+1. **載入 WhateverPad。** 從 [Releases](https://github.com/andrescera/WhateverPad/releases) 下載 `WhateverPad-PS5-0.9.5-beta.elf`，用你平常使用的 payload 載入器載入。
 2. **開啟頁面。** 在主機的「媒體」列開啟 **WhateverPad**，或在同一網路的手機或電腦上開啟 `http://<主機IP>:8095`。
 3. **配對。** 按下**配對**，然後在靠近主機的地方讓控制器進入配對模式。
 
@@ -179,6 +115,12 @@ WhateverPad PS5 以常駐 payload 的形式執行在已越獄的 PS5 上。它�
 4. **選擇使用者。** 主機詢問時，選擇**快速遊戲 / 訪客**。
 
 可以同時使用多個控制器，並與 DualSense 一起使用。
+
+### 設定 PS
+
+對於沒有可用 PS 鍵的控制器（Switch Pro、8BitDo 等），**設定 PS** 按鈕可讓你選擇**一個按鍵或三個按鍵的組合**來充當 PS 鍵。選擇數量，在控制器上按下這些按鍵並保持一秒：WhateverPad 會自動偵測。該設定會針對此控制器型號儲存。
+
+DualShock 4 和 DualSense 本身就有 PS 鍵，因此不會顯示此選項。
 
 ---
 
@@ -226,7 +168,7 @@ WhateverPad 不會在兩次執行之間儲存已配對的控制器。每次啟�
 
 # 致謝
 
-WhateverPad PS5 是原創程式碼。我們研究了這些專案以理解其運作方式，並為 WhateverPad 重新編寫了其中的想法。感謝它們的作者：
+WhateverPad PS5 是 [AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5) 的分支，作者 elmonomalva0。我們研究了這些專案以理解其運作方式，並為 WhateverPad 重新編寫了其中的想法。感謝它們的作者：
 
 - **[FGG-PlayPods](https://github.com/FGGstore/FGG-PlayPods)**（FGGstore）：藍牙部分的想法，即與系統共用 PS5 內建的藍牙晶片。
 - **[MissionControl](https://github.com/ndeadly/MissionControl)**（ndeadly）：依廠商和型號劃分的控制器設定檔，以及許多控制器的報告格式。
@@ -237,5 +179,5 @@ WhateverPad PS5 是原創程式碼。我們研究了這些專案以理解其運�
 
 授權：GPL-3.0-or-later（[LICENSE](LICENSE)）。
 
-作者：**elmonomalvad0**，與 *sinfiltros*（GitHub 上最初的 WhateverPad PS5）是同一位作者。
+作者：**elmonomalvad0**，[AnyPad PS5](https://codeberg.org/elmonomalva0/Any-Pad-ps5) 的作者。
 X：[@elmonomalvad0](https://x.com/elmonomalvad0) · 聯絡：exposed.ct.ws@gmail.com

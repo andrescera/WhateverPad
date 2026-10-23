@@ -106,6 +106,19 @@ La disposición se lee del descriptor HID de cada mando y se corrige donde hace 
 The generic profile reads the pad's HID descriptor and applies a default mapping (Android/Xbox or DirectInput order). Adjust it with a `.map` file (see `maps/EXAMPLE.map`).
 El perfil genérico lee el descriptor HID y aplica un mapeo por defecto (orden Android/Xbox o DirectInput). Se ajusta con un fichero `.map` (ver `maps/EXAMPLE.map`).
 
+## Known issues / Problemas conocidos
+
+- **Reconnecting after switching off.** A DualShock 4 and an 8BitDo that were paired before and are switched on again do not always reconnect by themselves. The DualShock 4 rejects the stored link key (authentication failure `0x05`), and the 8BitDo, when it calls the console, stays in its simple report mode and ignores the wake-up sequence. Pairing them again in pairing mode works every time.
+- **DualSense blinking blue.** A DualSense switched off while WhateverPad runs can stay blinking blue until the console is restarted.
+- **Silent search.** Sometimes the chip hears nothing during a search; restarting the console helps.
+- **Marvell/NXP consoles (`1286:2059`).** Supported in the code, never verified on a real console. A log would help.
+- **Xbox controllers over Bluetooth LE.** Reported to work; the exact models are not identified yet.
+- **Reconexión al encenderlos.** Un DualShock 4 y un 8BitDo emparejados antes no siempre se reconectan solos al encenderlos. El DualShock 4 rechaza la clave guardada (fallo de autenticación `0x05`), y el 8BitDo, cuando llama a la consola, se queda en su modo de informe simple e ignora la secuencia de despertar. Emparejarlos otra vez en modo emparejamiento funciona siempre.
+- **DualSense en azul parpadeante.** Un DualSense apagado con WhateverPad en marcha puede quedarse en azul parpadeante hasta reiniciar la consola.
+- **Búsqueda sorda.** A veces el chip no oye nada en una búsqueda; reiniciar la consola ayuda.
+- **Consolas Marvell/NXP (`1286:2059`).** Soportadas en el código, nunca verificadas en una consola real. Un log ayudaría.
+- **Mandos Xbox por Bluetooth LE.** Se dice que funcionan; los modelos exactos aún no están identificados.
+
 ## Not supported yet / Aún no soportado
 
 DualShock 3, Wii Remote / Wii U Pro, Joy-Con used alone.

@@ -67,6 +67,10 @@ $(BUILD)/test_vpad: src/ps5_vpad.c src/log.c src/util.c tests/test_vpad.c | $(BU
 $(BUILD)/test_config: src/config.c src/hotkey.c src/netinfo.c src/log.c src/util.c tests/test_config.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+# Conservative legacy settings migration; fault injection is test-only.
+$(BUILD)/test_migrate: src/migrate.c src/config.c src/log.c src/util.c tests/test_migrate.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DMIGRATE_TEST -o $@ $^
+
 # The instance lock.
 $(BUILD)/test_lock: src/lock.c src/log.c src/util.c tests/test_lock.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
@@ -93,7 +97,7 @@ test-attrib: $(BUILD)/test_attrib
 $(BUILD)/test_session: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
-test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_migrate $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
 	./$(BUILD)/test_attrib
 	./$(BUILD)/test_bond_store
 	./$(BUILD)/test_usb
@@ -110,6 +114,7 @@ test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(B
 	./$(BUILD)/test_web
 	./$(BUILD)/test_launcher
 	./$(BUILD)/test_hearbridge
+	./$(BUILD)/test_migrate
 
 # Malformed input through every parser, under the sanitizers.
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
@@ -130,6 +135,8 @@ fuzz: | $(BUILD)
 	./$(BUILD)/test_fuzz
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_bond_store_fuzz src/bond_store.c tests/test_bond_store_fuzz.c
 	./$(BUILD)/test_bond_store_fuzz
+	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_config_fuzz src/config.c src/hotkey.c src/netinfo.c src/log.c src/util.c tests/test_config.c
+	./$(BUILD)/test_config_fuzz --fuzz
 
 # ---- the console payload ----------------------------------------------------
 
