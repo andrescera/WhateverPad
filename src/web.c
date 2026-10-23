@@ -10,6 +10,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,25 +20,44 @@
 #define REQ_MAX         8192
 #define T_REQUEST       3000    /* ms for a client to send its request */
 #define LOG_TAIL        6144
+#define T_WRITE         1000
+#define RESPONSE_MAX    (8192 + ATTRIB_JSON_MAX)
 
 extern const unsigned char web_page_html[];
 extern const unsigned int web_page_html_len;
 
+enum client_phase { READING, ACTION_PENDING, ACTION_TAKEN, ACTION_RUNNING, WRITING, RETRY_READY };
+enum action_kind { PAIR, FORGET, PRESS_PS, PS_COMBO, TUNE, RAW_HCI, RETRY };
+
 typedef struct {
     int fd;
-    int local;                          /* the peer is on the local network */
-    long t_start;
+    enum client_phase phase;
+    long deadline, write_by;
+    uint64_t id, attempt, revision, sequence;
     int len;
     char buf[REQ_MAX + 1];
+    enum action_kind action;
+    int slot, plen, retry_reserved;
+    unsigned opcode;
+    long value;
+    unsigned char params[255], addr[6];
+    char text[100];
+    session_retry_ticket retry;
+    char head[320], body[RESPONSE_MAX];
+    const char *data;
+    size_t head_len, head_sent, body_len, body_sent;
 } client;
 
 struct web {
     web_cfg cfg;
     int fd;
+    int polling, applying;
     client c[WEB_CLIENTS];
+    client rejected; /* Response only; never a ninth request/action slot. */
 };
 
 static int g_allow_any_peer;            /* tests only */
+static uint64_t g_next_id, g_sequence;  /* survive listener rebinds */
 
 static void web_poll_once(web_t *w, long now);
 
@@ -48,40 +68,79 @@ static void set_nonblock(int fd)
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
 }
 
-/* Sends all of it, giving up on a client too slow to take it. */
-static void send_all(int fd, const char *p, size_t n)
+static void service(web_t *w)
 {
-    long deadline = now_ms() + 1000;
+    if (w->cfg.service) w->cfg.service(w->cfg.ud);
+    if (w->cfg.session && w->cfg.stop && *w->cfg.stop)
+        session_request(w->cfg.session, SESSION_STOP, (uint64_t)now_ms());
+}
 
-    while (n > 0) {
-        ssize_t k = send(fd, p, n, 0);
+static void close_client(web_t *w, client *c)
+{
+    if (c->retry_reserved && w->cfg.retry_lock)
+        w->cfg.retry_lock(w->cfg.ud, 0);
+    c->retry_reserved = 0;
+    if (c->fd >= 0) close(c->fd);
+    c->fd = -1;
+}
+
+static void respond(client *c, int code, const char *type, const char *body, size_t len)
+{
+    const char *msg = code == 200 ? "OK" : code == 400 ? "Bad Request" :
+        code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
+        code == 408 ? "Request Timeout" : code == 409 ? "Conflict" :
+        code == 429 ? "Too Many Requests" : code == 503 ? "Service Unavailable" : "Error";
+    c->head_len = (size_t)snprintf(c->head, sizeof c->head,
+                     "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
+                     "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+                     "X-Snapshot-Sequence: %" PRIu64 "\r\n"
+                     "Connection: close\r\n\r\n",
+                     code, msg, type, len, c->sequence);
+    if (body == (const char *)web_page_html) c->data = body;
+    else {
+        memcpy(c->body, body, len);
+        c->data = c->body;
+    }
+    c->body_len = len;
+    c->body_sent = c->head_sent = 0;
+    c->write_by = now_ms() + T_WRITE;
+    c->phase = WRITING;
+}
+
+static void respond_text(client *c, int code, const char *text)
+{
+    respond(c, code, "application/json", text, strlen(text));
+}
+
+/* A bounded nonblocking step; partial writes retain their exact offsets. */
+static void write_response(web_t *w, client *c, long now)
+{
+    for (int i = 0; i < 4; i++) {
+        if (now_ms() >= c->write_by) { close_client(w, c); return; }
+        int header_left = c->head_sent < c->head_len;
+        const char *p = header_left ? c->head + c->head_sent : c->data + c->body_sent;
+        size_t n = header_left ? c->head_len - c->head_sent : c->body_len - c->body_sent;
+        if (!n) {
+            if (c->retry_reserved) c->phase = RETRY_READY;
+            else close_client(w, c);
+            return;
+        }
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        ssize_t k = send(c->fd, p, n, flags);
         if (k > 0) {
-            p += k;
-            n -= (size_t)k;
-        } else if (k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && now_ms() < deadline) {
-            usleep(1000);
+            if (header_left) c->head_sent += (size_t)k;
+            else c->body_sent += (size_t)k;
+        } else if (k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) &&
+                   now < c->write_by) {
+            return;
         } else {
+            close_client(w, c);
             return;
         }
     }
-}
-
-static void respond(int fd, int code, const char *type, const char *body, size_t len)
-{
-    char head[256];
-    const char *msg = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" : code == 429 ? "Too Many Requests" : "Error";
-    int n = snprintf(head, sizeof head,
-                     "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\n"
-                     "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
-                     "Connection: close\r\n\r\n",
-                     code, msg, type, (unsigned)len);
-    send_all(fd, head, (size_t)n);
-    send_all(fd, body, len);
-}
-
-static void respond_text(int fd, int code, const char *text)
-{
-    respond(fd, code, "application/json", text, strlen(text));
 }
 
 /* The value of a header, name compared without regard to case. */
@@ -136,8 +195,11 @@ static int parse_addr(const char *s, unsigned char a[6])
     unsigned v[6];
     int i;
 
-    if (sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
+    if (strlen(s) != 17 ||
+        sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
         return 0;
+    for (i = 0; i < 17; i++)
+        if (i % 3 == 2 ? s[i] != ':' : !strchr("0123456789abcdefABCDEF", s[i])) return 0;
     for (i = 0; i < 6; i++) a[5 - i] = (unsigned char)v[i];   /* shown MSB first */
     return 1;
 }
@@ -160,7 +222,7 @@ static void json_text(char *out, size_t max, const char *s)
     out[n] = '\0';
 }
 
-static void api_state(web_t *w, int fd)
+static void api_state(web_t *w, client *c)
 {
     static const struct { uint32_t bit; const char *name; } names[] = {
         { PAD_CROSS, "cross" }, { PAD_CIRCLE, "circle" }, { PAD_SQUARE, "square" },
@@ -170,7 +232,7 @@ static void api_state(web_t *w, int fd)
         { PAD_OPTIONS, "options" }, { PAD_CREATE, "create" }, { PAD_PS, "ps" },
         { PAD_TOUCHPAD, "touchpad" },
     };
-    host_t *h = *w->cfg.host;
+    host_t *h = w->cfg.host ? *w->cfg.host : NULL;
     char out[8192 + ATTRIB_JSON_MAX], a[18], combo[100];
     size_t n = 0;
     int i, first = 1;
@@ -183,15 +245,17 @@ static void api_state(web_t *w, int fd)
         char reason[200], combo[100];
         uint32_t pb = 0;
         int perr = 0, readable = w->cfg.physical ? w->cfg.physical(&pb, &perr) : 0;
-        int st = *w->cfg.bt_state;
+        int st = w->cfg.bt_state ? *w->cfg.bt_state : WEB_BT_TRYING;
         size_t b;
         int fb = 1;
 
         json_text(reason, sizeof reason, w->cfg.bt_reason);
         json_text(combo, sizeof combo, w->cfg.combo_text);
-        PUT("{\"version\":\"%s\",\"lang\":\"%s\",\"running\":%s,\"pairing\":%d,\"pairwait\":%d,\"pause\":%d,\"chip\":\"%s\",\"bluetooth\":\"%s\","
+        PUT("{\"sequence\":%" PRIu64 ",\"runtime\":\"%s\",\"version\":\"%s\",\"lang\":\"%s\",\"running\":%s,\"pairing\":%d,\"pairwait\":%d,\"pause\":%d,\"chip\":\"%s\",\"bluetooth\":\"%s\","
             "\"reason\":\"%s\",\"combo\":\"%s\",\"physical\":{\"readable\":%s,\"error\":\"%08x\",\"buttons\":[",
-            w->cfg.version, w->cfg.lang ? w->cfg.lang : "es", h ? "true" : "false", h ? host_pairing_left(h) : 0,
+            c->sequence, w->cfg.session ? session_state_name(w->cfg.session) :
+                st == WEB_BT_OK ? "active" : st == WEB_BT_FAILED ? "failed" : "starting",
+            w->cfg.version ? w->cfg.version : "", w->cfg.lang ? w->cfg.lang : "es", h ? "true" : "false", h ? host_pairing_left(h) : 0,
             h ? host_pair_wait_left(h) : 0, h ? host_pause_left(h) : 0, w->cfg.chip ? w->cfg.chip : "",
             bt[st >= 0 && st <= 2 ? st : 0], reason, combo, readable ? "true" : "false",
             (unsigned)perr);
@@ -240,19 +304,19 @@ static void api_state(web_t *w, int fd)
     n += attrib_json(out + n, sizeof out - n - 2);
     PUT("}");
 #undef PUT
-    respond(fd, 200, "application/json", out, n);
+    respond(c, 200, "application/json", out, n);
 }
 
 /* The end of the log, as plain text with anything unprintable dropped. */
-static void api_log(web_t *w, int fd)
+static void api_log(web_t *w, client *c)
 {
     char buf[LOG_TAIL];
-    FILE *f = fopen(w->cfg.log_path, "rb");
+    FILE *f = w->cfg.log_path ? fopen(w->cfg.log_path, "rb") : NULL;
     size_t n = 0, i;
     long size;
 
     if (!f) {
-        respond(fd, 200, "text/plain; charset=utf-8", "", 0);
+        respond(c, 200, "text/plain; charset=utf-8", "", 0);
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -262,23 +326,22 @@ static void api_log(web_t *w, int fd)
     fclose(f);
     for (i = 0; i < n; i++)
         if ((unsigned char)buf[i] < 0x20 && buf[i] != '\n') buf[i] = ' ';
-    respond(fd, 200, "text/plain; charset=utf-8", buf, n);
+    respond(c, 200, "text/plain; charset=utf-8", buf, n);
 }
 
 /* Dialog mode: the log lines written since line `from` (?from=N), with the
  * number to ask from next time on the first row ("#next N"). */
-static void api_live(int fd, const char *path)
+static void api_live(client *c, unsigned long from)
 {
     static char buf[48 * 1024];
     char head[32];
-    const char *q = strstr(path, "from=");
-    unsigned long from = q ? strtoul(q + 5, NULL, 10) : 0, next;
+    unsigned long next;
     int k;
 
     next = log_since(from, buf + 32, sizeof buf - 32);    /* the lines go after room for the first row */
     k = snprintf(head, sizeof head, "#next %lu\n", next);
     memcpy(buf + 32 - k, head, (size_t)k);
-    respond(fd, 200, "text/plain; charset=utf-8", buf + 32 - k, (size_t)k + strlen(buf + 32));
+    respond(c, 200, "text/plain; charset=utf-8", buf + 32 - k, (size_t)k + strlen(buf + 32));
 }
 
 static int hexval(int c)
@@ -289,129 +352,299 @@ static int hexval(int c)
 
 /* Dialog mode: one HCI command, /api/hci?op=0C1B&p=0008 (hex). The reply's
  * return parameters come back as hex; anything else shows in the log. */
-static void api_hci(host_t *h, int fd, const char *args)
+static void api_hci(host_t *h, client *c)
 {
-    unsigned char p[255], reply[300];
+    unsigned char reply[300];
     char out[700];
-    unsigned op = (unsigned)strtoul(args, NULL, 16);
-    const char *q = strstr(args, "p=");
-    int plen = 0, rlen = 0, i, n;
+    int rlen = 0, i, n;
 
-    if (q) {
-        for (q += 2; hexval(q[0]) >= 0 && hexval(q[1]) >= 0 && plen < (int)sizeof p; q += 2)
-            p[plen++] = (unsigned char)(hexval(q[0]) * 16 + hexval(q[1]));
-    }
-    if (op == 0 || op == 0x0C03) {
-        respond_text(fd, 400, "{\"error\":\"no opcode, or a Reset\"}");
-        return;
-    }
-    if (!host_raw_cmd(h, op, p, plen, reply, &rlen)) {
-        respond_text(fd, 200, "{\"ok\":false}");
+    if (!host_raw_cmd(h, c->opcode, c->params, c->plen, reply, &rlen)) {
+        respond_text(c, 503, "{\"ok\":false,\"error\":\"command unavailable\"}");
         return;
     }
     n = snprintf(out, sizeof out, "{\"ok\":true,\"reply\":\"");
     for (i = 0; i < rlen && n < (int)sizeof out - 8; i++) n += snprintf(out + n, sizeof out - (size_t)n, "%02x", reply[i]);
     n += snprintf(out + n, sizeof out - (size_t)n, "\"}");
-    respond(fd, 200, "application/json", out, (size_t)n);
+    respond(c, 200, "application/json", out, (size_t)n);
 }
 
-static void handle(web_t *w, int fd, char *req)
+static int number(const char *s, int base, unsigned long *value)
 {
-    char method[8], path[256], hostname[64], custom[8];
-    host_t *h = *w->cfg.host;
+    char *end;
+    if (!*s) return 0;
+    for (const char *p = s; *p; p++)
+        if (base == 16 ? hexval(*p) < 0 : *p < '0' || *p > '9') return 0;
+    errno = 0;
+    *value = strtoul(s, &end, base);
+    return !errno && !*end;
+}
 
-    if (sscanf(req, "%7s %255s", method, path) != 2) {
-        respond_text(fd, 400, "{\"error\":\"bad request\"}");
-        return;
-    }
-    if (!header(req, "Host", hostname, sizeof hostname) || !host_is_literal(hostname)) {
-        respond_text(fd, 400, "{\"error\":\"host\"}");
-        return;
-    }
-    if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0)) {
-        respond(fd, 200, "text/html; charset=utf-8", (const char *)web_page_html, web_page_html_len);
-        return;
-    }
-    if (strncmp(path, "/api/", 5) != 0) {
-        respond_text(fd, 404, "{\"error\":\"not found\"}");
-        return;
-    }
+static int status(web_t *w, enum session_request_kind kind)
+{
+    if (w->cfg.session)
+        return session_response_status(w->cfg.session, kind, (uint64_t)now_ms(),
+                                       w->cfg.retry_lock != NULL);
+    if (kind == SESSION_INFO || kind == SESSION_RELEASE) return 200;
+    if (kind == SESSION_RETRY)
+        return w->cfg.bt_state && *w->cfg.bt_state == WEB_BT_FAILED &&
+               w->cfg.retry && !*w->cfg.retry &&
+               (!w->cfg.stop || !*w->cfg.stop) ? 200 : 409;
+    return (!w->cfg.stop || !*w->cfg.stop) && w->cfg.bt_state &&
+           *w->cfg.bt_state == WEB_BT_OK ? 200 : 503;
+}
 
-    /* Anything that changes something must carry a header only this page
-     * sends: a browser will not add it to a request made by another site
-     * without asking us first, and we never agree. */
-    if (strcmp(method, "POST") == 0 &&
-        (!header(req, "X-WhateverPad", custom, sizeof custom) || strcmp(custom, "1") != 0)) {
-        respond_text(fd, 403, "{\"error\":\"forbidden\"}");
+static void unavailable(client *c, int code)
+{
+    respond_text(c, code, code == 409 ? "{\"error\":\"invalid state\"}" :
+                                      "{\"error\":\"unavailable\"}");
+}
+
+static void handle(web_t *w, client *c)
+{
+    char method[8], path[768], protocol[16], hostname[64], custom[8];
+    char *query, *line = strstr(c->buf, "\r\n");
+    unsigned long value = 0;
+    int used = 0;
+    c->sequence = ++g_sequence;
+    if (!line || sscanf(c->buf, "%7s %767s %15s%n", method, path, protocol, &used) != 3 ||
+        c->buf + used != line ||
+        (strcmp(protocol, "HTTP/1.1") && strcmp(protocol, "HTTP/1.0"))) {
+        respond_text(c, 400, "{\"error\":\"bad request\"}");
         return;
     }
-    if (strcmp(method, "GET") == 0 && strncmp(path, "/api/live", 9) == 0) {
-        api_live(fd, path);
-    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/tune") == 0) {
-        char out[256];
-        int n = host_tune_json(out, sizeof out);
-        respond(fd, 200, "application/json", out, (size_t)(n > 0 && n < (int)sizeof out ? n : 0));
-    } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/tune?", 10) == 0) {
-        char name[32];
-        long v;
-        const char *eq = strchr(path + 10, '=');
-        size_t k = eq ? (size_t)(eq - (path + 10)) : 0;
-        if (!eq || k == 0 || k >= sizeof name) {
-            respond_text(fd, 400, "{\"error\":\"use /api/tune?name=value\"}");
-        } else {
-            memcpy(name, path + 10, k);
-            name[k] = 0;
-            v = strtol(eq + 1, NULL, 0);
-            if (!host_tune_set(h, name, v)) respond_text(fd, 400, "{\"error\":\"unknown name or bad value\"}");
-            else respond_text(fd, 200, "{\"ok\":true}");
-        }
-    } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/hci?op=", 12) == 0 && h) {
-        api_hci(h, fd, path + 12);
-    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/state") == 0) {
-        api_state(w, fd);
-    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/log") == 0) {
-        api_log(w, fd);
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/pair") == 0 && h) {
-        host_pair(h, 60);
-        log_line("web: pairing started");
-        respond_text(fd, 200, "{\"ok\":true}");
-    } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/forget?addr=", 17) == 0 && h) {
-        unsigned char a[6];
-        if (!parse_addr(path + 17, a)) respond_text(fd, 400, "{\"error\":\"address\"}");
-        else if (!host_forget(h, a)) respond_text(fd, 404, "{\"error\":\"not paired\"}");
-        else respond_text(fd, 200, "{\"ok\":true}");
-    } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/ps?slot=", 13) == 0) {
-        int n = atoi(path + 13);
-        if (n < 1 || n > HOST_MAX_PADS) respond_text(fd, 400, "{\"error\":\"slot\"}");
-        else if (!w->cfg.press_ps || !w->cfg.press_ps(n - 1)) respond_text(fd, 404, "{\"error\":\"no pad\"}");
-        else respond_text(fd, 200, "{\"ok\":true}");
-    } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/pscombo?slot=", 18) == 0) {
-        /* /api/pscombo?slot=N&combo=l1,l2,options (or none, or capture) */
-        int n = atoi(path + 18);
-        const char *q = strstr(path, "&combo=");
-        char text[100];
-        size_t k;
-        for (k = 0; q && q[7 + k] && q[7 + k] != '&' && k < sizeof text - 1; k++)
-            text[k] = q[7 + k] == ',' ? '+' : (char)q[7 + k];
-        text[k] = 0;
-        if (n < 1 || n > HOST_MAX_PADS || !q || !k) respond_text(fd, 400, "{\"error\":\"slot or combo\"}");
-        else if (!w->cfg.ps_combo_set || !w->cfg.ps_combo_set(n - 1, text)) respond_text(fd, 400, "{\"error\":\"combo\"}");
-        else respond_text(fd, 200, "{\"ok\":true}");
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/retry") == 0) {
-        if (*w->cfg.bt_state == WEB_BT_FAILED) {
-            log_line("web: Bluetooth retry requested");
-            *w->cfg.retry = 1;
-            respond_text(fd, 200, "{\"ok\":true}");
-        } else {
-            respond_text(fd, 400, "{\"error\":\"not failed\"}");
-        }
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/stop") == 0) {
+    if (!header(c->buf, "Host", hostname, sizeof hostname) || !host_is_literal(hostname)) {
+        respond_text(c, 400, "{\"error\":\"host\"}");
+        return;
+    }
+    query = strchr(path, '?');
+    if (query) *query++ = 0;
+    if (!strcmp(method, "GET") && (!strcmp(path, "/") || !strcmp(path, "/index.html"))) {
+        if (query) respond_text(c, 400, "{\"error\":\"query\"}");
+        else respond(c, 200, "text/html; charset=utf-8", (const char *)web_page_html, web_page_html_len);
+        return;
+    }
+    if (strncmp(path, "/api/", 5)) {
+        respond_text(c, 404, "{\"error\":\"not found\"}");
+        return;
+    }
+    if (!strcmp(method, "POST") &&
+        (!header(c->buf, "X-WhateverPad", custom, sizeof custom) || strcmp(custom, "1"))) {
+        respond_text(c, 403, "{\"error\":\"forbidden\"}");
+        return;
+    }
+    if (!strcmp(method, "GET")) {
+        if (!strcmp(path, "/api/live")) {
+            if (query && (strncmp(query, "from=", 5) || !number(query + 5, 10, &value)))
+                respond_text(c, 400, "{\"error\":\"from\"}");
+            else api_live(c, value);
+        } else if (!strcmp(path, "/api/state") || !strcmp(path, "/api/log") || !strcmp(path, "/api/tune")) {
+            if (query) respond_text(c, 400, "{\"error\":\"query\"}");
+            else if (!strcmp(path, "/api/state")) api_state(w, c);
+            else if (!strcmp(path, "/api/log")) api_log(w, c);
+            else {
+                char out[256];
+                int n = host_tune_json(out, sizeof out);
+                respond(c, 200, "application/json", out, (size_t)n);
+            }
+        } else respond_text(c, 404, "{\"error\":\"not found\"}");
+        return;
+    }
+    if (strcmp(method, "POST")) {
+        respond_text(c, 404, "{\"error\":\"not found\"}");
+        return;
+    }
+    if (query && (!strcmp(path, "/api/stop") || !strcmp(path, "/api/pair") ||
+                  !strcmp(path, "/api/retry"))) goto invalid;
+    if (!strcmp(path, "/api/stop") && !query) {
         log_line("web: stop requested");
-        *w->cfg.stop = 1;
-        respond_text(fd, 200, "{\"ok\":true}");
-    } else {
-        respond_text(fd, 404, "{\"error\":\"not found\"}");
+        if (w->cfg.stop) *w->cfg.stop = 1;
+        if (w->cfg.session) session_request(w->cfg.session, SESSION_STOP, (uint64_t)now_ms());
+        respond_text(c, 200, "{\"ok\":true}");
+        return;
     }
+    if (!strcmp(path, "/api/pair") && !query) c->action = PAIR;
+    else if (!strcmp(path, "/api/retry") && !query) c->action = RETRY;
+    else if (!strcmp(path, "/api/forget")) {
+        if (!query || strncmp(query, "addr=", 5) || !parse_addr(query + 5, c->addr)) goto invalid;
+        c->action = FORGET;
+    } else if (!strcmp(path, "/api/ps") || !strcmp(path, "/api/pscombo")) {
+        char *combo = query ? strstr(query, "&combo=") : NULL;
+        int mapping = !strcmp(path, "/api/pscombo");
+        if (mapping) {
+            if (!combo || !combo[7] || strlen(combo + 7) >= sizeof c->text) goto invalid;
+            *combo = 0;
+            for (size_t k = 0; combo[7 + k]; k++) {
+                char ch = combo[7 + k];
+                if (!strchr("abcdefghijklmnopqrstuvwxyz0123456789,+", ch)) goto invalid;
+                c->text[k] = ch == ',' ? '+' : ch;
+                c->text[k + 1] = 0;
+            }
+        }
+        if (!query || strncmp(query, "slot=", 5) || !number(query + 5, 10, &value) ||
+            value < 1 || value > HOST_MAX_PADS) goto invalid;
+        c->slot = (int)value - 1;
+        c->action = mapping ? PS_COMBO : PRESS_PS;
+    } else if (!strcmp(path, "/api/tune")) {
+        char *eq = query ? strchr(query, '=') : NULL, *end;
+        if (!eq || eq == query || (size_t)(eq - query) >= 32 || !eq[1]) goto invalid;
+        *eq = 0;
+        for (const char *p = query; *p; p++)
+            if (!strchr("abcdefghijklmnopqrstuvwxyz_", *p)) goto invalid;
+        errno = 0;
+        c->value = strtol(eq + 1, &end, 0);
+        if (errno || *end || eq[1] == ' ' || eq[1] == '+') goto invalid;
+        strcpy(c->text, query);
+        c->action = TUNE;
+    } else if (!strcmp(path, "/api/hci")) {
+        char *params = query ? strstr(query, "&p=") : NULL;
+        if (params) *params = 0;
+        if (!query || strncmp(query, "op=", 3) || strlen(query + 3) > 4 ||
+            !number(query + 3, 16, &value) || !value || value == 0x0C03 ||
+            value == 0x0402 || value == 0x0408 || value == 0x200E) goto invalid;
+        c->opcode = (unsigned)value;
+        if (params) {
+            size_t len = strlen(params + 3);
+            if (len % 2 || len > sizeof c->params * 2) goto invalid;
+            for (size_t k = 0; k < len; k += 2) {
+                int hi = hexval(params[3 + k]), lo = hexval(params[4 + k]);
+                if (hi < 0 || lo < 0) goto invalid;
+                c->params[c->plen++] = (unsigned char)(hi * 16 + lo);
+            }
+        }
+        c->action = RAW_HCI;
+    } else {
+        respond_text(c, 404, "{\"error\":\"not found\"}");
+        return;
+    }
+    {
+        int code = status(w, c->action == RETRY ? SESSION_RETRY : SESSION_MUTATE);
+        if (code != 200) { unavailable(c, code); return; }
+    }
+    if (c->action == RETRY) {
+        for (int i = 0; i < WEB_CLIENTS; i++)
+            if (&w->c[i] != c && w->c[i].fd >= 0 && w->c[i].phase != READING &&
+                w->c[i].action == RETRY) {
+                unavailable(c, 409);
+                return;
+            }
+    }
+    if (w->cfg.session) {
+        c->attempt = w->cfg.session->attempt;
+        c->revision = w->cfg.session->revision;
+    }
+    c->phase = ACTION_PENDING;
+    return;
+invalid:
+    respond_text(c, 400, "{\"error\":\"invalid query\"}");
+}
+
+static int admit(web_t *w, client *c)
+{
+    int code = status(w, c->action == RETRY ? SESSION_RETRY : SESSION_MUTATE);
+    if (now_ms() >= c->deadline) code = 503;
+    if (code == 200 && w->cfg.session &&
+        (c->attempt != w->cfg.session->attempt || c->revision != w->cfg.session->revision))
+        code = 409;
+    if (code != 200) { unavailable(c, code); return 0; }
+    return 1;
+}
+
+int web_take_pending(web_t *w, web_action *action)
+{
+    if (!w || w->polling || w->applying) return 0;
+    service(w);
+    client *pending = NULL;
+    for (int i = 0; i < WEB_CLIENTS; i++) {
+        client *c = &w->c[i];
+        if (c->fd < 0) continue;
+        if (c->phase == RETRY_READY) {
+            if (admit(w, c) && (!w->cfg.session ||
+                session_apply_retry(w->cfg.session, &c->retry, (uint64_t)now_ms(), 1))) {
+                if (w->cfg.retry) *w->cfg.retry = 1;
+                log_line("web: Bluetooth retry requested");
+                c->retry_reserved = 0; /* The outer owner now holds the lock. */
+            }
+            close_client(w, c);
+        } else if (c->phase == ACTION_PENDING && admit(w, c) &&
+                   (!pending || c->id < pending->id)) pending = c;
+    }
+    if (!pending) return 0;
+    pending->phase = ACTION_TAKEN;
+    *action = (web_action){pending->id};
+    return 1;
+}
+
+void web_apply_pending(web_t *w, web_action action)
+{
+    if (!w || w->polling || w->applying) return;
+    w->applying = 1;
+    service(w);
+    for (int i = 0; i < WEB_CLIENTS; i++) {
+        client *c = &w->c[i];
+        if (c->fd < 0 || c->phase != ACTION_TAKEN || c->id != action.id) continue;
+        if (!admit(w, c)) break;
+        host_t *h = w->cfg.host ? *w->cfg.host : NULL;
+        /* Claim before callbacks: reentry cannot apply this action twice. */
+        c->phase = ACTION_RUNNING;
+        switch (c->action) {
+        case PAIR:
+            if (!h) unavailable(c, 503);
+            else {
+                host_pair(h, 60);
+                log_line("web: pairing started");
+                respond_text(c, 200, "{\"ok\":true}");
+            }
+            break;
+        case FORGET:
+            if (!h) unavailable(c, 503);
+            else if (!host_forget(h, c->addr)) respond_text(c, 404, "{\"error\":\"not paired\"}");
+            else respond_text(c, 200, "{\"ok\":true}");
+            break;
+        case PRESS_PS:
+            if (!w->cfg.press_ps) unavailable(c, 503);
+            else if (!w->cfg.press_ps(c->slot)) respond_text(c, 404, "{\"error\":\"no pad\"}");
+            else respond_text(c, 200, "{\"ok\":true}");
+            break;
+        case PS_COMBO:
+            if (!w->cfg.ps_combo_set) unavailable(c, 503);
+            else if (!w->cfg.ps_combo_set(c->slot, c->text)) respond_text(c, 400, "{\"error\":\"combo\"}");
+            else respond_text(c, 200, "{\"ok\":true}");
+            break;
+        case TUNE:
+            if (!host_tune_set(h, c->text, c->value))
+                respond_text(c, 400, "{\"error\":\"unknown name or bad value\"}");
+            else respond_text(c, 200, "{\"ok\":true}");
+            break;
+        case RAW_HCI:
+            if (!h) unavailable(c, 503);
+            else api_hci(h, c);
+            break;
+        case RETRY:
+            if (!w->cfg.retry) { unavailable(c, 503); break; }
+            if (w->cfg.retry_lock && !w->cfg.retry_lock(w->cfg.ud, 1)) {
+                unavailable(c, 409);
+                break;
+            }
+            c->retry_reserved = 1;
+            service(w);
+            int admitted = admit(w, c);
+            if (admitted && w->cfg.session &&
+                !session_queue_retry(w->cfg.session, (uint64_t)now_ms(),
+                                     (uint64_t)c->deadline, 1, &c->retry)) {
+                unavailable(c, 503);
+                admitted = 0;
+            }
+            if (!admitted) {
+                if (w->cfg.retry_lock) w->cfg.retry_lock(w->cfg.ud, 0);
+                c->retry_reserved = 0;
+                break;
+            }
+            respond_text(c, 200, "{\"ok\":true}");
+            break;
+        }
+        break;
+    }
+    w->applying = 0;
 }
 
 /* ---- serving ------------------------------------------------------------------- */
@@ -426,6 +659,7 @@ web_t *web_start(const web_cfg *cfg, int port)
     if (!w) return NULL;
     w->cfg = *cfg;
     for (i = 0; i < WEB_CLIENTS; i++) w->c[i].fd = -1;
+    w->rejected.fd = -1;
 
     w->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (w->fd < 0) {
@@ -450,24 +684,18 @@ web_t *web_start(const web_cfg *cfg, int port)
 
 void web_poll(web_t *w)
 {
-    /* Not re-entered: a request that waits for the chip (dialog mode) pumps
-     * the host, and the host serves the page while it waits (its idle hook).
-     * Served again from inside itself, the same request ran again and again
-     * until the stack ran out (0.6.16 with /api/hci). */
-    static int busy;
-    long now = now_ms();
-
-    if (!w || busy) return;
-    busy = 1;
-    web_poll_once(w, now);
-    busy = 0;
+    if (!w || w->polling) return;
+    w->polling = 1;
+    service(w);
+    web_poll_once(w, now_ms());
+    w->polling = 0;
 }
 
 static void web_poll_once(web_t *w, long now)
 {
     int i;
 
-    for (;;) {                          /* new connections */
+    for (int accepted = 0; accepted <= WEB_CLIENTS && w->rejected.fd < 0; accepted++) {
         struct sockaddr_in peer;
         socklen_t plen = sizeof peer;
         int fd = accept(w->fd, (struct sockaddr *)&peer, &plen), slot = -1;
@@ -485,35 +713,54 @@ static void web_poll_once(web_t *w, long now)
         set_nonblock(fd);
         for (i = 0; i < WEB_CLIENTS; i++) if (w->c[i].fd < 0) { slot = i; break; }
         if (slot < 0) {
-            respond_text(fd, 429, "{\"error\":\"busy\"}");
-            close(fd);
-            continue;
+            client *c = &w->rejected;
+            memset(c, 0, sizeof *c);
+            c->fd = fd;
+            c->deadline = now + T_REQUEST;
+            break;
         }
+        memset(&w->c[slot], 0, sizeof w->c[slot]);
         w->c[slot].fd = fd;
-        w->c[slot].len = 0;
-        w->c[slot].t_start = now;
+        w->c[slot].deadline = now + T_REQUEST;
+        w->c[slot].id = ++g_next_id;
     }
 
-    for (i = 0; i < WEB_CLIENTS; i++) {
-        client *c = &w->c[i];
+    for (i = 0; i <= WEB_CLIENTS; i++) {
+        client *c = i == WEB_CLIENTS ? &w->rejected : &w->c[i];
         ssize_t k;
 
         if (c->fd < 0) continue;
+        if (c->phase == ACTION_PENDING || c->phase == ACTION_TAKEN) {
+            if (now >= c->deadline) unavailable(c, 503);
+            else if (status(w, c->action == RETRY ? SESSION_RETRY : SESSION_MUTATE) != 200)
+                unavailable(c, status(w, c->action == RETRY ? SESSION_RETRY : SESSION_MUTATE));
+        }
+        if (c->phase == WRITING) {
+            write_response(w, c, now);
+            continue;
+        }
+        if (c->phase != READING) continue;
         k = recv(c->fd, c->buf + c->len, (size_t)(REQ_MAX - c->len), 0);
         if (k > 0) c->len += (int)k;
         c->buf[c->len] = '\0';
 
         if (strstr(c->buf, "\r\n\r\n")) {
-            handle(w, c->fd, c->buf);
+            if (now >= c->deadline) unavailable(c, 503);
+            else if (i == WEB_CLIENTS) {
+                c->sequence = ++g_sequence;
+                respond_text(c, 429, "{\"error\":\"busy\"}");
+            }
+            else handle(w, c);
         } else if (k == 0 || (k < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-            /* the client went away */
+            respond_text(c, 400, "{\"error\":\"incomplete request\"}");
         } else if (c->len >= REQ_MAX) {
-            respond_text(c->fd, 400, "{\"error\":\"too large\"}");
-        } else if (now - c->t_start <= T_REQUEST) {
+            respond_text(c, 400, "{\"error\":\"too large\"}");
+        } else if (now <= c->deadline) {
             continue;                   /* still coming */
+        } else {
+            respond_text(c, 408, "{\"error\":\"request timeout\"}");
         }
-        close(c->fd);
-        c->fd = -1;
+        if (c->phase == WRITING) write_response(w, c, now);
     }
 }
 
@@ -541,7 +788,8 @@ void web_stop(web_t *w)
     int i;
 
     if (!w) return;
-    for (i = 0; i < WEB_CLIENTS; i++) if (w->c[i].fd >= 0) close(w->c[i].fd);
+    for (i = 0; i < WEB_CLIENTS; i++) close_client(w, &w->c[i]);
+    close_client(w, &w->rejected);
     close(w->fd);
     free(w);
 }
