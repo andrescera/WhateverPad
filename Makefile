@@ -8,13 +8,14 @@ PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 WHATEVERPAD_PROBE ?= 0
 
-CORE   := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c
+OWN_CORE := src/ownership.c src/session.c
+CORE   := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
 WEB    := src/web.c src/web_page.c
 HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
 
 BUILD := build
 
-.PHONY: all test test-attrib fuzz demo ps5 send clean check-generated sanitize ci
+.PHONY: all test test-attrib fuzz demo ps5 send clean check-generated sanitize ci quick
 
 all: test
 
@@ -136,6 +137,14 @@ ci:
 	@checks="$$( $(MAKE) -qp | awk -F: '/^check-(ownership|mutations):/ { print $$1 }' )"; \
 	  if [ -n "$$checks" ]; then $(MAKE) $$checks; fi
 
+quick:
+	$(MAKE) check-ownership test-explorer-results
+	$(MAKE) test OWN_EXPLORE=0
+	$(MAKE) sanitize OWN_EXPLORE=0
+	$(MAKE) fuzz check-generated
+	$(MAKE) test-attrib BUILD=build/probe WHATEVERPAD_PROBE=1
+	$(MAKE) check-mutations OWN_EXPLORE=0
+
 fuzz: | $(BUILD)
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
 	./$(BUILD)/test_fuzz
@@ -161,3 +170,62 @@ clean:
 # Targeted regressions from the direct HearBridge review.
 $(BUILD)/test_hearbridge: $(CORE) tests/sim.c tests/test_hearbridge.c tests/test_host.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DEXPECT_CFG=1 -DEXPECT_BACKOFF=1 -o $@ $(CORE) tests/sim.c tests/test_hearbridge.c
+
+OWN_HEADERS := src/ownership.h src/session.h
+OWN_EXPLORE ?= 1
+OWN_EXPLORE_WORKERS ?= 4
+OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_session_policy
+ifeq ($(OWN_EXPLORE),1)
+OWN_TESTS += $(BUILD)/test_ownership_explore
+endif
+
+.PHONY: test-ownership check-mutations check-ownership sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
+test: test-ownership
+test-ownership: $(OWN_TESTS)
+	./$(BUILD)/test_ownership
+ifeq ($(OWN_EXPLORE),1)
+	./$(BUILD)/test_ownership_explore
+endif
+	./$(BUILD)/test_session_policy
+
+sanitize-ownership:
+	$(MAKE) test-ownership BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
+
+test-ownership-case: $(BUILD)/test_ownership_explore
+	@./$(BUILD)/test_ownership_explore --policy "$(POLICY)" --case "$(CASE)"
+
+sanitize-ownership-case:
+	@$(MAKE) --no-print-directory test-ownership-case BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
+
+test-explorer-results: $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+	sh tests/test_explorer_results.sh $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+
+$(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+$(BUILD)/test_ownership_explore: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -O2 -DOWN_EXPLORE_WORKERS=$(OWN_EXPLORE_WORKERS) -o $@ $(filter %.c,$^)
+
+$(BUILD)/mutation-ack_by_opcode: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -O2 -DOWN_MUTATION=ack_by_opcode -o $@ $(filter %.c,$^)
+
+$(BUILD)/test_session_policy: src/session.c tests/test_session_policy.c src/session.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+check-ownership:
+	sh tools/check-ownership.sh
+
+check-mutations: test-ownership
+	@set -eu; for id in ack_by_opcode ownership_on_sent resend_missing_ack deadline_is_teardown rearm_undo_duplicate readback_is_lease claims_after_callback deadline_only_idle expired_retry failed_http_deadline retry_without_cleanup; do \
+	  case $$id in \
+	    ack_by_opcode) test=test_ownership_explore;; \
+	    expired_retry|failed_http_deadline|retry_without_cleanup) test=test_session_policy;; \
+	    *) test=test_ownership;; \
+	  esac; \
+	  cc $(HOST_CFLAGS) -O2 -DOWN_MUTATION=$$id $(OWN_CORE) tests/$$test.c -o $(BUILD)/mutation-$$id; \
+	  status=0; $(BUILD)/mutation-$$id > $(BUILD)/mutation-$$id.log 2>&1 || status=$$?; \
+	  if [ "$$status" -ne 1 ]; then printf '%s survived or failed invalidly (exit %s)\n' "$$id" "$$status"; exit 1; fi; \
+	  first=""; while IFS= read -r line; do case $$line in FAIL*) first=$$line; break;; esac; done < $(BUILD)/mutation-$$id.log; \
+	  if [ -z "$$first" ]; then printf '%s exited 1 without a test failure\n' "$$id"; exit 1; fi; \
+	  printf '%s killed (exit 1): %s\n' "$$id" "$$first"; \
+	done

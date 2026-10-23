@@ -13,7 +13,7 @@ CFLAGS  := -std=c11 -Wall -Wextra -Werror -O2 -Isrc -Ibuild -MMD -MP -DWHATEVERP
 LDLIBS  += -lScePad -lSceUserService -lSceSystemService -lSceAppInstUtil -ldl
 
 SRCS := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c \
-        src/bond_store.c src/host.c src/le.c \
+        src/bond_store.c src/host.c src/le.c src/ownership.c src/session.c \
         src/web.c src/web_page.c \
         src/config.c src/migrate.c src/evstream.c src/hotkey.c src/lock.c src/netinfo.c src/usb_desc.c \
         src/hci_usb.c src/ps5_power.c src/ps5_ui.c src/ps5_apps.c src/ps5_sysinfo.c src/launcher.c src/icon_data.c src/ps5_vpad.c src/ps5_main.c
