@@ -1,6 +1,6 @@
 #!/bin/sh
 # Talks to a running WhateverPad PS5 through its page (HTTP, local network only).
-# Made for people and for AI assistants alike; see AI-WORKFLOW.md.
+# Made for people; see CONTRIBUTING.md for the workflow.
 #
 #   WHATEVERPAD_IP=192.168.x.y tools/live.sh watch            follow the log in real time (saved in ./logs/)
 #   WHATEVERPAD_IP=...         tools/live.sh state            state of WhateverPad (JSON)
