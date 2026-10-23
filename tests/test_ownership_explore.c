@@ -2,13 +2,21 @@
  * stay here: the backend receives only own_ack's wire fields. A8 B1 constrains
  * real answers; injected old/foreign copies are not constrained by that queue.
  */
+#define _POSIX_C_SOURCE 200809L
 #include "../src/ownership.h"
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #define DEPTH 12
 #define KEY_MAX 8192
+#ifndef OWN_EXPLORE_WORKERS
+#define OWN_EXPLORE_WORKERS 4
+#endif
 enum scenario { SCAN, MASK, QUERY, CLASSIC, LE_CREATE, INQUIRY, AUTH, ENCRYPT, P256, DHKEY, VIRTUAL, SCENARIOS };
 static const char *const scenario_names[] = {
     "scan", "mask", "query", "classic", "le-create", "inquiry",
@@ -123,6 +131,7 @@ static own_command command(const world *w, enum scenario s, unsigned i)
     c.terminal_by = w->o[NOW] + 200;
     c.original_known = is_setting(s);
     c.original_len = c.plen;
+    if (is_setting(s)) c.original[0] = (uint8_t)w->o[SETTING_VALUE];
     if (is_create(s)) {
         c.peer = peer(i, s == LE_CREATE);
         c.link = link_at(w, i);
@@ -172,9 +181,9 @@ static const char *effect(world *w, enum scenario s, const own_effect *e,
             (g < 0 || !w->o[LIVE+g])) return "I10: stale prepared link target";
         if (e->phase == OWN_UNDO) {
             if (w->o[POLICY_META] == OWN_POLICY_NO_RESTORE) return "NO_RESTORE emitted undo";
-            if (snapshot.runtime.reason == SESSION_AMBIGUOUS ||
+            if (snapshot.ambiguity_count ||
                 !w->o[ACCEPTED+i] || !w->o[CONFIRMED+i] ||
-                snapshot.runtime.unsafe) return "I2: undo without actual acquisition/barrier";
+                snapshot.transport_closed) return "I2: undo without actual acquisition/barrier";
             if (is_setting(s) && (e->opcode != command(w, s, 0).opcode ||
                                  e->params[0] != w->o[ORIGINAL_VALUE+i]))
                 return "I15: undo is not original bytes";
@@ -694,12 +703,91 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
     return count;
 }
 
+typedef struct { size_t states; int g, h; } case_result;
+
+static int policy_cases(own_policy policy, size_t *states, int *g, int *h)
+{
+#ifdef OWN_MUTATION
+    /* Fault controls keep deterministic first-failure ordering. */
+    for (enum scenario s = SCAN; s < SCENARIOS; s++) *states += explore(policy, s, g, h);
+    return 0;
+#else
+    enum { WORKERS = OWN_EXPLORE_WORKERS };
+    _Static_assert(WORKERS > 0 && WORKERS <= SCENARIOS, "bounded graph workers");
+    pid_t pid[WORKERS] = {0};
+    int fd[WORKERS] = {0};
+    unsigned next = 0, active = 0;
+    int result = 0;
+    while ((next < SCENARIOS || active) && !result) {
+        for (unsigned slot = 0; slot < WORKERS && next < SCENARIOS; slot++) {
+            if (pid[slot]) continue;
+            int channel[2];
+            if (pipe(channel) != 0) { result = 2; break; }
+            fflush(NULL);
+            pid_t child = fork();
+            if (child < 0) {
+                close(channel[0]); close(channel[1]);
+                result = 2; break;
+            }
+            if (!child) {
+                close(channel[0]);
+                case_result r = {0};
+                r.states = explore(policy, (enum scenario)next, &r.g, &r.h);
+                ssize_t n;
+                do { n = write(channel[1], &r, sizeof r); } while (n < 0 && errno == EINTR);
+                close(channel[1]);
+                exit(n == (ssize_t)sizeof r ? 0 : 2);
+            }
+            close(channel[1]);
+            pid[slot] = child;
+            fd[slot] = channel[0];
+            next++; active++;
+        }
+        if (result) break;
+        int status;
+        pid_t done;
+        do { done = waitpid(-1, &status, 0); } while (done < 0 && errno == EINTR);
+        if (done < 0) { result = 2; break; }
+        unsigned slot = 0;
+        while (slot < WORKERS && pid[slot] != done) slot++;
+        if (slot == WORKERS) { result = 2; break; }
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+            result = WIFEXITED(status) ? WEXITSTATUS(status) : 2;
+        } else {
+            case_result r;
+            size_t got = 0;
+            while (got < sizeof r) {
+                ssize_t n = read(fd[slot], (char *)&r + got, sizeof r - got);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                got += (size_t)n;
+            }
+            if (got != sizeof r) result = 2;
+            else { *states += r.states; *g |= r.g; *h |= r.h; }
+        }
+        close(fd[slot]);
+        pid[slot] = 0;
+        active--;
+    }
+    /* A failing worker cannot leave other graph processes behind. */
+    for (unsigned slot = 0; slot < WORKERS; slot++)
+        if (pid[slot]) kill(pid[slot], SIGTERM);
+    for (unsigned slot = 0; slot < WORKERS; slot++) {
+        if (!pid[slot]) continue;
+        while (waitpid(pid[slot], NULL, 0) < 0 && errno == EINTR) {}
+        close(fd[slot]);
+    }
+    return result;
+#endif
+}
+
 int main(void)
 {
     for (own_policy policy = OWN_POLICY_NO_RESTORE; policy <= OWN_POLICY_SINGLE_PRODUCER; policy++) {
         size_t count = 0;
         int g = 0, h = 0;
-        for (enum scenario s = SCAN; s < SCENARIOS; s++) count += explore(policy, s, &g, &h);
+        int result = policy_cases(policy, &count, &g, &h);
+        if (result) return result;
         if (!g || !h) { printf("FAIL explorer unreachable G=%d H=%d\n", g, h); return 1; }
         printf("policy=%s depth=12 states=%zu violations=0 G=reachable H=reachable\n",
                policy == OWN_POLICY_NO_RESTORE ? "NO_RESTORE" : "SINGLE_PRODUCER", count);
