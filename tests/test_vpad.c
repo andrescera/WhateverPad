@@ -3,9 +3,12 @@
  * the console source itself. */
 #include "../src/ps5_vpad.h"
 #include "../src/util.h"
+#include "../src/web.h"
 
 
 #include <stdint.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -33,6 +36,20 @@ static uint8_t g_caps[16];
 static int log_pipe[2], adds, binds, deletes, frames;
 static int fail_library, fail_symbol, add_result, bind_result;
 static int32_t deleted_handle;
+static int web_port;
+
+/* Only web.c's bind is redirected; HTTP and vendor-log sockets stay separate. */
+int test_vpad_web_bind(int fd, const struct sockaddr *addr, socklen_t len)
+{
+    int result = bind(fd, addr, len);
+    if (result == 0) {
+        struct sockaddr_in bound;
+        socklen_t n = sizeof bound;
+        CHECK(getsockname(fd, (struct sockaddr *)&bound, &n) == 0);
+        web_port = ntohs(bound.sin_port);
+    }
+    return result;
+}
 
 int test_vpad_socket(int domain, int type, int protocol)
 {
@@ -179,6 +196,104 @@ static void test_refused_vendor_acquisitions_do_not_invent_ownership(void)
     close(log_pipe[0]); close(log_pipe[1]);
 }
 
+static void web_vpad_request(web_t *web, int stop)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(web_port),
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    int connected = connect(fd, (struct sockaddr *)&address, sizeof address);
+    CHECK(connected == 0);
+    if (connected != 0) { close(fd); return; }
+    struct pollfd ready = {.fd = fd, .events = POLLIN};
+    const char *request = stop
+        ? "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1\r\nX-WhateverPad: 1\r\n\r\n"
+        : "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    CHECK(send(fd, request, strlen(request), 0) == (ssize_t)strlen(request));
+    CHECK(shutdown(fd, SHUT_WR) == 0);
+    web_poll(web);
+    char out[2048];
+    int bytes = 0;
+    while (bytes < (int)sizeof out - 1) {
+        int available = poll(&ready, 1, 1000);
+        CHECK(available > 0);
+        if (available <= 0) break;
+        int n = (int)recv(fd, out + bytes, sizeof out - 1 - (size_t)bytes, 0);
+        CHECK(n >= 0);
+        if (n <= 0) break;
+        bytes += n;
+    }
+    out[bytes] = 0;
+    const char *body = strstr(out, "\r\n\r\n");
+    const char *length = strstr(out, "\r\nContent-Length: ");
+    unsigned n = 0;
+    CHECK(bytes > 0 && !strncmp(out, "HTTP/1.1 200", 12) && body && length &&
+          sscanf(length, "\r\nContent-Length: %u", &n) == 1 &&
+          (size_t)bytes == (size_t)(body + 4 - out) + n);
+    if (stop) CHECK(body && !strcmp(body + 4, "{\"ok\":true}"));
+    CHECK(close(fd) == 0);
+}
+
+/* RV1 C / review r3 B6: ps5_main polls web Stop before queued/pending vpad work. */
+static void test_web_stop_preempts_queued_and_pending_effects(void)
+{
+    ph_clock_hook = fake_clock;
+    for (int mode = 0; mode < 3; mode++) {
+        CHECK(pipe(log_pipe) == 0);
+        adds = binds = deletes = frames = 0;
+        reset(0, 0);
+        CHECK(vpad_init());
+        CHECK(vpad_add(0));
+        CHECK(adds == 0);
+        if (mode == 2) {
+            vpad_poll(g_now);
+            CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+            CHECK(vpad_add(1));
+            CHECK(adds == 1);
+        }
+        host_t *host = NULL;
+        volatile int stop = 0, retry = 0, bt = WEB_BT_FAILED;
+        web_cfg cfg = {.host = &host, .stop = &stop, .retry = &retry,
+            .bt_state = &bt, .version = "vpad-test"};
+        web_port = 0;
+        web_t *web = web_start(&cfg, 0);
+        CHECK(web != NULL && web_port > 0);
+        if (web) {
+            web_vpad_request(web, mode != 0);
+            CHECK(stop == (mode != 0) && retry == 0);
+            vpad_poll(g_now);
+            if (mode != 1) {
+                if (mode == 0) vpad_poll(g_now);
+                g_now += 301;
+                vpad_poll(g_now);
+                if (mode == 2) vpad_poll(g_now);
+            }
+            pad_state input = {.buttons = PAD_CROSS};
+            vpad_update(0, &input);
+            vpad_update(1, &input);
+            printf("WEB_VPAD mode=%d stop=%d adds=%d binds=%d deletes=%d frames=%d\n",
+                   mode, stop, adds, binds, deletes, frames);
+            if (mode == 1)
+                EFFECT(10, "web-stop-before-queued-creation",
+                       adds == 0 && binds == 0 && deletes == 0 && frames == 0);
+            else if (mode == 2)
+                EFFECT(10, "web-stop-drains-identification-without-queued-creation",
+                       adds == 1 && binds == 0 && deletes == 1 && frames == 0);
+            else CHECK(adds == 1 && binds == 1 && deletes == 0 && frames == 1);
+            web_stop(web);
+        }
+        vpad_remove(0); vpad_remove(1);
+        vpad_poll(g_now); g_now += 301; vpad_poll(g_now);
+        CHECK(deletes == adds && deleted_handle == 0x11112222);
+        int removed = deletes;
+        vpad_remove(0); vpad_remove(1); vpad_poll(g_now);
+        CHECK(deletes == removed);
+        CHECK(vpad_creds_restore());
+        CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -316,6 +431,7 @@ int main(int argc, char **argv)
     }
 
     test_refused_vendor_acquisitions_do_not_invent_ownership();
+    test_web_stop_preempts_queued_and_pending_effects();
     ph_clock_hook = NULL;
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
     printf("%d expected-failing vpad cases\n", pending);

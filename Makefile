@@ -59,8 +59,14 @@ $(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
 
 # The console source for virtual pads, against stand-ins for the console's libraries.
 # Keep the loader stand-ins from intercepting the sanitizer runtime's own calls.
-$(BUILD)/test_vpad: src/ps5_vpad.c src/log.c src/util.c tests/test_vpad.c | $(BUILD)
-	cc $(HOST_CFLAGS) -D_DARWIN_C_SOURCE -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -o $@ $^
+$(BUILD)/test_vpad.o: src/ps5_vpad.c | $(BUILD)
+	cc $(HOST_CFLAGS) -D_DARWIN_C_SOURCE -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -Dsocket=test_vpad_socket -Dconnect=test_vpad_connect -c -o $@ $<
+
+$(BUILD)/test_vpad_web.o: src/web.c | $(BUILD)
+	cc $(HOST_CFLAGS) -Dbind=test_vpad_web_bind -c -o $@ $<
+
+$(BUILD)/test_vpad: $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c tests/test_vpad.c | $(BUILD)
+	cc $(HOST_CFLAGS) -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -o $@ $^
 
 # Configuration, the console hotkey and the local address.
 $(BUILD)/test_config: src/config.c src/hotkey.c src/netinfo.c src/log.c src/util.c tests/test_config.c | $(BUILD)

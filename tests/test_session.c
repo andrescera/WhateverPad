@@ -918,6 +918,74 @@ static void test_old_setting_ack_never_authorizes_replacement(void)
             }
 }
 
+static const hci_ops *quarantine_base;
+static unsigned quarantine_handles[2];
+static int quarantine_connections, quarantine_terminals;
+
+static int quarantine_event(void *ctx, unsigned char *out, int max)
+{
+    int n = quarantine_base->next_event(ctx, out, max);
+    if (n == 13 && out[0] == 0x03 && out[2] == 0) {
+        if (quarantine_connections < 2)
+            quarantine_handles[quarantine_connections] = le16(out + 3);
+        quarantine_connections++;
+    }
+    if (n == 6 && out[0] == 0x05 && out[2] == 0) quarantine_terminals++;
+    return n;
+}
+
+/* Review r3 B5: a lost terminal cannot grant authority over a reused wire handle. */
+static void test_reused_handle_without_terminal_never_disconnects(void)
+{
+    for (int lost = 0; lost < 2; lost++) {
+        sim_pad p = pad_fixture();
+        sim_t *sim = sim_new(&p);
+        hci_t io = sim_hci(sim);
+        hci_ops ops = *io.ops;
+        seen observed = {0};
+        host_events ev = {connected, pairing_state, disconnected, &observed, NULL};
+        quarantine_base = io.ops;
+        ops.next_event = quarantine_event;
+        io.ops = &ops;
+        quarantine_connections = quarantine_terminals = 0;
+        memset(quarantine_handles, 0, sizeof quarantine_handles);
+        next_db();
+        host_t *h = host_open(io, db, &ev);
+        CHECK(h != NULL);
+        if (h) {
+            CHECK(host_pair(h, 30));
+            long end = sim_now() + 8000;
+            while ((!observed.connects || !observed.states) && sim_now() < end)
+                host_poll(h, 5);
+            CHECK(observed.connects == 1 && observed.states > 0);
+            CHECK(quarantine_connections == 1 && quarantine_handles[0] != 0);
+            int inputs = observed.states;
+            if (lost) {
+                sim_vanish(sim);
+                CHECK(observed.disconnects == 0 && quarantine_terminals == 0);
+                sim_power_on(sim);
+                end = sim_now() + 8000;
+                while ((observed.connects < 2 || observed.states == inputs) && sim_now() < end)
+                    host_poll(h, 5);
+                CHECK(observed.connects == 2 && observed.states > inputs);
+                CHECK(quarantine_connections == 2 && quarantine_handles[0] == quarantine_handles[1]);
+            }
+            CHECK(quarantine_terminals == 0 && sim_disconnect_requests(sim) == 0);
+            host_close(h);
+            int wire_disconnects = sim_disconnect_requests(sim);
+            printf("HANDLE_REUSE lost_terminal=%d connections=%d handles=%04x/%04x"
+                   " wire_disconnects=%d callbacks=%d/%d inputs=%d->%d\n",
+                   lost, quarantine_connections, quarantine_handles[0], quarantine_handles[1],
+                   wire_disconnects, observed.connects, observed.disconnects, inputs, observed.states);
+            if (lost)
+                EFFECT(14, "reused-handle-without-terminal-never-disconnects", wire_disconnects == 0);
+            else CHECK(wire_disconnects == 1 && observed.disconnects == 1 && quarantine_terminals == 1);
+        } else io.ops->close(io.ctx);
+        CHECK(sim_resources(sim).closes == 1 && sim_resources(sim).uninits == 1);
+        sim_free(sim);
+    }
+}
+
 static void test_retained_completion_reply(void)
 {
     sim_pad p = pad_fixture();
@@ -969,6 +1037,7 @@ int main(int argc, char **argv)
     test_failed_setting_rewrite_retires_previous_authority();
     test_refused_scan_does_not_flood_or_acquire_a_lease();
     test_old_setting_ack_never_authorizes_replacement();
+    test_reused_handle_without_terminal_never_disconnects();
     test_retained_completion_reply();
     clear_db();
     CHECK(rmdir(directory) == 0);
