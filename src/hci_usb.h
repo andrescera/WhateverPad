@@ -12,12 +12,13 @@
  * The system's driver keeps reads pending on those endpoints too, so each
  * incoming packet goes to whichever read is first in line. Keeping many
  * reads pending wins most of them; the stack above must cope with the few
- * it loses (it retries, and never relies on a single event arriving).
+ * it loses. Token-backed commands never retransmit after a missing answer.
  */
 #ifndef PH_HCI_USB_H
 #define PH_HCI_USB_H
 
 #include "hci.h"
+#include "ownership.h"
 
 /* The chip's USB vendor id once opened (0x0E8D MediaTek, 0x1286 Marvell/NXP), 0 before. */
 int hci_usb_chip_vendor(void);
@@ -25,5 +26,11 @@ int hci_usb_chip_vendor(void);
 const char *hci_usb_chip_name(void);
 /* Opens the controller. Returns 0 on failure, with the reason logged. */
 int hci_usb_open(hci_t *out);
+
+/* Bind once, before protocol work. The ledger outlives close; service may latch
+ * release, but must not dispose/reenter this transport. Raw output then fails.
+ * Bound consumers leave attrib observation to this backend, once per arrival. */
+int hci_usb_bind_ownership(hci_t *, own_ledger *, void (*service)(void *), void *);
+own_submit_result hci_usb_submit(hci_t *, const own_token *);
 
 #endif

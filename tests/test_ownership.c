@@ -927,6 +927,214 @@ static void residual_r1(void)
     }
 }
 
+static void acl_output(own_policy policy)
+{
+    {
+        own_ledger *l = own_new(policy, 1);
+        own_acl_lane *lane = own_acl_new(l);
+        own_command c = command(0x0405, 0);
+        own_ref parent;
+        own_acl_token token;
+        own_acl_effect effect;
+        link_ref link, replacement;
+        const uint8_t packet[] = {40, 0x20, 0, 0};
+        CHECK(l && lane && own_activate(l));
+        c.peer = peer(1);
+        memcpy(c.params, c.peer.wire, 6);
+        CHECK(own_reserve_link(l, &c.peer, &link) == OWN_OK);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 0, &token) == OWN_NO_PROOF);
+        c.link = link;
+        CHECK(own_prepare(l, &c, &parent) == OWN_OK);
+        submit(l, 0x0405, 0);
+        own_terminal_event terminal = {.kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 40};
+        own_terminal(l, parent, &terminal, 1);
+        ack(l, 0x0405, 0, 0, 2);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 2, &token) == OWN_NO_PROOF);
+        barrier(l, 1, 3);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 4, &token) == OWN_OK);
+        own_observe_disconnect(l, 40, 5);
+        CHECK(own_detach_link(l, link) == OWN_OK);
+        CHECK(own_reserve_link(l, &c.peer, &replacement) == OWN_OK);
+        CHECK(replacement.slot == link.slot && replacement.generation != link.generation);
+        CHECK(own_acl_commit(l, lane, &token, 6, &effect) != OWN_OK);
+        own_acl_free(lane); own_free(l);
+    }
+    for (unsigned loss = 0; loss < 7; loss++) {
+        own_ledger *l = own_new(policy, 1);
+        own_ledger *foreign = own_new(policy, 1);
+        own_acl_lane *lane = own_acl_new(l), *other = own_acl_new(l);
+        own_acl_token token, next;
+        own_acl_effect effect;
+        own_ref parent;
+        uint8_t packet[] = {40, 0x20, 1, 0, 0xa5};
+        CHECK(l && foreign && lane && other && own_activate(l));
+        link_ref link = connect_link(l, 1, 40, &parent, 0);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 20, &token) == OWN_OK);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 20, &next) == OWN_BUSY);
+        packet[4] = 0x5a;
+        CHECK(own_acl_commit(foreign, lane, &token, 20, &effect) == OWN_INVALID);
+        CHECK(own_acl_commit(l, other, &token, 20, &effect) == OWN_INVALID);
+        if (loss == 1) own_release(l, SESSION_STOP, 21);
+        if (loss == 2) own_observe_disconnect(l, 40, 21);
+        if (loss == 3) own_detector_trip(l, 21);
+        if (loss == 4) own_transport_closed(l, 21);
+        if (loss == 5) {
+            prepare(l, 0x1009, 0);
+            submit(l, 0x1009, 21); /* Missing ACK must revoke ACL too. */
+        }
+        if (loss == 6) own_observe_disconnect(l, 41, 21); /* foreign handle */
+        uint64_t now = loss == 5 ? 5000 : 21;
+        own_result result = own_acl_commit(l, lane, &token, now, &effect);
+        CHECK((result == OWN_OK) == (loss == 0 || loss == 6));
+        if (result == OWN_OK) {
+            CHECK(effect.handle == 40 && effect.link.generation == link.generation);
+            CHECK(effect.len == sizeof packet && effect.packet[4] == 0xa5);
+            CHECK(own_acl_commit(l, lane, &token, now, &effect) != OWN_OK);
+            own_acl_submitted(lane, &token, OWN_SENT, now);
+            CHECK(own_acl_prepare(lane, link, packet, sizeof packet, now, &next) == OWN_OK);
+            CHECK(own_acl_commit(l, lane, &token, now, &effect) != OWN_OK);
+            CHECK(own_acl_commit(l, lane, &next, now, &effect) == OWN_OK);
+            own_acl_submitted(lane, &next, OWN_NOT_SENT, now);
+            if (!loss) {
+                own_acl_free(lane);
+                lane = own_acl_new(l);
+                CHECK(lane != NULL);
+                CHECK(own_acl_prepare(lane, link, packet, sizeof packet, now, &next) == OWN_OK);
+                CHECK(own_acl_commit(l, lane, &token, now, &effect) == OWN_INVALID);
+                CHECK(own_acl_commit(l, lane, &next, now, &effect) == OWN_OK);
+                own_acl_submitted(lane, &next, OWN_SENT, now);
+            }
+        }
+        CHECK(own_invariant(l) == NULL);
+        own_acl_free(other); own_acl_free(lane);
+        own_free(foreign); own_free(l);
+    }
+    {
+        own_ledger *l = own_new(policy, 1);
+        own_acl_lane *lane = own_acl_new(l);
+        own_acl_token token;
+        own_acl_effect effect;
+        own_ref parent;
+        uint8_t packet[OWN_ACL_MAX] = {40, 0x20};
+        uint8_t before[4096], after[4096];
+        CHECK(l && lane && own_activate(l));
+        link_ref link = connect_link(l, 1, 40, &parent, 0);
+        own_tick(l, 20);
+        size_t size = own_canonical(l, before, sizeof before);
+        CHECK(size <= sizeof before);
+        CHECK(own_acl_prepare(lane, link, packet, 3, 20, &token) == OWN_INVALID);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet + 1, 20, &token) == OWN_INVALID);
+        CHECK(own_acl_prepare(lane, link, NULL, 5, 20, &token) == OWN_INVALID);
+        CHECK(own_acl_prepare(lane, link, packet, 5, 20, &token) == OWN_INVALID);
+        unsigned payload = sizeof packet - 4;
+        packet[2] = (uint8_t)payload; packet[3] = (uint8_t)(payload >> 8);
+        packet[0] = 41;
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 20, &token) != OWN_OK);
+        packet[0] = 40;
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 20, &token) == OWN_OK);
+        CHECK(own_acl_commit(l, lane, &token, 20, &effect) == OWN_OK);
+        CHECK(effect.len == sizeof packet && !memcmp(effect.packet, packet, sizeof packet));
+        own_acl_submitted(lane, &token, OWN_SENT, 20);
+        CHECK(own_canonical(l, after, sizeof after) == size && !memcmp(before, after, size));
+        /* Output must not manufacture A8's recent accepted-input evidence. */
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 2000, &token) == OWN_OK);
+        CHECK(own_acl_commit(l, lane, &token, 2000, &effect) == OWN_OK);
+        own_acl_submitted(lane, &token, OWN_SENT, 2000);
+        own_release(l, SESSION_STOP, 2001);
+        no_undo(l, parent, 2001);
+        own_acl_free(lane); own_free(l);
+    }
+    {
+        own_ledger *l = own_new(policy, 1);
+        own_acl_lane *lane = own_acl_new(l);
+        own_acl_token token;
+        own_acl_effect effect;
+        own_ref parent;
+        uint8_t packet[] = {40, 0x20, 0, 0};
+        CHECK(l && lane && own_activate(l));
+        link_ref link = connect_link(l, 1, 40, &parent, 0);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 20, &token) == OWN_OK);
+        CHECK(own_acl_commit(l, lane, &token, 20, &effect) == OWN_OK);
+        own_acl_submitted(lane, &token, OWN_SEND_UNCERTAIN, 20);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 21, &token) != OWN_OK);
+        own_acl_free(lane); own_free(l);
+    }
+}
+
+static void typed_hci_commit(own_policy policy)
+{
+    own_ledger *l = own_new(policy, 1);
+    own_token token;
+    own_effect effect;
+    uint64_t ack_by = 0;
+    own_ref parent;
+    CHECK(l && own_activate(l));
+    link_ref link = connect_link(l, 1, 40, &parent, 0);
+    CHECK(own_next_local(l, 20, &token) == OWN_OK);
+    CHECK(own_commit_hci(l, &token, 20, &effect, &ack_by) == OWN_INVALID);
+    CHECK(own_commit(l, &token, 20, &effect) == OWN_OK); /* not consumed by wrong backend */
+    own_backend_local_result(l, &token, 1);
+    prepare(l, 0x1009, 0);
+    CHECK(own_next_hci(l, 20, &token) == OWN_OK);
+    CHECK(own_commit_hci(l, &token, 20, &effect, &ack_by) == OWN_OK);
+    CHECK(effect.opcode == 0x1009 && ack_by == 5000);
+    own_submitted(l, &token, OWN_SENT, 20);
+    ack(l, 0x1009, 0, 0, 21);
+    own_acl_lane *lane = own_acl_new(l);
+    own_acl_token acl;
+    uint8_t packet[] = {40, 0x20, 0, 0};
+    CHECK(lane != NULL);
+    CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 22, &acl) == OWN_OK);
+    own_acl_free(lane); own_free(l);
+}
+
+static void typed_hci_phase_deadlines(own_policy policy)
+{
+    own_ledger *l = own_new(policy, 1);
+    own_ref parent = prepare(l, 0x200c, 1);
+    own_token token;
+    own_effect effect;
+    uint64_t ack_by = 0;
+    submit(l, 0x200c, 0);
+    ack(l, 0x200c, 0, 0, 1);
+    CHECK(own_next_hci(l, 20, &token) == OWN_OK);
+    CHECK(own_commit_hci(l, &token, 20, &effect, &ack_by) == OWN_OK);
+    CHECK(effect.opcode == 0x2018 && ack_by == 1020);
+    own_submitted(l, &token, OWN_SENT, 20);
+    ack(l, 0x2018, 0, 1, 21);
+    own_release(l, SESSION_STOP, 22);
+    if (policy == OWN_POLICY_SINGLE_PRODUCER) {
+        CHECK(own_request_undo(l, parent, 22, &token) == OWN_OK);
+        CHECK(own_commit_hci(l, &token, 22, &effect, &ack_by) == OWN_OK);
+        CHECK(effect.opcode == 0x200c && ack_by == 1022);
+        own_submitted(l, &token, OWN_SENT, 22);
+    }
+    own_free(l);
+}
+
+static void credit_events(own_policy policy)
+{
+    for (unsigned form = 0; form < 2; form++) {
+        own_ledger *l = own_new(policy, 1);
+        own_ack credit = {.event = form ? OWN_CS : OWN_CC};
+        own_receipt receipt;
+        own_summary summary;
+        own_token next;
+        CHECK(l && own_activate(l));
+        prepare(l, 0x1009, 0);
+        submit(l, 0x1009, 0);
+        CHECK(own_backend_receipt(l, &credit, 1, &receipt) == OWN_RECEIPT_NONE);
+        own_receive(l, &receipt, 1);
+        own_snapshot(l, &summary);
+        CHECK(summary.credit_nops == 1 && summary.ambiguity_count == 0 &&
+              summary.runtime.reason == SESSION_NONE);
+        CHECK(own_next_hci(l, 1, &next) == OWN_BUSY);
+        ack(l, 0x1009, 0, 0, 2);
+        CHECK(own_next_hci(l, 2, &next) != OWN_BUSY);
+        own_free(l);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--residual-r1") == 0) {
@@ -946,6 +1154,10 @@ int main(int argc, char **argv)
         command_families(policy);
         replacement_veto(policy);
         old_refusal(policy);
+        acl_output(policy);
+        typed_hci_commit(policy);
+        typed_hci_phase_deadlines(policy);
+        credit_events(policy);
     }
     printf("ownership checks=%d violations=%d\n", checks, failed);
     return failed != 0;

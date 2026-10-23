@@ -337,6 +337,46 @@ static void test_usb_secrets(void)
     puts("ATTRIB USB diagnostics: sentinel checked in probe log buffer");
 }
 
+static void test_receipt_provenance(void)
+{
+    unsigned char complete[32] = {0x0e, 4 + sizeof secret, 1, 9, 0x10, 0};
+    static const unsigned char nop[] = {0x0e, 3, 1, 0, 0};
+    attrib_reset();
+    memcpy(complete + 6, secret, sizeof secret);
+    attrib_submit(0x1009, 1, 100);
+    CHECK(attrib_observe_receipt(complete, 6 + sizeof secret, 101,
+                                OWN_RECEIPT_NONE) == ATTRIB_UNMATCHED);
+    CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0 && attrib_get()->unanswered == 1);
+    CHECK(attrib_observe_receipt(nop, sizeof nop, 102, OWN_RECEIPT_NONE) == ATTRIB_NOP);
+    CHECK(attrib_get()->unanswered == 1);
+    CHECK(attrib_observe_receipt(complete, 6 + sizeof secret, 103,
+                                OWN_RECEIPT_SEQUENCED) == ATTRIB_SOLICITED);
+    CHECK(attrib_get()->classes[ATTRIB_UNMATCHED] == 1 &&
+          attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
+    metadata_only();
+}
+
+static void test_credit_event_forms(void)
+{
+    static const unsigned char cc[] = {0x0e,3,0,0,0};
+    static const unsigned char cc_extra[] = {0x0e,5,255,0,0,0xff,0x7e};
+    static const unsigned char cs[] = {0x0f,4,0,1,0,0};
+    static const unsigned char failed_cs[] = {0x0f,4,0x0c,1,0,0};
+    static const unsigned char bad_length[] = {0x0e,3,1,0,0,0};
+    unsigned violations = 0;
+    attrib_reset();
+    attrib_submit(0x1009, 1, 100);
+    CHECK(attrib_observe_receipt(cc, sizeof cc, 101, OWN_RECEIPT_NONE) == ATTRIB_NOP);
+    CHECK(attrib_observe_receipt(cc_extra, sizeof cc_extra, 102, OWN_RECEIPT_NONE) == ATTRIB_NOP);
+    CHECK(attrib_observe_receipt(cs, sizeof cs, 103, OWN_RECEIPT_NONE) == ATTRIB_NOP);
+    violations += attrib_observe_receipt(failed_cs, sizeof failed_cs, 104,
+                                         OWN_RECEIPT_NONE) != ATTRIB_UNMATCHED;
+    violations += attrib_observe_receipt(bad_length, sizeof bad_length, 105,
+                                         OWN_RECEIPT_NONE) != ATTRIB_MALFORMED;
+    CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0 && attrib_get()->unanswered == 1);
+    CHECK(violations == 0);
+}
+
 int main(void)
 {
     test_classes();
@@ -346,6 +386,8 @@ int main(void)
     test_host_profile();
     test_probe_missing_answer();
     test_usb_secrets();
+    test_receipt_provenance();
+    test_credit_event_forms();
     ph_clock_hook = NULL;
     printf("%d attribution checks, %d failed (probe=%d)\n", checks, failures, WHATEVERPAD_PROBE);
     return failures != 0;
