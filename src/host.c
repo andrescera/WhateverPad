@@ -73,7 +73,7 @@ int send_cmd(host_t *h, unsigned op, const void *p, int len)
     if (g_tune.trace) {
         unsigned char c[64];
         int k = len < (int)sizeof c ? len : (int)sizeof c;
-        memcpy(c, p, (size_t)k);
+        if (k) memcpy(c, p, (size_t)k);   /* empty commands pass NULL: copying zero bytes from it is still UB */
         if (op == OP_LINK_KEY_REPLY && k >= 22) memset(c + 6, 0, 16);   /* never a key in the log */
         log_hex("trace cmd", op, c, len);
     }
