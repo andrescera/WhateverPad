@@ -697,13 +697,24 @@ static void insert(search *q, const world *w, const node *parent, unsigned actio
     q->saw_g |= !!w->o[G_REACHED]; q->saw_h |= !!w->o[H_REACHED];
 }
 
+static void print_case_result(enum scenario s, own_policy policy, const search *q,
+                              uint64_t edges, unsigned violations)
+{
+    printf("{\"class\":\"%s\",\"policy\":%d,\"build\":\"%s\",\"depth\":%d,"
+           "\"states\":%zu,\"edges\":%llu,\"violations\":%u,\"g\":%s,\"h\":%s}\n",
+           scenario_names[s], policy, EXPLORE_BUILD, DEPTH, q->count,
+           (unsigned long long)edges, violations, q->saw_g ? "true" : "false",
+           q->saw_h ? "true" : "false");
+}
+
 static void trace(enum scenario s, own_policy policy, const node *parent,
                   unsigned action, const char *error)
 {
-    printf("FAIL explorer policy=%d class=%s: %s\nshortest failing trace (%u events):",
-           policy, scenario_names[s], error, parent->depth + 1);
-    for (unsigned i = 0; i < parent->depth; i++) printf(" %s", action_names[parent->path[i]]);
-    printf(" %s\n", action_names[action]);
+    FILE *out = case_json ? stderr : stdout;
+    fprintf(out, "FAIL explorer policy=%d class=%s: %s\nshortest failing trace (%u events):",
+            policy, scenario_names[s], error, parent->depth + 1);
+    for (unsigned i = 0; i < parent->depth; i++) fprintf(out, " %s", action_names[parent->path[i]]);
+    fprintf(out, " %s\n", action_names[action]);
 }
 
 static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h)
@@ -738,17 +749,17 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
             if (apply(&next, s, (enum action)a, &error)) {
                 edges++;
                 if (!error) error = own_invariant(next.l);
-                if (error) { trace(s, policy, &current, a, error); exit(1); }
+                if (error) {
+                    trace(s, policy, &current, a, error);
+                    if (case_json) print_case_result(s, policy, &q, edges, 1);
+                    exit(1);
+                }
                 insert(&q, &next, &current, a);
             }
         }
     }
     if (case_json)
-        printf("{\"class\":\"%s\",\"policy\":%d,\"build\":\"%s\",\"depth\":%d,"
-               "\"states\":%zu,\"edges\":%llu,\"violations\":0,\"g\":%s,\"h\":%s}\n",
-               scenario_names[s], policy, EXPLORE_BUILD, DEPTH, q.count,
-               (unsigned long long)edges, q.saw_g ? "true" : "false",
-               q.saw_h ? "true" : "false");
+        print_case_result(s, policy, &q, edges, 0);
     else
         printf("class=%s policy=%d states=%zu edges=%llu\n", scenario_names[s], policy,
                q.count, (unsigned long long)edges);

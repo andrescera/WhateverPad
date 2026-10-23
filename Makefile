@@ -197,14 +197,17 @@ test-ownership-case: $(BUILD)/test_ownership_explore
 sanitize-ownership-case:
 	@$(MAKE) --no-print-directory test-ownership-case BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
-test-explorer-results: $(BUILD)/test_ownership_explore
-	sh tests/test_explorer_results.sh $(BUILD)/test_ownership_explore
+test-explorer-results: $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+	sh tests/test_explorer_results.sh $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
 
 $(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
 $(BUILD)/test_ownership_explore: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -O2 -DOWN_EXPLORE_WORKERS=$(OWN_EXPLORE_WORKERS) -o $@ $(filter %.c,$^)
+
+$(BUILD)/mutation-ack_by_opcode: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -O2 -DOWN_MUTATION=ack_by_opcode -o $@ $(filter %.c,$^)
 
 $(BUILD)/test_session_policy: src/session.c tests/test_session_policy.c src/session.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)

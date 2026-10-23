@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 explorer=$1
+mutant=$2
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-mkdir "$tmp/valid" "$tmp/bad" "$tmp/reduced"
+mkdir "$tmp/valid" "$tmp/bad" "$tmp/reduced" "$tmp/violated"
 
 jq -nc '
   ["scan","mask","query","classic","le-create","inquiry","auth","encryption","p256","dhkey","virtual"][] as $c
@@ -53,4 +54,22 @@ reject_args --policy 0 --case unknown
 reject_args --policy 0
 reject_args --policy 0 --policy 1
 reject_args --policy 0 --case scan extra
+
+status=0
+"$mutant" --policy 1 --case scan > "$tmp/violated/result.jsonl" 2> "$tmp/trace" || status=$?
+test "$status" -eq 1
+jq -se 'length == 1 and (.[0] |
+  .class == "scan" and .policy == 1 and .build == "normal" and .depth == 12
+  and .states > 0 and .edges > 0 and .violations > 0
+  and (.g | type) == "boolean" and (.h | type) == "boolean")' \
+  "$tmp/violated/result.jsonl" >/dev/null
+status=0
+sh "$root/tools/check-explorer-results.sh" "$tmp/violated" > "$tmp/error" 2>&1 || status=$?
+test "$status" -eq 1
+
+status=0
+"$mutant" > "$tmp/default" 2> "$tmp/default-error" || status=$?
+test "$status" -eq 1
+grep -q '^FAIL ' "$tmp/default"
+test ! -s "$tmp/default-error"
 echo "explorer result and CLI controls passed"
