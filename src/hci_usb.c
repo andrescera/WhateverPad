@@ -41,7 +41,8 @@ static const char *const k_nodes[] = { "/dev/ugen0.2", "/dev/ugen0.3", "/dev/uge
 
 #define X_ACL_OUT   (N_EVENT_RD + N_ACL_RD)
 #define X_ACL_OUT2  (X_ACL_OUT + 1)     /* the chip's second bulk OUT, tried if the first never finishes */
-#define N_XFER      (X_ACL_OUT2 + 1)
+#define X_CMD       (X_ACL_OUT2 + 1)
+#define N_XFER      (X_CMD + 1)
 
 #define RING        64
 
@@ -53,11 +54,17 @@ typedef struct {
 
 typedef struct {
     int fd;
+    int initialized;
     struct usb_fs_endpoint ep[N_XFER];
-    void *bufp[N_XFER][1];
-    uint32_t lenp[N_XFER][1];
+    void *bufp[N_XFER][2];
+    uint32_t lenp[N_XFER][2];
+    struct usb_device_request cmd_request;
+    own_ledger *ledger;
+    void (*service)(void *);
+    void *service_ud;
     unsigned char buf[N_XFER][ACL_BUF];
     unsigned char busy[N_XFER];
+    unsigned char opened[N_XFER];
     int n_event, n_acl;             /* reads actually opened */
     long t_topup;                   /* when the missing reads were last tried again */
     int dead;                       /* the device went away */
@@ -98,13 +105,52 @@ typedef struct {
 
 static usb_ctx g_ctx;
 
+static void service(usb_ctx *c)
+{
+    if (c->service) c->service(c->service_ud);
+    if (c->ledger) {
+        own_tick(c->ledger, (uint64_t)now_ms());
+        attrib_poll(now_ms());
+    }
+}
+
+static int drain_allowed(usb_ctx *c, long deadline, unsigned completed)
+{
+    long now = now_ms();
+    return completed < 64 && (!deadline || now < deadline) &&
+           (!c->ledger || own_drain_allowed(c->ledger, (uint64_t)now, completed));
+}
+
+static int accepts(usb_ctx *c)
+{
+    own_summary s;
+    if (c->fd < 0 || c->dead) return 0;
+    if (!c->ledger) return 1;
+    own_snapshot(c->ledger, &s);
+    return (s.runtime.state == SESSION_STARTING || s.runtime.state == SESSION_ACTIVE) &&
+           s.runtime.reason == SESSION_NONE && !s.runtime.cleanup_pending;
+}
+
+static void attribution_loss(usb_ctx *c)
+{
+    if (c->ledger) {
+        own_ack a = {.overflow = 1};
+        own_receipt receipt;
+        own_backend_receipt(c->ledger, &a, (uint64_t)now_ms(), &receipt);
+        own_receive(c->ledger, &receipt, (uint64_t)now_ms());
+    }
+}
+
 /* ---- packet rings -------------------------------------------------------- */
 
 static void ring_put(ring *r, const unsigned char *p, int n)
 {
     if (n > HCI_PKT_MAX) n = HCI_PKT_MAX;
     if (r->count == RING) {             /* full: the oldest goes */
-        if (r == &g_ctx.events) attrib_overflow();
+        if (r == &g_ctx.events) {
+            attrib_overflow();
+            attribution_loss(&g_ctx);
+        }
         r->head = (r->head + 1) % RING;
         r->count--;
     }
@@ -139,7 +185,9 @@ static int xfer_open_quiet(usb_ctx *c, int index, int ep_addr, int size)
     op.ep_no = (uint8_t)ep_addr;
     op.max_bufsize = (uint32_t)size;
     op.max_frames = 1;
-    return ioctl(c->fd, USB_FS_OPEN, &op) == 0;
+    if (ioctl(c->fd, USB_FS_OPEN, &op) != 0) return 0;
+    c->opened[index] = 1;
+    return 1;
 }
 
 static int xfer_open(usb_ctx *c, int index, int ep_addr, int size)
@@ -150,11 +198,12 @@ static int xfer_open(usb_ctx *c, int index, int ep_addr, int size)
     op.ep_index = (uint8_t)index;
     op.ep_no = (uint8_t)ep_addr;
     op.max_bufsize = (uint32_t)size;
-    op.max_frames = 1;
+    op.max_frames = index == X_CMD ? 2 : 1;
     if (ioctl(c->fd, USB_FS_OPEN, &op) != 0) {
         log_line("usb: open endpoint %#x as transfer %d: errno %d", ep_addr, index, errno);
         return 0;
     }
+    c->opened[index] = 1;
     return 1;
 }
 
@@ -162,6 +211,7 @@ static int xfer_start(usb_ctx *c, int index, int length)
 {
     struct usb_fs_start st;
 
+    if (!c->initialized || !c->opened[index] || c->busy[index]) return 0;
     c->lenp[index][0] = (uint32_t)length;
     c->ep[index].nFrames = 1;
     c->ep[index].aFrames = 0;
@@ -184,6 +234,28 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
 {
     usb_ctx *c = ctx;
 
+    if (c->ledger) {
+        attrib_observe(ev, len, now_ms());
+        if (ev[0] == OWN_CC || ev[0] == OWN_CS) {
+            own_ack a = {.event = (own_ack_event)ev[0]};
+            own_receipt receipt;
+            if (ev[0] == OWN_CC && len == 5 && ev[1] == 3 && !le16(ev + 3)) {
+                a.opcode = 0;
+            } else if (len < 6 || len != 2 + ev[1] ||
+                       (ev[0] == OWN_CS && ev[1] != 4)) {
+                a.malformed = 1;
+            } else {
+                a.opcode = le16(ev + (ev[0] == OWN_CC ? 3 : 4));
+                a.status = ev[ev[0] == OWN_CC ? 5 : 2];
+                if (a.opcode == 0x2018 && ev[0] == OWN_CC) {
+                    a.random_len = (uint8_t)(len - 6);
+                    if (a.random_len == 8) memcpy(a.random, ev + 6, 8);
+                }
+            }
+            own_backend_receipt(c->ledger, &a, (uint64_t)now_ms(), &receipt);
+            own_receive(c->ledger, &receipt, (uint64_t)now_ms());
+        }
+    }
     c->events_seen++;
     if (c->n_sample < 12) {
 #if !WHATEVERPAD_PROBE
@@ -203,7 +275,12 @@ static void split_read(usb_ctx *c, int index)
     int n = (int)c->lenp[index][0], off = 0;
 
     if (index < N_EVENT_RD) {           /* a piece of the event stream */
+        unsigned dropped = c->es.dropped;
         evstream_feed(&c->es, p, n, now_ms(), event_done, c);
+        if (c->es.dropped != dropped) {
+            attrib_overflow();
+            attribution_loss(c);
+        }
         return;
     }
     while (off + 4 <= n) {              /* ACL: whole packets */
@@ -215,17 +292,27 @@ static void split_read(usb_ctx *c, int index)
     }
 }
 
-static int reap(usb_ctx *c)
+static int reap(usb_ctx *c, long deadline, unsigned *completed)
 {
     struct usb_fs_complete done;
     int any = 0;
 
-    for (;;) {
+    while (*completed < 64) {
+        service(c);
+        if (!drain_allowed(c, deadline, *completed)) break;
         memset(&done, 0, sizeof done);
         if (ioctl(c->fd, USB_FS_COMPLETE, &done) != 0) break;
+        (*completed)++;
         any = 1;
         if (done.ep_index >= N_XFER) continue;
         c->busy[done.ep_index] = 0;
+        if (done.ep_index == X_CMD) {
+            if (c->ep[X_CMD].status) {
+                c->dead = 1;
+                if (c->ledger) own_detector_trip(c->ledger, (uint64_t)now_ms());
+            }
+            continue;
+        }
         if (done.ep_index == X_ACL_OUT || done.ep_index == X_ACL_OUT2) {
             if (c->ep[done.ep_index].status)
                 log_line("usb: ACL out status %u", (unsigned)c->ep[done.ep_index].status);
@@ -286,6 +373,7 @@ static void keep_reads_pending(usb_ctx *c)
 {
     int i;
 
+    if (!accepts(c)) return;
     if (now_ms() >= c->yield_until) topup_reads(c);
     for (i = 0; i < c->n_event && i < c->ev_want && now_ms() >= c->yield_until; i++)
         if (!c->busy[i]) xfer_start(c, i, c->ev_len);
@@ -295,13 +383,11 @@ static void keep_reads_pending(usb_ctx *c)
 
 /* ---- hci_ops ------------------------------------------------------------- */
 
-static int op_cmd(void *ctx, unsigned opcode, const void *params, int plen)
+static int command_start(usb_ctx *c, unsigned opcode, const void *params, int plen)
 {
-    usb_ctx *c = ctx;
-    struct usb_ctl_request req;
-    unsigned char pkt[3 + 255];
+    struct usb_fs_start start = {.ep_index = X_CMD};
+    unsigned char *pkt = c->buf[X_CMD];
 
-    if (plen < 0 || plen > 255) return 0;
     put16(pkt, opcode);
     pkt[2] = (unsigned char)plen;
     if (plen) memcpy(pkt + 3, params, (size_t)plen);
@@ -312,31 +398,84 @@ static int op_cmd(void *ctx, unsigned opcode, const void *params, int plen)
     c->last_cmd_len = 3 + plen;
 #endif
 
-    memset(&req, 0, sizeof req);
-    req.ucr_data = pkt;
-    req.ucr_request.bmRequestType = UT_WRITE_CLASS_DEVICE;
-    req.ucr_request.bRequest = 0;
-    USETW(req.ucr_request.wValue, 0);
-    USETW(req.ucr_request.wIndex, c->iface);
-    USETW(req.ucr_request.wLength, 3 + plen);
-    if (ioctl(c->fd, USB_DO_REQUEST, &req) != 0) {
+    memset(&c->cmd_request, 0, sizeof c->cmd_request);
+    c->cmd_request.bmRequestType = UT_WRITE_CLASS_DEVICE;
+    USETW(c->cmd_request.wIndex, c->iface);
+    USETW(c->cmd_request.wLength, 3 + plen);
+    c->bufp[X_CMD][0] = &c->cmd_request;
+    c->bufp[X_CMD][1] = pkt;
+    c->lenp[X_CMD][0] = sizeof c->cmd_request;
+    c->lenp[X_CMD][1] = (uint32_t)(3 + plen);
+    c->ep[X_CMD].nFrames = 2;
+    c->ep[X_CMD].aFrames = 0;
+    c->ep[X_CMD].timeout = 1000;
+    if (c->ledger) {
+        own_summary s;
+        own_snapshot(c->ledger, &s);
+        c->ep[X_CMD].timeout = (uint16_t)session_work_remaining(&s.runtime,
+                                                              (uint64_t)now_ms(), 1000);
+    }
+    c->ep[X_CMD].status = 0;
+    if (ioctl(c->fd, USB_FS_START, &start) != 0) {
         log_line("usb: command %#06x: errno %d", opcode, errno);
         if (errno == ENXIO || errno == ENODEV || errno == EIO || errno == EBADF) c->dead = 1;
         return 0;
     }
+    c->busy[X_CMD] = 1;
     return 1;
+}
+
+static int op_cmd(void *ctx, unsigned opcode, const void *params, int plen)
+{
+    usb_ctx *c = ctx;
+    unsigned completed = 0;
+    if (c->ledger || !accepts(c) || plen < 0 || plen > 255 || (plen && !params) ||
+        opcode > 0xffff || opcode == 0x0402 || opcode == 0x0408 ||
+        opcode == 0x200e || opcode == 0x0c03) return 0;
+    reap(c, now_ms() + 1000, &completed);
+    if (!accepts(c) || c->busy[X_CMD]) return 0;
+    return command_start(c, opcode, params, plen);
+}
+
+static own_submit_result op_submit(void *ctx, const own_token *token)
+{
+    usb_ctx *c = ctx;
+    own_effect effect;
+    unsigned completed = 0;
+    int sent;
+    if (!c->ledger || !token || c->fd < 0 || c->dead) return OWN_NOT_SENT;
+#ifdef USB_MUTATE_NO_FINAL_CHECK
+    if (own_commit(c->ledger, token, (uint64_t)now_ms(), &effect) != OWN_OK)
+        return OWN_NOT_SENT;
+#endif
+    reap(c, now_ms() + 1000, &completed);
+    if (c->dead || c->busy[X_CMD]) return OWN_NOT_SENT;
+#ifndef USB_MUTATE_NO_FINAL_CHECK
+    if (own_commit(c->ledger, token, (uint64_t)now_ms(), &effect) != OWN_OK)
+        return OWN_NOT_SENT;
+#endif
+    if (effect.kind != OWN_EFFECT_HCI) return OWN_NOT_SENT;
+    /* No callback between the consuming commit and USB_FS_START. */
+    sent = command_start(c, effect.opcode, effect.params, effect.plen);
+    own_submitted(c->ledger, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)now_ms());
+    if (sent) {
+        attrib_submit(effect.opcode, 1, now_ms());
+    }
+    return sent ? OWN_SENT : OWN_NOT_SENT;
 }
 
 static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
 {
     usb_ctx *c = ctx;
     long deadline = now_ms() + 500;
+    unsigned completed = 0;
 
-    if (len > ACL_BUF) return 0;
+    if (c->ledger || !accepts(c) || !pkt || len < 4 || len > ACL_BUF ||
+        len != 4 + (int)le16(pkt + 2)) return 0;
     while (c->busy[c->out_idx]) {
-        reap(c);
+        reap(c, deadline, &completed);
         if (!c->busy[c->out_idx]) break;
-        if (now_ms() >= deadline) {
+        if (now_ms() >= deadline || completed == 64) {
             /* The write never finished: the chip may take ACL on its other
              * bulk OUT endpoint. Try it once, and say so. */
             if (c->out_idx == X_ACL_OUT && c->out2_open) {
@@ -363,16 +502,22 @@ static int op_pump(void *ctx, int timeout_ms)
 {
     usb_ctx *c = ctx;
     long deadline = now_ms() + timeout_ms;
+    unsigned completed = 0;
+    int first = 1;
 
     for (;;) {
         int any;
 
-        if (c->dead) return -1;
+        if (c->dead || c->fd < 0) return -1;
+        service(c);
+        if (!drain_allowed(c, first ? 0 : deadline, completed)) return 0;
         keep_reads_pending(c);
-        any = reap(c);
+        any = reap(c, timeout_ms > 0 ? deadline : 0, &completed);
         if (c->events.count || c->acl.count) return 1;
+        if (c->dead) return -1;
+        if (now_ms() >= deadline || !drain_allowed(c, 0, completed)) return 0;
+        first = 0;
         if (any) continue;
-        if (now_ms() >= deadline) return 0;
         usleep(1000);
     }
 }
@@ -382,6 +527,7 @@ static void op_event_len(void *ctx, int n)
     usb_ctx *c = ctx;
     struct usb_fs_stop st;
     int i;
+    unsigned completed = 0;
 
     if (n < 8) n = 8;
     if (n > ACL_BUF) n = ACL_BUF;
@@ -393,7 +539,7 @@ static void op_event_len(void *ctx, int n)
         st.ep_index = (uint8_t)i;
         ioctl(c->fd, USB_FS_STOP, &st);
     }
-    reap(c);
+    reap(c, now_ms() + 1000, &completed);
     log_line("usb: event reads of %d bytes", n);
 }
 
@@ -402,6 +548,7 @@ static void op_event_reads(void *ctx, int n)
     usb_ctx *c = ctx;
     struct usb_fs_stop st;
     int i;
+    unsigned completed = 0;
 
     if (n < 0) n = 0;
     if (n > N_EVENT_RD) n = N_EVENT_RD;
@@ -413,7 +560,7 @@ static void op_event_reads(void *ctx, int n)
         st.ep_index = (uint8_t)i;
         ioctl(c->fd, USB_FS_STOP, &st);
     }
-    reap(c);
+    reap(c, now_ms() + 1000, &completed);
 }
 
 /* Leaves the events to the system's driver for a while: our pending event
@@ -425,6 +572,7 @@ static void op_yield(void *ctx, int ms)
     usb_ctx *c = ctx;
     struct usb_fs_stop st;
     int i;
+    unsigned completed = 0;
 
     c->yield_until = now_ms() + ms;
     for (i = 0; i < c->n_event; i++) {
@@ -433,7 +581,7 @@ static void op_yield(void *ctx, int ms)
         st.ep_index = (uint8_t)i;
         ioctl(c->fd, USB_FS_STOP, &st);
     }
-    reap(c);
+    reap(c, now_ms() + 1000, &completed);
     log_line("usb: event reads left to the system for %d ms", ms);
 }
 
@@ -459,17 +607,24 @@ static void op_close(void *ctx)
         struct usb_fs_stop st;
         int i;
         for (i = 0; i < N_XFER; i++) {
-            if (!c->busy[i]) continue;
+            if (!c->opened[i] || !c->busy[i]) continue;
+            c->busy[i] = 0;
             memset(&st, 0, sizeof st);
             st.ep_index = (uint8_t)i;
             ioctl(c->fd, USB_FS_STOP, &st);
-            c->busy[i] = 0;
         }
     }
-    memset(&un, 0, sizeof un);
-    ioctl(c->fd, USB_FS_UNINIT, &un);
+    if (c->initialized) {
+        c->initialized = 0;
+        memset(&un, 0, sizeof un);
+        ioctl(c->fd, USB_FS_UNINIT, &un);
+    }
     close(c->fd);
     c->fd = -1;
+    if (c->ledger) own_transport_closed(c->ledger, (uint64_t)now_ms());
+    c->ledger = NULL;
+    c->service = NULL;
+    c->service_ud = NULL;
 }
 
 /* Why the controller may not be answering: what the device is, whether
@@ -714,7 +869,12 @@ int hci_usb_open(hci_t *out)
         op_close(c);
         return 0;
     }
+    c->initialized = 1;
 
+    if (!xfer_open(c, X_CMD, 0, ACL_BUF)) {
+        op_close(c);
+        return 0;
+    }
     /* The OUT transfer first: if the kernel's budget runs out, it must not
      * be the one left without a transfer. */
     if (!xfer_open(c, X_ACL_OUT, c->ep_acl_out, ACL_BUF)) {
@@ -746,4 +906,22 @@ int hci_usb_open(hci_t *out)
     out->ops = &k_usb_ops;
     out->ctx = c;
     return 1;
+}
+
+int hci_usb_bind_ownership(hci_t *h, own_ledger *ledger,
+                         void (*idle)(void *), void *ud)
+{
+    usb_ctx *c = &g_ctx;
+    if (!h || h->ctx != c || h->ops != &k_usb_ops || !ledger ||
+        c->fd < 0 || c->ledger || c->busy[X_CMD]) return 0;
+    c->ledger = ledger;
+    c->service = idle;
+    c->service_ud = ud;
+    return 1;
+}
+
+own_submit_result hci_usb_submit(hci_t *h, const own_token *token)
+{
+    if (!h || h->ops != &k_usb_ops) return OWN_NOT_SENT;
+    return op_submit(h->ctx, token);
 }

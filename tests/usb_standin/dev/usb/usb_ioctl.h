@@ -14,6 +14,7 @@ struct usb_fs_endpoint {
     void **ppBuffer;
     uint32_t *pLength;
     uint32_t nFrames, aFrames, flags, status;
+    uint16_t timeout;
 };
 struct usb_fs_open { uint8_t ep_index, ep_no; uint32_t max_bufsize, max_frames; };
 struct usb_fs_start { uint8_t ep_index; };

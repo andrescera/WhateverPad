@@ -1,5 +1,6 @@
 /* Real hci_usb operations; only the OS boundary and clock are stood in for. */
 #include "../src/hci_usb.h"
+#include "../src/attrib.h"
 #include "../src/util.h"
 #include "usb_standin/dev/usb/usb_ioctl.h"
 
@@ -10,20 +11,9 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { EVENTS = 40, ACL = 20, OUT = 60, XFERS = 62, FD = 73 };
+enum { EVENTS = 40, ACL = 20, OUT = 60, CMD = 62, XFERS = 63, FD = 73 };
 static int failures, checks, pending, strict_mode;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL %d: %s\n", __LINE__, #c); failures++; } } while (0)
-
-static void expected_failure(int todo, const char *name, int desired, const char *effect)
-{
-    checks++;
-    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
-    if (!desired) {
-        pending++;
-        if (strict_mode) printf("FAIL %s: %s (todo-%d)\n", name, effect, todo);
-    }
-}
-#define EFFECT(todo, name, c) expected_failure(todo, name, (c), #c)
 
 static struct {
     struct usb_fs_endpoint *ep;
@@ -36,7 +26,15 @@ static struct {
     struct { const char *name; int index; } trace[2048];
     int ntrace;
     int empty_stream, empty_completions;
+    int churn_left, churn_completed;
+    int completion_cost;
     int reject_node, node_attempts, alternate_out;
+    int commands, hold_command, command_status;
+    unsigned last_opcode;
+    unsigned char last_params[255];
+    int last_plen;
+    void (*start_hook)(void *);
+    void *start_ud;
 } usb;
 static long clock_ms;
 static long clock_now(void) { return clock_ms; }
@@ -182,6 +180,22 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         assert(usb.initialized && usb.opened[index] && !usb.busy[index] && !usb.queued[index]);
         usb.busy[index] = 1; usb.starts[index]++;
         record("START", index);
+        if (index == CMD) {
+            const struct usb_device_request *r = usb.ep[index].ppBuffer[0];
+            const unsigned char *p = usb.ep[index].ppBuffer[1];
+            CHECK(usb.ep[index].nFrames == 2);
+            CHECK(usb.ep[index].pLength[0] == sizeof *r);
+            CHECK(r->bmRequestType == UT_WRITE_CLASS_DEVICE && !r->bRequest &&
+                  !UGETW(r->wValue) && !UGETW(r->wIndex));
+            CHECK(UGETW(r->wLength) == usb.ep[index].pLength[1]);
+            CHECK(usb.ep[index].pLength[1] == (unsigned)(3 + p[2]));
+            usb.commands++;
+            usb.last_opcode = le16(p);
+            usb.last_plen = p[2];
+            if (p[2]) memcpy(usb.last_params, p + 3, p[2]);
+            if (!usb.hold_command) completion(index, NULL, 0);
+        }
+        if (usb.start_hook) usb.start_hook(usb.start_ud);
         if (index == 0 && usb.empty_stream) completion(0, NULL, 0);
         return 0;
     case USB_FS_STOP:
@@ -192,13 +206,20 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
     case USB_FS_COMPLETE: {
         struct usb_fs_complete *d = arg;
         int n;
+        if (usb.churn_left) {
+            usb.churn_left--;
+            usb.churn_completed++;
+            d->ep_index = 255;
+            return 0;
+        }
         if (!usb.count) { errno = EAGAIN; return -1; }
+        clock_ms += usb.completion_cost;
         index = usb.done[usb.head].index;
         n = usb.done[usb.head].len;
         d->ep_index = (uint8_t)index;
         usb.ep[index].pLength[0] = (uint32_t)n;
         usb.ep[index].aFrames = n > 0;
-        usb.ep[index].status = n ? 0 : 1;
+        usb.ep[index].status = index == CMD ? (unsigned)usb.command_status : n ? 0 : 1;
         if (n) memcpy(usb.ep[index].ppBuffer[0], usb.done[usb.head].data, (size_t)n);
         usb.busy[index] = usb.queued[index] = 0;
         usb.head = (usb.head + 1) % 128; usb.count--;
@@ -329,7 +350,7 @@ static void test_ioctl_failures(void)
     transcript("STOP-failure-still-uninitializes-and-closes");
 
     reset(); h = start();
-    usb.fail_request = USB_DO_REQUEST;
+    usb.fail_request = USB_FS_START; usb.fail_index = CMD;
     CHECK(!h.ops->cmd(h.ctx, 0x1009, NULL, 0));
     CHECK(h.ops->pump(h.ctx, 0) == -1);
     closed_once(h);
@@ -338,8 +359,8 @@ static void test_ioctl_failures(void)
     reset();
     usb.fail_request = USB_FS_INIT;
     CHECK(!hci_usb_open(&h));
-    CHECK(usb.uninits == 1 && usb.closes == 1 && !usb.fd_open);
-    transcript("expected-current-init-failure-attempts-UNINIT");
+    CHECK(usb.uninits == 0 && usb.closes == 1 && !usb.fd_open);
+    transcript("init-failure-does-not-authorize-UNINIT");
 
     reset();
     usb.fail_request = USB_FS_OPEN; usb.fail_index = 0;
@@ -403,7 +424,7 @@ static void test_empty_completion_stream_observes_deadline(void)
     completion(0, NULL, 0);
     usb.empty_stream = 1;
     CHECK(h.ops->pump(h.ctx, 10000) == 0);
-    EFFECT(9, "empty-completion-stream-deadline", clock_ms <= deadline && usb.empty_stream);
+    CHECK(clock_ms <= deadline && usb.empty_stream);
     usb.empty_stream = 0;
     closed_once(h);
 }
@@ -414,12 +435,23 @@ static void test_refused_usb_initialization_has_no_uninit_authority(void)
     reset(); usb.fail_request = USB_FS_INIT;
     CHECK(!hci_usb_open(&h));
     CHECK(usb.inits == 0 && usb.closes == 1);
-    EFFECT(9, "refused-USB-init-no-uninit", usb.uninits == 0);
+    CHECK(usb.uninits == 0);
+}
+
+static void test_completion_churn_has_a_finite_batch(void)
+{
+    hci_t h;
+    reset(); h = start();
+    usb.churn_left = 1024;
+    CHECK(h.ops->pump(h.ctx, 0) == 0);
+    CHECK(usb.churn_completed <= 64 && usb.churn_left > 0);
+    usb.churn_left = 0;
+    closed_once(h);
 }
 
 static void test_refused_transfer_opens_never_authorize_stops(void)
 {
-    static const int indices[] = {OUT, 0, EVENTS};
+    static const int indices[] = {CMD, OUT, 0, EVENTS};
     for (unsigned i = 0; i < sizeof indices / sizeof indices[0]; i++) {
         hci_t h;
         reset(); usb.fail_request = USB_FS_OPEN; usb.fail_index = indices[i];
@@ -446,6 +478,345 @@ static void test_node_and_alternate_output_ownership(void)
     }
 }
 
+static own_ledger *bound(hci_t *h, own_policy policy)
+{
+    own_ledger *l = own_new(policy, 1);
+    CHECK(l != NULL && own_activate(l));
+    CHECK(hci_usb_bind_ownership(h, l, NULL, NULL));
+    return l;
+}
+
+static own_ref prepare(own_ledger *l, unsigned opcode, const unsigned char *p, int n,
+                       own_token *token)
+{
+    own_command c = {.opcode = (uint16_t)opcode, .plen = (uint8_t)n,
+                     .ack_by = (uint64_t)clock_ms + 2000,
+                     .terminal_by = (uint64_t)clock_ms + 4000};
+    own_ref ref = {0};
+    if (n) memcpy(c.params, p, (size_t)n);
+    if (opcode == 0x0c1a) {
+        c.original_known = c.original_len = 1;
+        c.original[0] = 2;
+    }
+    CHECK(own_prepare(l, &c, &ref) == OWN_OK);
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, token) == OWN_OK);
+    return ref;
+}
+
+static void receive_event(hci_t h, const unsigned char *event, int len)
+{
+    unsigned char out[HCI_PKT_MAX];
+    /* Re-arm the consumed reader before arranging its next completion. */
+    h.ops->pump(h.ctx, 0);
+    completion(0, event, len);
+    CHECK(h.ops->pump(h.ctx, 0) == 1);
+    CHECK(h.ops->next_event(h.ctx, out, sizeof out) == len);
+    CHECK(!memcmp(out, event, (size_t)len));
+}
+
+static void acknowledge(hci_t h, unsigned opcode, int status_event, int status)
+{
+    unsigned char e[] = {0x0e, 4, 1, 0, 0, 0};
+    if (status_event) { e[0] = 0x0f; e[2] = (unsigned char)status; e[3] = 1; }
+    else e[5] = (unsigned char)status;
+    put16(e + (status_event ? 4 : 3), opcode);
+    receive_event(h, e, sizeof e);
+}
+
+static void fence(hci_t h, own_ledger *l, unsigned value)
+{
+    unsigned char e[] = {0x0e, 12, 1, 0x18, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    own_token token;
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    CHECK(usb.last_opcode == 0x2018 && usb.last_plen == 0);
+    e[6] = (unsigned char)value;
+    receive_event(h, e, sizeof e);
+}
+
+static void test_tokens_are_exclusive_single_use_and_immutable(void)
+{
+    static const unsigned char acl[] = {0x41, 0x20, 1, 0, 0xaa};
+    unsigned char scan = 1;
+    own_token token, other;
+    hci_t h;
+    own_ledger *l, *foreign;
+    reset(); attrib_reset(); h = start(); l = bound(&h, OWN_POLICY_NO_RESTORE);
+    foreign = own_new(OWN_POLICY_NO_RESTORE, 1);
+    CHECK(foreign != NULL && own_activate(foreign));
+    prepare(foreign, 0x1009, NULL, 0, &other);
+    CHECK(hci_usb_submit(&h, &other) == OWN_NOT_SENT && usb.commands == 0);
+    own_free(foreign);
+    prepare(l, 0x0c1a, &scan, 1, &token);
+    scan = 0; /* The caller's buffer is not the prepared effect. */
+    CHECK(!h.ops->cmd(h.ctx, 0x1009, NULL, 0));
+    CHECK(!h.ops->acl_send(h.ctx, acl, sizeof acl));
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    CHECK(usb.commands == 1 && usb.last_opcode == 0x0c1a &&
+          usb.last_plen == 1 && usb.last_params[0] == 1);
+    CHECK(hci_usb_submit(&h, &token) == OWN_NOT_SENT && usb.commands == 1);
+    acknowledge(h, 0x0c1a, 0, 0);
+    CHECK(attrib_get()->submitted == 1 && attrib_get()->classes[ATTRIB_SOLICITED] == 1);
+    closed_once(h); own_free(l);
+}
+
+typedef struct { own_ledger *ledger; int calls, at; } release_point;
+static void release_during_preparation(void *ud)
+{
+    release_point *p = ud;
+    if (++p->calls == p->at) own_release(p->ledger, SESSION_STOP, (uint64_t)clock_ms);
+}
+
+static void test_release_inside_read_reap_refuses_raw_submit(void)
+{
+    for (int at = 1; at <= 2; at++) {
+        hci_t h;
+        own_token token;
+        own_ledger *l;
+        release_point p;
+        reset(); h = start();
+        l = own_new(OWN_POLICY_NO_RESTORE, 1);
+        CHECK(l != NULL && own_activate(l));
+        p = (release_point){l, 0, at};
+        CHECK(hci_usb_bind_ownership(&h, l, release_during_preparation, &p));
+        prepare(l, 0x1009, NULL, 0, &token);
+        completion(0, NULL, 0);
+        CHECK(hci_usb_submit(&h, &token) == OWN_NOT_SENT);
+        CHECK(p.calls >= at && usb.commands == 0);
+        CHECK(!h.ops->cmd(h.ctx, 0x1009, NULL, 0));
+        closed_once(h); own_free(l);
+    }
+}
+
+static void release_inside_start(void *ud)
+{
+    own_release(ud, SESSION_STOP, (uint64_t)clock_ms);
+}
+
+static void test_real_submit_result_survives_release_and_refusal(void)
+{
+    for (int refused = 0; refused < 2; refused++) {
+        hci_t h;
+        own_token token;
+        own_ledger *l;
+        own_ref ref;
+        own_state state;
+        reset(); h = start(); l = bound(&h, OWN_POLICY_NO_RESTORE);
+        ref = prepare(l, 0x1009, NULL, 0, &token);
+        if (refused) { usb.fail_request = USB_FS_START; usb.fail_index = CMD; }
+        else { usb.start_hook = release_inside_start; usb.start_ud = l; }
+        CHECK(hci_usb_submit(&h, &token) == (refused ? OWN_NOT_SENT : OWN_SENT));
+        CHECK(usb.commands == !refused);
+        usb.start_hook = NULL;
+        if (refused) CHECK(own_status(l, ref, &state) == OWN_REFUSED);
+        else {
+            acknowledge(h, 0x1009, 0, 0);
+            CHECK(own_status(l, ref, &state) == OWN_OK && state == OWN_CLOSED);
+        }
+        CHECK(hci_usb_submit(&h, &token) == OWN_NOT_SENT && usb.commands == !refused);
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_backend_acknowledgement_conditions(void)
+{
+    static const unsigned char nop[] = {0x0e, 3, 1, 0, 0};
+    static const unsigned char malformed[] = {0x0e, 2, 1, 9};
+    for (int mode = 0; mode < 6; mode++) {
+        hci_t h;
+        own_token token;
+        own_ledger *l;
+        own_ref ref;
+        own_summary s;
+        reset(); attrib_reset(); h = start(); l = bound(&h, OWN_POLICY_NO_RESTORE);
+        ref = prepare(l, 0x1009, NULL, 0, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        if (mode == 0) {
+            receive_event(h, nop, sizeof nop);
+            CHECK(attrib_get()->classes[ATTRIB_NOP] == 1);
+            acknowledge(h, 0x1009, 0, 0);
+        } else if (mode == 1) acknowledge(h, 0x1009, 1, 0); /* wrong event type */
+        else if (mode == 2) acknowledge(h, 0x1005, 0, 0); /* foreign opcode */
+        else if (mode == 3) {
+            clock_ms += 2000; /* Equal to ack_by, not before it. */
+            acknowledge(h, 0x1009, 0, 0);
+        } else if (mode == 4) receive_event(h, malformed, sizeof malformed);
+        else {
+            acknowledge(h, 0x1009, 0, 0);
+            acknowledge(h, 0x1009, 0, 0); /* duplicate */
+        }
+        own_snapshot(l, &s);
+        CHECK(mode == 0 ? !s.ambiguity_count : s.ambiguity_count > 0);
+        CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) != OWN_OK);
+        CHECK(usb.commands == 1);
+        CHECK(own_reclaim(l, ref) == (mode == 0 || mode == 5 ? OWN_OK : OWN_BUSY));
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_one_command_lane_and_async_failure(void)
+{
+    hci_t h;
+    own_token token, second;
+    own_ledger *l;
+    own_summary s;
+    reset(); h = start(); l = bound(&h, OWN_POLICY_NO_RESTORE);
+    prepare(l, 0x1009, NULL, 0, &token);
+    usb.hold_command = 1;
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, &second) == OWN_BUSY);
+    acknowledge(h, 0x1009, 0, 0); /* ACK can arrive before the USB completion. */
+    prepare(l, 0x1005, NULL, 0, &second);
+    CHECK(hci_usb_submit(&h, &second) == OWN_NOT_SENT && usb.commands == 1);
+    completion(CMD, NULL, 0);
+    usb.command_status = 1;
+    CHECK(h.ops->pump(h.ctx, 0) == -1);
+    own_snapshot(l, &s);
+    CHECK(s.ambiguity_count > 0);
+    CHECK(hci_usb_submit(&h, &second) == OWN_NOT_SENT && usb.commands == 1);
+    closed_once(h); own_free(l);
+}
+
+static void test_owned_restore_is_derived_and_policy_checked(void)
+{
+    for (int policy = OWN_POLICY_NO_RESTORE; policy <= OWN_POLICY_SINGLE_PRODUCER; policy++) {
+        unsigned char scan = 1;
+        own_ledger *l;
+        own_token token;
+        hci_t h;
+        reset(); h = start(); l = bound(&h, (own_policy)policy);
+        prepare(l, 0x0c1a, &scan, 1, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        acknowledge(h, 0x0c1a, 0, 0);
+        fence(h, l, 1);
+        CHECK(own_release(l, SESSION_STOP, (uint64_t)clock_ms));
+        if (policy == OWN_POLICY_SINGLE_PRODUCER) {
+            CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+            CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+            CHECK(usb.commands == 3 && usb.last_opcode == 0x0c1a &&
+                  usb.last_plen == 1 && usb.last_params[0] == 2);
+            acknowledge(h, 0x0c1a, 0, 0);
+        } else CHECK(usb.commands == 2);
+        CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) != OWN_OK);
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_ring_overflow_revokes_a_prepared_restore(void)
+{
+    unsigned char scan = 1, events[30], out[HCI_PKT_MAX];
+    own_ledger *l;
+    own_ref ref;
+    own_token token;
+    own_summary s;
+    hci_t h;
+    int n = 0;
+    reset(); attrib_reset(); h = start(); l = bound(&h, OWN_POLICY_SINGLE_PRODUCER);
+    ref = prepare(l, 0x0c1a, &scan, 1, &token);
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    acknowledge(h, 0x0c1a, 0, 0);
+    fence(h, l, 1);
+    CHECK(own_request_undo(l, ref, (uint64_t)clock_ms, &token) == OWN_OK);
+    for (int i = 0; i < 10; i++) {
+        events[3*i] = 1; events[3*i+1] = 1; events[3*i+2] = 0;
+    }
+    h.ops->pump(h.ctx, 0);
+    for (int i = 0; i < 7; i++) {
+        completion(i, events, sizeof events);
+        CHECK(h.ops->pump(h.ctx, 0) == 1);
+    }
+    own_snapshot(l, &s);
+    CHECK(attrib_get()->overflow == 6 && s.ambiguity_count > 0);
+    CHECK(hci_usb_submit(&h, &token) == OWN_NOT_SENT && usb.commands == 2);
+    while (h.ops->next_event(h.ctx, out, sizeof out)) n++;
+    CHECK(n == 64);
+    closed_once(h); own_free(l);
+}
+
+static void test_duplicate_replacement_ack_never_reaches_a_restore(void)
+{
+    static const unsigned char answers[] = {
+        0x0e, 4, 1, 0x1a, 0x0c, 0, /* copied old success */
+        0x0e, 4, 1, 0x1a, 0x0c, 0x0c /* replacement's real refusal */
+    };
+    for (int policy = 0; policy <= 1; policy++) {
+        unsigned char scan = 0;
+        own_token token;
+        own_ledger *l;
+        hci_t h;
+        reset(); h = start(); l = bound(&h, (own_policy)policy);
+        prepare(l, 0x0c1a, &scan, 1, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        acknowledge(h, 0x0c1a, 0, 0); fence(h, l, 1);
+        scan = 1;
+        prepare(l, 0x0c1a, &scan, 1, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        h.ops->pump(h.ctx, 0);
+        completion(0, answers, sizeof answers);
+        CHECK(h.ops->pump(h.ctx, 0) == 1);
+        CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) != OWN_OK);
+        CHECK(usb.commands == 3); /* no fence/undo after contradictory answers */
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_absolute_cleanup_cutoff_stops_each_completion(void)
+{
+    own_ledger *l;
+    own_summary s;
+    hci_t h;
+    reset(); h = start(); l = bound(&h, OWN_POLICY_NO_RESTORE);
+    CHECK(own_release(l, SESSION_STOP, (uint64_t)clock_ms));
+    own_snapshot(l, &s);
+    clock_ms = (long)s.runtime.deadline - SESSION_RESERVE_MS - 250;
+    for (int i = 0; i < 20; i++) completion(i, NULL, 0);
+    usb.completion_cost = 50;
+    CHECK(h.ops->pump(h.ctx, 10000) == 0);
+    CHECK(usb.count == 15); /* reaper stops at the cutoff, not after its batch */
+    CHECK(clock_ms == (long)s.runtime.deadline - SESSION_RESERVE_MS);
+    CHECK(h.ops->pump(h.ctx, 10000) == 0 && usb.count == 15);
+    for (int i = 0; i < OUT; i++) CHECK(usb.starts[i] == 1);
+    closed_once(h); own_free(l);
+}
+
+static void test_overflow_revokes_all_link_leases(void)
+{
+    own_ledger *l;
+    own_peer peer = {.wire = {1, 2, 3, 4, 5, 6}, .identity = {1, 2, 3, 4, 5, 6}};
+    link_ref link;
+    own_ref ref;
+    own_token token;
+    own_command c = {.opcode = 0x0405, .plen = 13, .ack_by = 3000, .terminal_by = 5000};
+    own_terminal_event terminal = {.kind = OWN_TERM_CONNECTION, .handle = 0x41};
+    unsigned char events[30];
+    hci_t h;
+    reset(); h = start(); l = bound(&h, OWN_POLICY_SINGLE_PRODUCER);
+    CHECK(own_reserve_link(l, &peer, &link) == OWN_OK);
+    c.peer = peer; c.link = link;
+    memcpy(c.params, peer.wire, 6);
+    CHECK(own_prepare(l, &c, &ref) == OWN_OK);
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    acknowledge(h, 0x0405, 1, 0);
+    terminal.peer = peer;
+    own_terminal(l, ref, &terminal, (uint64_t)clock_ms);
+    fence(h, l, 1);
+    CHECK(own_input(l, link, 0x41, (uint64_t)clock_ms) == OWN_OK);
+    CHECK(own_request_undo(l, ref, (uint64_t)clock_ms, &token) == OWN_OK);
+    for (int i = 0; i < 10; i++) {
+        events[3*i] = 1; events[3*i+1] = 1; events[3*i+2] = 0;
+    }
+    h.ops->pump(h.ctx, 0);
+    for (int i = 0; i < 7; i++) {
+        completion(i, events, sizeof events);
+        CHECK(h.ops->pump(h.ctx, 0) == 1);
+    }
+    CHECK(own_input(l, link, 0x41, (uint64_t)clock_ms) != OWN_OK);
+    CHECK(hci_usb_submit(&h, &token) == OWN_NOT_SENT && usb.commands == 2);
+    CHECK(usb.last_opcode == 0x2018); /* never Disconnect an unleased handle */
+    closed_once(h); own_free(l);
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -459,8 +830,19 @@ int main(int argc, char **argv)
     test_event_read_operations();
     test_empty_completion_stream_observes_deadline();
     test_refused_usb_initialization_has_no_uninit_authority();
+    test_completion_churn_has_a_finite_batch();
     test_refused_transfer_opens_never_authorize_stops();
     test_node_and_alternate_output_ownership();
+    test_tokens_are_exclusive_single_use_and_immutable();
+    test_release_inside_read_reap_refuses_raw_submit();
+    test_real_submit_result_survives_release_and_refusal();
+    test_backend_acknowledgement_conditions();
+    test_one_command_lane_and_async_failure();
+    test_owned_restore_is_derived_and_policy_checked();
+    test_ring_overflow_revokes_a_prepared_restore();
+    test_duplicate_replacement_ack_never_reaches_a_restore();
+    test_absolute_cleanup_cutoff_stops_each_completion();
+    test_overflow_revokes_all_link_leases();
     ph_clock_hook = NULL;
     printf("%d USB lifetime checks, %d failed; %d expected-failing cases\n", checks, failures, pending);
     return failures != 0 || (strict_mode && pending != 0);
