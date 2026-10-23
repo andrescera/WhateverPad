@@ -50,6 +50,10 @@ void sim_le_inject_event(sim_le_t *s, uint8_t code, const uint8_t *p, int n);
 /* subevent < 0 matches every subevent; delay_ms < 0 loses the event. */
 void sim_le_delay_events(sim_le_t *s, int code, int subevent, int count, int delay_ms);
 void sim_le_schedule_event(sim_le_t *s, uint8_t code, const uint8_t *p, int n, int delay_ms);
+void sim_le_observe(sim_le_t *s, sim_observer observer, void *context);
+void sim_le_causal_event(sim_le_t *s, sim_origin origin, uint8_t code,
+                         const uint8_t *p, int n, int delay_ms);
+void sim_le_refuse_command(sim_le_t *s, unsigned op, int status);
 void sim_le_peer_advertise(sim_le_t *s, const uint8_t addr[6], uint8_t addr_type);
 int  sim_le_system_event(sim_le_t *s, uint8_t *out, int max);
 sim_lifetime sim_le_resources(const sim_le_t *s);

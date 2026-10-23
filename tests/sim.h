@@ -90,6 +90,11 @@ void   sim_inject_event(sim_t *s, unsigned char code, const unsigned char *p, in
  * them with delay_ms < 0. Arrival order follows virtual deadlines, not enqueue order. */
 void   sim_delay_events(sim_t *s, int code, int count, int delay_ms);
 void   sim_schedule_event(sim_t *s, unsigned char code, const unsigned char *p, int n, int delay_ms);
+void   sim_observe(sim_t *s, sim_observer observer, void *context);
+void   sim_causal_event(sim_t *s, sim_origin origin, unsigned char code,
+                        const unsigned char *p, int n, int delay_ms);
+int    sim_foreign_command(sim_t *s, unsigned op, const void *p, int n);
+void   sim_refuse_command(sim_t *s, unsigned op, int status);
 /* Independent air traffic. No packet consumed by the bridge is replayed here. */
 void   sim_peer_request(sim_t *s, const unsigned char addr[6], uint32_t cod);
 int    sim_system_event(sim_t *s, unsigned char *out, int max);
