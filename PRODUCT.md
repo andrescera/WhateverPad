@@ -54,20 +54,23 @@ v2, an 8BitDo SF30 Pro in Switch mode, and a GameSir G7 SE. A DualShock 4 v1, th
 are supported in code and have not been confirmed on a console. Do not move them into
 the verified column without a real console and a log.
 
-The native DualSense is not a bridge target. The code carries a DualSense profile for
-identification (`src/profiles.c:k_profiles`), but the product rule is that native devices
-stay system-managed.
+The native DualSense is not a product bridge target. The code includes a DualSense
+parser and output profile (`src/profiles.c:k_profiles`); that is not a native-device
+exclusion guard. Keeping native devices system-managed is the product rule, with
+terminal release planned in todo 16.
 
 ## 4. Platform facts
 
 - WhateverPad needs a jailbroken PS5 that can already run payloads. It is not a
   jailbreak, and it does not modify games, the firmware, or the jailbreak.
-- It shares the console's Bluetooth chip with the system. Another payload that owns the
-  chip or port 8095 conflicts with it; the page reports the conflict
-  (`src/web.c:web_start`, `src/ps5_main.c:main`).
+- It shares the console's Bluetooth chip with the system. Bluetooth startup failures
+  appear on the page if its listener is running. An occupied port 8095 prevents
+  WhateverPad's page from opening: `src/web.c:web_start` logs the bind/listen failure,
+  closes and frees the listener, and returns NULL. `src/ps5_main.c:main` reports that
+  failure by console notification; its outer loop attempts a later rebind.
 - Limits are fixed: four live pads (`src/host.h:HOST_MAX_PADS`) and sixteen remembered
-  devices (`src/bond_store.h:BOND_MAX`). A full store reports capacity instead of
-  evicting another controller.
+  devices (`src/bond_store.h:BOND_MAX`). A full store logs a capacity error instead of
+  evicting another controller (`src/host.c:db_put`).
 - Firmware claims stay inside what has been observed. Upstream documents console testing
   on firmware 10.01 (`README.md`, version line) and asks for help testing 13.60.
   WhateverPad on 13.60 is a project goal, not a verified claim, and nothing here claims
@@ -80,13 +83,18 @@ system. That single rule drives the rest:
 
 - Unowned traffic is the system's. A connection request for a controller WhateverPad does
   not know is left unanswered so the system can take the next attempt
-  (`src/host.c:on_event`, case `0x04`); today that path also stands aside for 30 seconds
-  (`src/host_int.h:T_YIELD`), which is the limit tracked as GAP-1.
+  (`src/host.c:on_event`, case `0x04`). Today it can yield event reads for 30 seconds
+  (`src/host_int.h:T_YIELD`), but only outside pairing/setup, with a yield-capable
+  transport and when the yield rate limit allows. It does not replay the consumed
+  request or release ACL reads; that is the limit tracked as GAP-1.
 - Recovery must be bounded and complete. The rule demands that a release ends bridged
   input, drops the resources WhateverPad acquired, and finishes inside a fixed budget.
-- Stopping must be predictable. Stop from the page, or rest mode on its way, ends the run
-  cleanly; a stuck teardown gives up after ten seconds rather than holding the chip
-  (`src/ps5_main.c:T_STOP_MAX_S`, `src/ps5_main.c:on_stop_timeout`).
+- Stopping must be predictable. Today page Stop sets a flag and detected rest mode breaks
+  the outer loop. Only after that loop exits does a ten-second alarm guard shutdown
+  (`src/ps5_main.c:main`, `src/ps5_main.c:T_STOP_MAX_S`); its fallback unlinks the session
+  store and exits (`src/ps5_main.c:on_stop_timeout`). This is not a measured request-to-exit
+  bound or proof of complete cleanup; the single release budget is planned in todos 4
+  and 13 to 15.
 
 ## 6. Approved trade-offs
 
@@ -95,9 +103,9 @@ These four decisions were approved with the product and are not open questions. 
 
 | Trade-off | What it means | State on this tree |
 | --- | --- | --- |
-| Native-first terminal release ends bridged input but preserves bonds | Under both policies the release ends bridged input and keeps the pairings. Under the default `NO_RESTORE` policy it issues no controller-side undo and no Disconnect: the radio links are left for the controllers or the user to drop, and the page and the log say so. Only a probe-enabled `SINGLE_PRODUCER` policy may issue a guarded Disconnect | Planned: todos 4, 13 to 16. Today the call is left to the system and events yield for 30 s (`src/host.c:on_event`, `src/host_int.h:T_YIELD`) |
+| Native-first terminal release ends bridged input but preserves bonds | Under both policies the release ends bridged input and keeps the pairings. Under the default `NO_RESTORE` policy it issues no controller-side undo and no Disconnect: the radio links are left for the controllers or the user to drop, and the page and the log say so. Only a probe-enabled `SINGLE_PRODUCER` policy may issue a guarded Disconnect | Planned: todos 4, 13 to 16. Today an unknown request is left unanswered and event reads may yield for 30 s, subject to section 5's conditions (`src/host.c:on_event`, `src/host_int.h:T_YIELD`) |
 | Manual payload relaunch is required after native release and rest | The payload does not resurrect itself | Partly today: rest mode stops the payload and asks for a relaunch (`src/ps5_main.c:main`, `src/ps5_power.c:power_state`) |
-| Automatic reconnect means reconnect while the service owns an active transport, not reacquisition after terminal release | The bridge keeps pairing state alive during a run; it does not silently take the radio back later | The call path for a known pad exists (`src/host.c:on_event`, `src/host.c:host_pair`); durable reconnect after relaunch is planned: todos 17 to 19 |
+| Automatic reconnect means reconnect while the service owns an active transport, not reacquisition after terminal release | The bridge keeps pairing state alive during a run; it does not silently take the radio back later | The inbound call path for a known pad exists (`src/host.c:on_event`); durable reconnect after relaunch is planned: todos 17 to 19 |
 | No automatic resident resume and no external-loader integration | WhateverPad starts when a person starts it | Planned: no work in this plan adds either |
 
 Release is stated as amended: OP:62's "disconnects every bridged pad" means the bridged input
@@ -113,14 +121,14 @@ ambiguity revokes it.
 | --- | --- | --- | --- |
 | Pair a controller | Pair, put the pad in pairing mode, choose Quick Play / Guest | Works | `src/host.c:host_pair`, `README.md` |
 | Use the pad | Input reaches games, menus, and emulators as a virtual DualSense | Works for the verified pads | `src/ps5_vpad.c:vpad_update`, `src/profiles.c:k_profiles` |
-| Reconnect within a run | A known pad that calls in is taken without re-pairing | Works while the run owns the transport | `src/host.c:on_event` |
-| Reconnect after a relaunch | Pair once, then reconnect from power-on | Not yet: the session store is deleted at startup and at stop (`src/ps5_main.c:main`, `src/ps5_main.c:on_signal`) | Planned: todos 17 to 19 |
-| Forget | Remove a controller and its credentials | Works, and also drops its link (`src/host.c:host_forget`); the split into Connect, Disconnect, and Forget is planned: todos 20, 21, 24 | `src/host.c:host_forget` |
+| Reconnect within a run | A known pad that calls in is taken without re-pairing | The inbound Classic path accepts a known pad when a slot is available; that path is not new hardware verification | `src/host.c:on_event` |
+| Reconnect after a relaunch | Pair once, then reconnect from power-on | Not yet: the session store is deleted at startup and at stop (`src/ps5_main.c:main`, `src/ps5_main.c:on_stop_timeout`) | Planned: todos 17 to 19 |
+| Forget | Remove a controller and its credentials | Removes the local bond, requests a link drop, and may send Classic virtual-cable unplug; it does not confirm remote key erasure. The split into Connect, Disconnect, and Forget is planned: todos 20, 21, 24 | `src/host.c:host_forget` |
 | Disconnect without forgetting | Keep credentials, stop automatic reconnects until asked | Not yet | Planned: todos 20, 21, 24 |
-| Stop | Always stop from the page before power-off or relaunch | Works, with a ten-second cap | `src/ps5_main.c:T_STOP_MAX_S`, `src/web.c:handle` |
-| Rest mode | Stop before rest and say that a relaunch is needed | Works | `src/ps5_main.c:main`, `src/ps5_power.c:power_state` |
+| Stop | Always stop from the page before power-off or relaunch | Sets a stop flag; shutdown has the post-loop alarm described in section 5, not a complete-cleanup guarantee | `src/ps5_main.c:main`, `src/web.c:handle` |
+| Rest mode | Stop before rest and say that a relaunch is needed | Detected rest state breaks the loop and notifies that relaunch is needed; it uses the same shutdown path and limits | `src/ps5_main.c:main`, `src/ps5_power.c:power_state` |
 | Settings | Per-model PS combination; menu hotkey and hold time | The per-model combination works. The `config.ini` parser and the hotkey module exist, but the payload calls neither, so menu hotkey and hold time are not operating settings | `src/config.c:pscombo_set`, `src/config.c:pscombo_load`, `src/config.c:config_load`, `src/hotkey.c:hotkey_update`, `src/ps5_main.c:main` |
-| Diagnostics | State, live view, log, tuning, raw HCI for development | Works, with the limits in section 9 | `src/web.c:api_state`, `src/web.c:api_live`, `src/web.c:api_log`, `src/web.c:api_hci` |
+| Diagnostics | Input/state view, incremental logs, file log tail, tuning, raw HCI for development | Input uses `/api/state`; `/api/live` returns in-memory log lines with a sequence cursor; `/api/log` tails the configured file. Limits are in section 9 | `src/web.c:api_state`, `src/web.c:api_live`, `src/web.c:api_log`, `src/web.c:api_hci` |
 
 Nothing in this table says that a planned capability exists. When a todo lands, move the
 row from "planned" to "works" with a citation and a test, not before.
@@ -144,8 +152,8 @@ row from "planned" to "works" with a citation and a test, not before.
   `src/web.c:web_start`). The approved posture is loopback by default, with LAN access as
   an explicit opt-in (planned: todo 21). Either way, treat LAN control as trusted-LAN
   control: it has no authentication and no encryption.
-- Mutations require the `X-WhateverPad: 1` header that only the page sends, and requests
-  must carry a literal Host header (`src/web.c:handle`, `src/web.c:host_is_literal`).
+- Mutations require the `X-WhateverPad: 1` header, and requests must carry an IPv4-literal
+  or localhost Host header (`src/web.c:handle`, `src/web.c:host_is_literal`).
   That defends against a hostile web page in a browser on the same network; it does not
   stop someone who can talk to the port directly.
 - Developer surfaces exist today: `/api/tune` and `/api/hci` can change Bluetooth

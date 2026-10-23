@@ -27,8 +27,8 @@ One C11 payload, one thread, one event loop (`src/ps5_main.c:main`). The payload
 - stops on request, on SIGTERM/SIGINT/SIGHUP, or when rest mode starts
   (`src/ps5_main.c:on_signal`, `src/ps5_power.c:power_state`).
 
-There is no framework, no thread pool, and no coroutine layer. Blocking work is done in
-bounded waits inside the loop.
+There is no framework, no thread pool, and no coroutine layer. Polling is mixed with
+timed synchronous waits; that does not establish an overall request-to-exit bound.
 
 ## 2. Boot, loop, and shutdown
 
@@ -39,22 +39,27 @@ bounded waits inside the loop.
 2. Take the instance lock and clear a stale stop flag (`src/ps5_main.c:main`).
 3. Delete the session bond file, because this build keeps pads for one run only
    (`src/ps5_main.c:main`; see section 12).
-4. Start the page before touching Bluetooth, so the page can explain a later failure
-   (`src/web.c:web_start`).
+4. Load per-model PS combinations and start the page before touching Bluetooth
+   (`src/config.c:pscombo_load`, `src/web.c:web_start`). If bind/listen fails, there is no
+   WhateverPad page: the listener logs the failure, closes/frees its state and returns
+   NULL; main notifies the console. Later Bluetooth failures can appear on the page
+   only if its listener is running.
 5. Install or remove the Media row entry (`src/ps5_apps.c:apps_install_launcher`,
    `src/launcher.c:launcher_write`).
-6. Raise credentials and create the virtual-pad layer (`src/ps5_vpad.c:vpad_init`). If
-   that fails, Bluetooth is never opened and the page says why
+6. Raise credentials and initialise the virtual-pad layer (`src/ps5_vpad.c:vpad_init`). If
+   that fails, Bluetooth is never opened; the log/notification and an available page say why
    (`src/ps5_main.c:main`).
 7. Loop until stop: poll the host, poll the page, poll the virtual pads, re-open the page
    if the console address changed, notice rest mode, retry Bluetooth on request, and
    handle the `pair`/`stop` flag files (`src/host.c:host_poll`, `src/web.c:web_poll`,
    `src/ps5_vpad.c:vpad_poll`, `src/ps5_main.c:main`).
-8. Shut down behind a ten-second alarm: stop the page, close the host, delete the session
-   bond file, restore credentials, release the lock
-   (`src/ps5_main.c:T_STOP_MAX_S`, `src/ps5_main.c:on_signal`,
+8. Only after the outer loop exits, arm a ten-second shutdown alarm: stop the page, close
+   the host, delete the session bond file, attempt credential restoration, release the lock
+   (`src/ps5_main.c:T_STOP_MAX_S`, `src/ps5_main.c:main`,
    `src/ps5_vpad.c:vpad_creds_restore`). If the alarm fires first,
-   `src/ps5_main.c:on_stop_timeout` deletes the bond file and exits.
+   `src/ps5_main.c:on_stop_timeout` deletes the bond file and exits. Stop can be requested
+   during a nested host wait, before this alarm exists. It is a fallback for shutdown,
+   not a measured ten-second request-to-exit bound or proof that all resources were cleaned.
 
 ## 3. Bluetooth transport
 
@@ -94,10 +99,12 @@ The per-link state lives in `src/host_int.h:link_t`, inside the host structure d
 the same file. The caller-facing contract is `src/host.h:host_events` and the `host_*`
 functions in `src/host.h`.
 
-One behaviour matters for the native-first rule: a connection request for a controller
-WhateverPad does not know leaves the call to the system and then yields event reads for
-30 seconds (`src/host.c:on_event`, case `0x04`; `src/host_int.h:T_YIELD`). ACL reads keep
-running. That yield is the limit tracked as GAP-1.
+One behaviour matters for the native-first rule: an ACL connection request with neither
+a known bond nor a live link is left unanswered (`src/host.c:on_event`, case `0x04`).
+Event reads yield for 30 seconds only if the transport supports yielding, the pairing
+window has ended, no pairing request is pending, no link is being set up, and the yield
+rate limit allows (`src/host_int.h:T_YIELD`). ACL reads keep running; the consumed request
+is not replayed. That conditional yield is the limit tracked as GAP-1.
 
 ## 5. LE host
 
@@ -124,51 +131,55 @@ A profile turns one controller family's bytes into those structures and back.
   protocol it speaks.
 - A pad with no matching profile is read from its own HID descriptor by
   `src/generic.c:generic_setup`, with built-in mappings for layouts that differ from the
-  default (`src/generic.c:k_builtin`) and an optional per-device map file. The format and
+  default (`src/generic.c:k_builtin`) and an optional per-model VID/PID map file. The format and
   an example are in `maps/EXAMPLE.map`.
 - A profile can carry an init or wake sequence and an output writer, which is why the
   table has more fields than parse and encode. Profiles are selected once per link, not
   per report.
 
 Adding a family means a new row in `src/profiles.c:k_profiles`, its parse and output
-functions, ids, and a simulator test in `tests/test_profiles.c` or `tests/test_compat.c`.
+functions, ids, and coverage in the profile unit tests (`tests/test_profiles.c`) or the
+simulator compatibility tests (`tests/test_compat.c`).
 
 ## 7. Virtual pad and console integration
 
 The console receives a virtual DualSense, so the real pad never has to be a Sony device.
 WhateverPad builds that device itself:
 
-- `src/ps5_vpad.c:vpad_init` raises credentials, loads the needed system libraries, and
-  reports whether virtual pads are possible at all.
-- `src/ps5_vpad.c:vpad_add` asks for a pad for a slot. Creation and identification happen
-  without blocking the loop; `src/ps5_vpad.c:vpad_poll` advances that work and
+- `src/ps5_vpad.c:vpad_init` raises credentials and loads the required system interface;
+  its success does not establish that an individual virtual pad is ready.
+- `src/ps5_vpad.c:vpad_add` queues a pad for a slot.
+  `src/ps5_vpad.c:vpad_poll` advances creation and kernel-log identification, and
   `src/ps5_vpad.c:vpad_live` reports when the pad is usable.
 - `src/ps5_vpad.c:vpad_update` feeds pad state, `src/ps5_vpad.c:vpad_press_ps` taps PS for
-  the page's button, and `src/ps5_vpad.c:vpad_remove` deletes the pad.
-- `src/ps5_vpad.c:vpad_creds_restore` puts the process credentials back on shutdown.
+  the page's button, and `src/ps5_vpad.c:vpad_remove` handles removal requests (including
+  deferred removal during pending identification).
+- `src/ps5_vpad.c:vpad_creds_restore` attempts to put the process credentials back on shutdown
+  and reports failure through its return value and log.
 
-Around it: `src/ps5_ui.c:ui_open_browser` opens the page,
+Around it: `src/ps5_ui.c:ui_open_browser` is a browser-opening helper with no payload caller;
+the installed launcher's deeplink opens the page.
 `src/ps5_apps.c:apps_install_launcher` registers the Media row entry,
 `src/launcher.c:launcher_write` writes its `param.json` and icon, and
-`src/ps5_sysinfo.c:sysinfo_log` records the console model and software version.
+`src/ps5_sysinfo.c:sysinfo_log` records the firmware version and non-system process names.
 `src/hotkey.c:hotkey_update` implements menu-combination detection, but nothing in the
 payload calls it, and the comment in `src/ps5_main.c` that describes a console hotkey is
 stale.
 
 ## 8. Configuration, bonds, and files
 
-Everything the payload persists lives under `/data/whateverpad`
-(`src/ps5_main.c:STATE_DIR`):
+Runtime data uses `/data/whateverpad` (`src/ps5_main.c:STATE_DIR`); the launcher files
+instead live under `/user/app` (`src/launcher.h:LAUNCHER_APP_ROOT`):
 
-| File | Written by | Notes |
+| File | Code / actor | Notes |
 | --- | --- | --- |
-| `whateverpad.log` | `src/log.c:log_line` | Tail served at `/api/log` through `src/log.c:log_since` |
-| `config.ini` | `src/config.c:config_load` | Parser for `menu_combo` and `menu_hold_ms`; no production code calls it, so these are not operating settings in this build |
+| `whateverpad.log` | `src/log.c:log_line` | `/api/log` reads the configured file tail through `src/web.c:api_log`; `/api/live` instead reads the in-memory line ring through `src/log.c:log_since` |
+| `config.ini` | User-supplied; `src/config.c:config_load` reads, not writes | Parser for `menu_combo` and `menu_hold_ms`; no production code calls it, so these are not operating settings in this build |
 | `ps_combos.txt` | `src/config.c:pscombo_set` | One PS-button combination per controller model; loaded at startup with `src/config.c:pscombo_load` and set from the page |
 | `pads.db` | `src/bond_store.c:bond_store_save` | Versioned, adapter-bound bond store; deleted at startup and stop by design in this build |
 | `whateverpad.lock` | `src/lock.c:lock_take` | Single-instance guard |
-| `pair`, `stop`, `no_icon`, `remove_icon` | `src/ps5_main.c:check_flags` and `main` | Small request files used by tooling and the launcher flow |
-| `maps/` | user | Per-device generic mappings, format in `maps/EXAMPLE.map` |
+| `pair`, `stop`, `no_icon`, `remove_icon` | User/tooling creates; `src/ps5_main.c:check_flags` and `main` consume | Small request files for pairing, stopping, and launcher control |
+| `maps/` | user | Per-model VID/PID generic mappings, format in `maps/EXAMPLE.map` |
 
 The bond store is a real module even though this build discards the file each run:
 fixed-size records (`src/bond_store.h:BOND_MAX`), a 64-byte header, encode and decode
@@ -189,20 +200,29 @@ One page, embedded in the payload, and a small JSON API.
 - `src/web.c:web_start` binds port 8095 on all interfaces and serves the embedded page.
   `src/web.c:web_poll` accepts and completes requests. The page is re-served if the
   console address changes or the listener dies (`src/ps5_main.c:main`,
-  `src/netinfo.c:local_ip`).
+  `src/netinfo.c:local_ip`). Rebind failures are logged and retried by the outer loop;
+  `src/web.c:web_poll` does nothing while its listener pointer is NULL.
 - Routes are matched in `src/web.c:handle`: `GET /api/state`, `GET /api/live`,
   `GET /api/log`, `GET /api/tune`, `POST /api/tune`, `POST /api/hci`, `POST /api/pair`,
   `POST /api/forget`, `POST /api/ps`, `POST /api/pscombo`, `POST /api/retry`,
   `POST /api/stop`.
-- `src/web.c:api_state` serialises the snapshot the page renders, `src/web.c:api_live`
-  serves the live input view, `src/web.c:api_log` tails the log, and `src/web.c:api_hci`
-  exposes one raw command for development.
-- Every mutation needs the `X-WhateverPad: 1` header and a literal Host header
+- `src/web.c:api_state` serialises the snapshot, including input from
+  `src/host.c:host_pad_get`. The page's `refresh` fetches `/api/state` and passes its pads
+  to `renderPads` in `web/index.html`.
+- `src/web.c:api_live` serves incremental in-memory log lines from `src/log.c:log_since`:
+  `?from=N` selects the sequence cursor and the plain-text response begins with `#next N`.
+  `tools/live.sh` uses this stream for `watch`, not for the input view.
+- `src/web.c:api_log` opens the configured log path with `fopen`, seeks to its tail and
+  reads it with `fread`, returning plain text; it does not use the in-memory ring.
+  `src/web.c:api_hci` exposes one raw command for development.
+- Every mutation needs the `X-WhateverPad: 1` header; every request needs an IPv4-literal
+  or localhost Host header
   (`src/web.c:handle`, `src/web.c:host_is_literal`). This is CSRF defence for a hostile
   page in a browser on the same network, not authentication.
 - `src/web.h:web_cfg` is the channel through which the page reaches the rest of the
   payload: host pointer, stop and retry flags, Bluetooth state and reason, log path,
-  version, language, chip name, PS-button callbacks, and a physical-pad reader.
+  version, language, chip name and PS-button callbacks. It also defines optional
+  physical-pad-reader and menu-combination fields, but main leaves those unset.
 
 The current page is a desktop dashboard: a 236 px sidebar and a radar pairing box
 (`web/index.html`, `.shell` and `.radar` rules, views `#v-home`, `#v-padsv`, `#v-guide`,
@@ -220,7 +240,7 @@ exercise production code rather than a copy.
 | LE simulator | `tests/sim_le.c:sim_le_new` | Advertisements, connection, SMP, GATT, delayed and injected events |
 | Resource counters | `tests/sim_lifetime.h:sim_lifetime` | Opens, stops, uninits, closes, and reads |
 | USB stand-in | `tests/usb_standin/dev/usb/usb.h` | Real `hci_usb.c` against a fake ioctl surface |
-| Expected failures | `tests/test_session.c:expected_failure` | Regression cases that must keep failing until their fix lands |
+| Expected failures | `tests/test_session.c:expected_failure` | Known lifecycle gaps reported separately; strict mode fails while they remain unresolved |
 
 `Makefile:test` builds and runs the binaries: bond store, HearBridge, USB descriptor,
 USB transport, session, lock, config, virtual pad, crypto, profiles, host, LE,
@@ -244,7 +264,7 @@ one recipe plus `make sanitize`, `make check-generated`, and CI is planned: todo
 | Console glue | `src/ps5_ui.c`, `src/ps5_apps.c`, `src/launcher.c`, `src/hotkey.c`, `src/ps5_power.c`, `src/ps5_sysinfo.c` | Browser, launcher entry, menu-combination module (not wired), rest mode, info log | `src/launcher.h:LAUNCHER_TITLE_ID`, `src/ps5_power.c:power_state`, `src/hotkey.c:hotkey_update` |
 | Settings | `src/config.c` | `config.ini` parser (not wired) and per-model PS combinations (loaded at startup) | `src/config.c:config_load`, `src/config.c:pscombo_load` |
 | Bonds | `src/bond_store.c` | Versioned credential store with adapter validation and atomic save | `src/bond_store.c:bond_store_save` |
-| Page and API | `src/web.c`, `src/web.h`, `web/index.html`, `src/web_page.c`, `src/icon_data.c` | HTTP, routes, embedded page and icon | `src/web.c:handle`, `src/web.c:api_state` |
+| Page and API | `src/web.c`, `src/web.h`, `web/index.html`, `src/web_page.c`, `src/icon_data.c` | HTTP, routes, embedded page and launcher icon | `src/web.c:handle`, `src/web.c:api_state` |
 | Support | `src/log.c`, `src/lock.c`, `src/netinfo.c`, `src/util.c`, `src/version.h` | Log file with rotation and a live line buffer, lock, local address, helpers, version | `src/log.c:log_since`, `src/netinfo.c:local_ip` |
 | Tests and build | `tests/`, `Makefile`, `ps5.mk`, `tools/build-elf-docker.sh` | Simulators, binaries, payload recipe | `tests/sim.c:sim_new`, `tests/sim_le.c:sim_le_new`, `ps5.mk:SRCS` |
 
@@ -253,12 +273,14 @@ one recipe plus `make sanitize`, `make check-generated`, and CI is planned: todo
 These are properties of this tree, not opinions. Each one is the gap a later todo closes.
 
 - Pairing does not survive a relaunch. The store is unlinked at startup and at stop
-  (`src/ps5_main.c:main`, `src/ps5_main.c:on_signal`). Reconnect is planned: todos 17 to 19.
-- A connection request for an unknown controller costs 30 seconds of event yield
+  (`src/ps5_main.c:main`, `src/ps5_main.c:on_stop_timeout`). Reconnect is planned: todos 17 to 19.
+- An unknown connection request is consumed without full release and can trigger the
+  conditional 30-second event yield in section 4
   (`src/host.c:on_event`, `src/host_int.h:T_YIELD`). Native-first terminal release is
   planned: todos 4, 13 to 16.
-- Forget removes the bond and drops the link in one action
-  (`src/host.c:host_forget`). Separate Connect, Disconnect, and Forget are planned:
+- Forget commits local bond removal and requests disconnection in one action; a linked
+  Classic pad may also receive virtual-cable unplug (`src/host.c:host_forget`).
+  Success does not confirm remote key erasure. Separate Connect, Disconnect, and Forget are planned:
   todos 20, 21, 24.
 - Cleanup authority is spread over independent flags in `host.c`, `le.c`, and
   `ps5_vpad.c`, and some lifecycle cases are still registered as expected failures
