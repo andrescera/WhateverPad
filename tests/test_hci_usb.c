@@ -3,6 +3,7 @@
 #include "../src/attrib.h"
 #include "../src/util.h"
 #include "usb_standin/dev/usb/usb_ioctl.h"
+#include "usb_standin/receipt.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -39,20 +40,9 @@ static struct {
     int last_plen;
     void (*start_hook)(void *);
     void *start_ud;
-    own_provenance last_receipt;
-    unsigned receipt_calls;
 } usb;
 static long clock_ms;
 static long clock_now(void) { return clock_ms; }
-
-/* Observe the real producer; never replace its receipt or provenance. */
-own_provenance test_usb_receipt(own_ledger *l, const own_ack *ack, uint64_t now,
-                                own_receipt *receipt)
-{
-    usb.receipt_calls++;
-    usb.last_receipt = own_backend_receipt(l, ack, now, receipt);
-    return usb.last_receipt;
-}
 
 static void record(const char *name, int index)
 {
@@ -77,6 +67,7 @@ static void reset(void)
 {
     assert(!usb.fd_open);
     memset(&usb, 0, sizeof usb);
+    memset(&test_usb_receipts, 0, sizeof test_usb_receipts);
     usb.fail_index = -1;
     clock_ms = 1000;
     ph_clock_hook = clock_now;
@@ -1133,10 +1124,10 @@ static void test_actual_receipt_provenance_reaches_classifier(void)
         prepare(l, 0x1009, NULL, 0, &token);
         CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
         receive_event(h, nop, sizeof nop);
-        CHECK(usb.last_receipt == OWN_RECEIPT_NONE && usb.receipt_calls == 1);
+        CHECK(test_usb_receipts.last == OWN_RECEIPT_NONE && test_usb_receipts.calls == 1);
         CHECK(attrib_get()->classes[ATTRIB_NOP] == 1 && attrib_get()->unanswered == 1);
         acknowledge(h, 0x1009, 0, 0);
-        CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED && usb.receipt_calls == 2);
+        CHECK(test_usb_receipts.last == OWN_RECEIPT_SEQUENCED && test_usb_receipts.calls == 2);
         CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
         CHECK(classified_answers() == 2);
         own_snapshot(l, &summary);
@@ -1164,16 +1155,16 @@ static void test_actual_receipt_provenance_reaches_classifier(void)
         } else acknowledge(h, 0x1009, 1, 0);
         own_snapshot(l, &summary);
         CHECK(summary.ambiguity_count > 0);
-        unsigned before = classified_answers(), receipts = usb.receipt_calls;
+        unsigned before = classified_answers(), receipts = test_usb_receipts.calls;
         CHECK(usb.busy[1]); /* The reply arrives on a genuinely retained read. */
         completion(1, answer, sizeof answer);
         CHECK(h.ops->pump(h.ctx, 0) == 1);
         CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof answer);
         CHECK(!memcmp(out, answer, sizeof answer));
-        CHECK(usb.last_receipt == OWN_RECEIPT_NONE && usb.receipt_calls == receipts + 1);
+        CHECK(test_usb_receipts.last == OWN_RECEIPT_NONE && test_usb_receipts.calls == receipts + 1);
         CHECK(classified_answers() == before + 1);
         printf("NONE_CLASSIFIER mode=%u provenance=%d solicited=%lu unanswered=%lu ambiguities=%u\n",
-               mode, usb.last_receipt, attrib_get()->classes[ATTRIB_SOLICITED],
+               mode, test_usb_receipts.last, attrib_get()->classes[ATTRIB_SOLICITED],
                attrib_get()->unanswered, summary.ambiguity_count);
         violations += attrib_get()->classes[ATTRIB_SOLICITED] != 0 ||
                       attrib_get()->unanswered != 1;
@@ -1208,7 +1199,7 @@ static void test_credit_only_events_leave_command_lane_untouched(void)
                 receive_event(h, form ? cs : cc, form ? sizeof cs : sizeof cc);
                 updates++;
                 own_snapshot(l, &summary);
-                CHECK(usb.last_receipt == OWN_RECEIPT_NONE);
+                CHECK(test_usb_receipts.last == OWN_RECEIPT_NONE);
                 CHECK(attrib_get()->classes[ATTRIB_NOP] == updates);
                 CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0);
                 CHECK(attrib_get()->unanswered == (waiting != 0) && usb.commands == (waiting != 0));
@@ -1227,7 +1218,7 @@ static void test_credit_only_events_leave_command_lane_untouched(void)
         violations += failed;
         if (!failed && waiting) {
             acknowledge(h, waiting == 1 ? 0x1009 : 0x0401, waiting != 1, 0);
-            CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED);
+            CHECK(test_usb_receipts.last == OWN_RECEIPT_SEQUENCED);
             CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
             if (waiting == 2) {
                 own_terminal_event terminal = {.kind = OWN_TERM_INQUIRY};
@@ -1258,15 +1249,15 @@ static void test_unassociated_events_do_not_answer_commands(void)
         prepare(l, 0x1009, NULL, 0, &token);
         CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
         for (unsigned i = 0; i < sizeof packets / sizeof packets[0]; i++) {
-            unsigned before = usb.receipt_calls;
+            unsigned before = test_usb_receipts.calls;
             receive_event(h, packets[i], 2 + packets[i][1]);
             own_snapshot(l, &summary);
-            CHECK(usb.receipt_calls == before && summary.ambiguity_count == 0);
+            CHECK(test_usb_receipts.calls == before && summary.ambiguity_count == 0);
             CHECK(own_next_hci(l, (uint64_t)clock_ms, &next) == OWN_BUSY);
             CHECK(attrib_get()->unanswered == 1 && attrib_get()->classes[ATTRIB_SOLICITED] == 0);
         }
         acknowledge(h, 0x1009, 0, 0);
-        CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED && attrib_get()->unanswered == 0);
+        CHECK(test_usb_receipts.last == OWN_RECEIPT_SEQUENCED && attrib_get()->unanswered == 0);
         closed_once(h); own_free(l);
     }
 }
@@ -1287,23 +1278,23 @@ static void test_credit_reassembly_and_real_response(void)
         prepare(l, 0x1009, NULL, 0, &token);
         CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
         h.ops->pump(h.ctx, 0); completion(0, cs, 3);
-        CHECK(h.ops->pump(h.ctx, 0) == 0 && usb.receipt_calls == 0);
+        CHECK(h.ops->pump(h.ctx, 0) == 0 && test_usb_receipts.calls == 0);
         h.ops->pump(h.ctx, 0); completion(0, cs + 3, 3);
         CHECK(h.ops->pump(h.ctx, 0) == 1);
         CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof cs && !memcmp(out, cs, sizeof cs));
-        CHECK(usb.last_receipt == OWN_RECEIPT_NONE && usb.receipt_calls == 1);
+        CHECK(test_usb_receipts.last == OWN_RECEIPT_NONE && test_usb_receipts.calls == 1);
         CHECK(own_next_hci(l, (uint64_t)clock_ms, &next) == OWN_BUSY);
         memcpy(batch, cc, sizeof cc);
         memcpy(batch + sizeof cc, extra, sizeof extra);
         memcpy(batch + sizeof cc + sizeof extra, answer, sizeof answer);
         h.ops->pump(h.ctx, 0); completion(0, batch, sizeof batch);
-        CHECK(h.ops->pump(h.ctx, 0) == 1 && usb.receipt_calls == 4);
+        CHECK(h.ops->pump(h.ctx, 0) == 1 && test_usb_receipts.calls == 4);
         CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof cc && !memcmp(out, cc, sizeof cc));
         CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof extra && !memcmp(out, extra, sizeof extra));
         CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof answer && !memcmp(out, answer, sizeof answer));
         own_snapshot(l, &summary);
         CHECK(summary.credit_nops == 3 && summary.ambiguity_count == 0);
-        CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED);
+        CHECK(test_usb_receipts.last == OWN_RECEIPT_SEQUENCED);
         CHECK(attrib_get()->classes[ATTRIB_NOP] == 3 &&
               attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
         closed_once(h); own_free(l);
