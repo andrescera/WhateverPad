@@ -77,8 +77,8 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
-	cc $(HOST_CFLAGS) -Itests/usb_standin -Dopen=test_usb_open -Dclose=test_usb_close -Dioctl=test_usb_ioctl -Dusleep=test_usb_usleep -c -o $@ $<
+$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h | $(BUILD)
+	cc $(HOST_CFLAGS) -Itests/usb_standin -include tests/usb_standin/syscalls.h -c -o $@ $<
 
 $(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
