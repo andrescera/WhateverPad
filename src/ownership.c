@@ -1556,3 +1556,21 @@ void own_observe_disconnect(own_ledger *l, uint16_t handle, uint64_t now)
             own_disconnected(l, p->ref, handle, now);
     }
 }
+
+void own_observe_connection(own_ledger *l, uint8_t le, uint8_t address_type,
+                            const uint8_t address[6], uint16_t handle, uint8_t status,
+                            uint64_t now)
+{
+    for (unsigned i = 0; i < OWN_LINK_MAX; i++) {
+        own_link *p = &l->links[i];
+        own_record *r = record(l, p->owner);
+        if (!r || !r->sent || commands[r->desc].class != CREATE ||
+            !same_link(p->ref, r->c.link) || r->c.peer.le != le ||
+            r->c.peer.address_type != address_type ||
+            memcmp(r->c.peer.wire, address, 6)) continue;
+        own_terminal_event terminal = {
+            .kind = OWN_TERM_CONNECTION, .peer = r->c.peer, .handle = handle, .status = status
+        };
+        own_terminal(l, r->ref, &terminal, now);
+    }
+}

@@ -3,6 +3,7 @@
 #define WP_ATTRIB_H
 
 #include <stddef.h>
+#include "ownership.h"
 
 #ifndef WHATEVERPAD_PROBE
 #define WHATEVERPAD_PROBE 0
@@ -37,5 +38,10 @@ const attrib_counts *attrib_get(void);
  * reports omitted rows. Non-solicited samples retain the first 64 arrivals. */
 size_t attrib_json(char *out, size_t capacity);
 void attrib_log_summary(void);
+
+/* NONE is unmatched authority: count the observation without answering a
+ * pending local command. NOP/malformed observations keep their wire classes. */
+enum attrib_class attrib_observe_receipt(const unsigned char *, int len, long now,
+                                         own_provenance);
 
 #endif

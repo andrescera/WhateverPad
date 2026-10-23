@@ -237,12 +237,20 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
     usb_ctx *c = ctx;
 
     if (c->ledger) {
-        attrib_observe(ev, len, now_ms());
+        long now = now_ms();
+        if (ev[0] != OWN_CC && ev[0] != OWN_CS) attrib_observe(ev, len, now);
+        if (ev[0] == 3 && len == 13 && ev[11] == 1)
+            own_observe_connection(c->ledger, 0, 0, ev + 5, (uint16_t)le16(ev + 3),
+                                   ev[2], (uint64_t)now);
+        if (ev[0] == 0x3e && len >= 3 &&
+            ((ev[2] == 1 && len == 21) || (ev[2] == 0x0a && len == 33)))
+            own_observe_connection(c->ledger, 1, ev[7], ev + 8, (uint16_t)le16(ev + 4),
+                                   ev[3], (uint64_t)now);
         if (ev[0] == 5) {
             if (len != 6 || le16(ev + 3) >= 0x0f00)
-                own_detector_trip(c->ledger, (uint64_t)now_ms());
+                own_detector_trip(c->ledger, (uint64_t)now);
             else if (!ev[2])
-                own_observe_disconnect(c->ledger, (uint16_t)le16(ev + 3), (uint64_t)now_ms());
+                own_observe_disconnect(c->ledger, (uint16_t)le16(ev + 3), (uint64_t)now);
         }
         if (ev[0] == OWN_CC || ev[0] == OWN_CS) {
             own_ack a = {.event = (own_ack_event)ev[0]};
@@ -260,8 +268,9 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
                     if (a.random_len == 8) memcpy(a.random, ev + 6, 8);
                 }
             }
-            own_backend_receipt(c->ledger, &a, (uint64_t)now_ms(), &receipt);
-            own_receive(c->ledger, &receipt, (uint64_t)now_ms());
+            own_provenance provenance = own_backend_receipt(c->ledger, &a, (uint64_t)now, &receipt);
+            attrib_observe_receipt(ev, len, now, provenance);
+            own_receive(c->ledger, &receipt, (uint64_t)now);
         }
     }
     c->events_seen++;

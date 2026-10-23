@@ -167,4 +167,10 @@ own_result own_commit_hci(own_ledger *, const own_token *, uint64_t now,
 /* Wire observation revokes an existing lease before any output can be committed. */
 void own_observe_disconnect(own_ledger *, uint16_t handle, uint64_t now);
 
+/* Retain a wire terminal for the current submitted Create/Accept generation
+ * before queued dispatch; a later wire disconnect then remains a durable veto. */
+void own_observe_connection(own_ledger *, uint8_t le, uint8_t address_type,
+                            const uint8_t address[6], uint16_t handle, uint8_t status,
+                            uint64_t now);
+
 #endif
