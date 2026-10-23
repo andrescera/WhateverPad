@@ -7,9 +7,9 @@ the start-up notification, on the web page, and in the binary
 
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
-The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `AI-WORKFLOW.md` (how to work on WhateverPad with an AI assistant: connect to the running program, watch the log in real time, change live settings, add a controller, test it and report it), `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
+The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
 
-Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo nuevo es que **todo el código fuente es público** (GPL-3.0-or-later), con `AI-WORKFLOW.md` (cómo trabajar en WhateverPad con un asistente de IA: conectarse al programa en marcha, ver el log en tiempo real, cambiar ajustes en caliente, añadir un mando, probarlo e informar), `tools/live.sh` (las órdenes para hablar con WhateverPad por la red local) y una plantilla de incidencias para informes de mandos.
+Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo nuevo es que **todo el código fuente es público** (GPL-3.0-or-later), con `tools/live.sh` (las órdenes para hablar con WhateverPad por la red local) y una plantilla de incidencias para informes de mandos.
 
 ## 0.9.1-beta (12 octubre 2026)
 
@@ -343,8 +343,7 @@ First build after the first run on a console.
   before `scePadInit` and its failure was fatal. On the console it answers
   `0x80920005` (`SCE_PAD_ERROR_NOT_INITIALIZED`) when called first. Now
   `scePadInit` goes first and a privilege answer other than 0 is only a
-  warning. Details in
-  [PRUEBAS.md](PRUEBAS.md#registro-de-pruebas-en-consola).
+  warning. Details in `PRUEBAS.md`.
 - Renamed from "padhost" to **WhateverPad PS5**. The data folder is now
   `/data/whateverpad` (log `whateverpad.log`, flags `pair` and `stop`). The old
   `/data/padhost` is not used any more and can be deleted by hand.
