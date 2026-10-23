@@ -63,6 +63,8 @@ int main(void)
         sim_set_report(sim, pad.report, 78);
         host_poll(h, 5);
         web_poll(w);
+        web_action action;
+        while (web_take_pending(w, &action)) web_apply_pending(w, action);
         usleep(5000);
     }
     web_stop(w);

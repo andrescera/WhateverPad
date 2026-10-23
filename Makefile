@@ -144,6 +144,7 @@ quick:
 	$(MAKE) fuzz check-generated
 	$(MAKE) test-attrib BUILD=build/probe WHATEVERPAD_PROBE=1
 	$(MAKE) check-mutations OWN_EXPLORE=0
+	$(MAKE) check-integration check-integration-mutations
 
 fuzz: | $(BUILD)
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
@@ -228,4 +229,25 @@ check-mutations: test-ownership
 	  first=""; while IFS= read -r line; do case $$line in FAIL*) first=$$line; break;; esac; done < $(BUILD)/mutation-$$id.log; \
 	  if [ -z "$$first" ]; then printf '%s exited 1 without a test failure\n' "$$id"; exit 1; fi; \
 	  printf '%s killed (exit 1): %s\n' "$$id" "$$first"; \
+	done
+
+.PHONY: test-integration test-integration-oracle check-integration check-integration-mutations
+test: test-integration
+ci: check-integration check-integration-mutations
+INTEGRATION_SRCS := $(BUILD)/test_hci_usb.o $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c src/usb_desc.c src/evstream.c tests/sim.c tests/sim_le.c tests/test_integration_gen.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h
+$(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
+$(BUILD)/test_integration_oracle: $(INTEGRATION_SRCS) tests/integration_oracle_faults.c | $(BUILD)
+	cc $(HOST_CFLAGS) -Wl,--wrap=test_usb_ioctl,--wrap=vpad_update,--wrap=sim_foreign_command -o $@ $(filter %.c %.o,$^)
+test-integration-oracle: $(BUILD)/test_integration_gen $(BUILD)/test_integration_oracle
+	sh tests/test_integration_oracle.sh ./$(BUILD)/test_integration_gen ./$(BUILD)/test_integration_oracle
+test-integration: $(BUILD)/test_integration_gen test-integration-oracle
+	./$(BUILD)/test_integration_gen
+check-integration: $(BUILD)/test_integration_gen
+	./$(BUILD)/test_integration_gen --full
+check-integration-mutations: $(BUILD)/test_integration_gen test-integration-oracle
+	@set -eu; for id in refuse-everything drop-input drop-delete foreign-delete duplicate-delete truncate-http leak-usb; do \
+	  status=0; ./$(BUILD)/test_integration_gen --mutate $$id > $(BUILD)/integration-$$id.log 2>&1 || status=$$?; \
+	  test "$$status" -eq 1 && grep -Eq '^(FAIL|PROPERTY .* FAIL)' $(BUILD)/integration-$$id.log; \
+	  printf 'integration mutation %s rejected (exit %s)\n' "$$id" "$$status"; \
 	done

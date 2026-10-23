@@ -13,6 +13,7 @@
 typedef struct {
     unsigned char d[QLEN][PKT];
     int len[QLEN];
+    sim_origin origin[QLEN];
     int head, count;
 } queue;
 
@@ -28,7 +29,12 @@ enum {
 struct sim_le {
     sim_le_pad pad;
     queue ev, acl, system;
-    struct { uint8_t data[257]; int len; long due; unsigned order; } delayed[32];
+    struct { uint8_t data[257]; int len; long due; unsigned order; sim_origin origin; } delayed[32];
+    sim_observer observer;
+    void *observer_context;
+    sim_origin origin;
+    unsigned invocations, refuse_op;
+    int refuse_status;
     unsigned schedule_order;
     int delay_code, delay_subevent, delay_left, delay_ms;
     sim_lifetime life;
@@ -123,12 +129,13 @@ static int lose(sim_le_t *s)
 
 /* ---- controller side ------------------------------------------------------ */
 
-static void deliver_event(sim_le_t *s, const uint8_t *e, int n)
+static void deliver_event(sim_le_t *s, sim_origin origin, const uint8_t *e, int n)
 {
     if (!s->life.event_reads || sim_le_now() < s->yield_until) {
         assert(s->system.count < QLEN);
         q_put(&s->system, e, n);
     } else {
+        if (s->ev.count < QLEN) s->ev.origin[(s->ev.head + s->ev.count) % QLEN] = origin;
         q_put(&s->ev, e, n);
     }
 }
@@ -141,13 +148,15 @@ void sim_le_schedule_event(sim_le_t *s, uint8_t code, const uint8_t *p, int n, i
     e[0] = code;
     e[1] = (unsigned char)n;
     memcpy(e + 2, p, (size_t)n);
-    if (!delay_ms) { deliver_event(s, e, n + 2); return; }
+    if (s->observer) s->observer(s->observer_context, SIM_GENERATED, s->origin, code, p, n);
+    if (!delay_ms) { deliver_event(s, s->origin, e, n + 2); return; }
     for (i = 0; i < 32 && s->delayed[i].len; i++) {}
     assert(i < 32);
     memcpy(s->delayed[i].data, e, (size_t)n + 2);
     s->delayed[i].len = n + 2;
     s->delayed[i].due = sim_le_now() + delay_ms;
     s->delayed[i].order = ++s->schedule_order;
+    s->delayed[i].origin = s->origin;
 }
 
 static void due_events(sim_le_t *s)
@@ -162,7 +171,7 @@ static void due_events(sim_le_t *s)
                  s->delayed[i].order < s->delayed[next].order)) next = i;
         }
         if (next < 0) return;
-        deliver_event(s, s->delayed[next].data, s->delayed[next].len);
+        deliver_event(s, s->delayed[next].origin, s->delayed[next].data, s->delayed[next].len);
         s->delayed[next].len = 0;
     }
 }
@@ -647,8 +656,25 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     unsigned char r[80];
 
     if (!s->life.acl_reads) return 0;
+    s->origin.invocation = ++s->invocations;
+    if (s->observer) s->observer(s->observer_context, SIM_COMMAND, s->origin, op, p, plen);
+    if (s->refuse_op == op) {
+        s->refuse_op = 0;
+        if (op == 0x200D || op == 0x2025 || op == 0x2026) cmd_status(s, op, (unsigned char)s->refuse_status);
+        else {
+            unsigned char status = (unsigned char)s->refuse_status;
+            cmd_complete(s, op, &status, 1);
+        }
+        s->origin = (sim_origin){0};
+        return 1;
+    }
     (void)plen;
     switch (op) {
+    case 0x2018:
+        memset(r, 0, 9);
+        put32(r + 1, s->origin.invocation);
+        cmd_complete(s, op, r, 9);
+        break;
     case 0x1005:
         memset(r, 0, 8);
         put16(r + 1, 1021);
@@ -774,6 +800,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         cmd_complete(s, op, r, 1);
         break;
     }
+    s->origin = (sim_origin){0};
     return 1;
 }
 
@@ -828,8 +855,14 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
     sim_le_t *s = ctx;
     int n;
 
-    while ((n = q_get(&s->ev, out, max)) > 0)
-        if (out[0] != 0x13 || !lose(s)) return n;
+    while (s->ev.count) {
+        sim_origin origin = s->ev.origin[s->ev.head];
+        n = q_get(&s->ev, out, max);
+        if (out[0] != 0x13 || !lose(s)) {
+            if (s->observer) s->observer(s->observer_context, SIM_DELIVERED, origin, out[0], out + 2, n - 2);
+            return n;
+        }
+    }
     return 0;
 }
 
@@ -897,6 +930,25 @@ hci_t sim_le_hci(sim_le_t *s)
 
 void sim_le_inject_acl(sim_le_t *s, unsigned cid, const uint8_t *d, int n) { acl_to_host(s, cid, d, n); }
 void sim_le_inject_event(sim_le_t *s, uint8_t code, const uint8_t *p, int n) { event(s, code, p, n); }
+
+void sim_le_observe(sim_le_t *s, sim_observer observer, void *context)
+{
+    s->observer = observer; s->observer_context = context;
+}
+
+void sim_le_causal_event(sim_le_t *s, sim_origin origin, uint8_t code,
+                         const uint8_t *p, int n, int delay_ms)
+{
+    sim_origin before = s->origin;
+    s->origin = origin;
+    sim_le_schedule_event(s, code, p, n, delay_ms);
+    s->origin = before;
+}
+
+void sim_le_refuse_command(sim_le_t *s, unsigned op, int status)
+{
+    s->refuse_op = op; s->refuse_status = status;
+}
 
 void sim_le_power_off(sim_le_t *s)
 {
