@@ -2,11 +2,13 @@
 
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
+.DEFAULT_GOAL := all
 VERSION := $(shell sed -n 's/^\#define WHATEVERPAD_VERSION "\(.*\)"/\1/p' src/version.h)
+BUILD_REF ?= $(shell GIT_MASTER=1 git describe --always --dirty)
 ELF   := dist/WhateverPad-PS5-$(VERSION).elf
 BUILD := build/ps5
 
-CFLAGS  := -std=c11 -Wall -Wextra -O2 -Isrc
+CFLAGS  := -std=c11 -Wall -Wextra -Werror -O2 -Isrc -Ibuild -MMD -MP
 LDLIBS  += -lScePad -lSceUserService -lSceSystemService -lSceAppInstUtil -ldl
 
 SRCS := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c \
@@ -16,10 +18,27 @@ SRCS := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/gen
         src/hci_usb.c src/ps5_power.c src/ps5_ui.c src/ps5_apps.c src/ps5_sysinfo.c src/launcher.c src/icon_data.c src/ps5_vpad.c src/ps5_main.c
 OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(SRCS))
 
+.PHONY: all FORCE
+all: $(ELF).sha256
+
+build/build_id.h: src/version.h FORCE
+	@mkdir -p build
+	@test -n "$(VERSION)" && test -n "$(BUILD_REF)"
+	@printf '%s\n' '#include "version.h"' \
+	  '#define WHATEVERPAD_BUILD_ID "$(VERSION)+$(BUILD_REF)"' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(BUILD)/ps5_main.o: build/build_id.h
+
 $(ELF): $(OBJS)
 	@mkdir -p dist
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(BUILD)/%.o: src/%.c
+$(ELF).sha256: $(ELF)
+	sha256sum $< > $@
+
+$(BUILD)/%.o: src/%.c ps5.mk
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+-include $(OBJS:.o=.d)
