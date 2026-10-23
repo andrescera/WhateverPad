@@ -5,13 +5,14 @@ include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 .DEFAULT_GOAL := all
 VERSION := $(shell sed -n 's/^\#define WHATEVERPAD_VERSION "\(.*\)"/\1/p' src/version.h)
 BUILD_REF ?= $(shell GIT_MASTER=1 git describe --always --dirty)
+WHATEVERPAD_PROBE ?= 0
 ELF   := dist/WhateverPad-PS5-$(VERSION).elf
 BUILD := build/ps5
 
-CFLAGS  := -std=c11 -Wall -Wextra -Werror -O2 -Isrc -Ibuild -MMD -MP
+CFLAGS  := -std=c11 -Wall -Wextra -Werror -O2 -Isrc -Ibuild -MMD -MP -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
 LDLIBS  += -lScePad -lSceUserService -lSceSystemService -lSceAppInstUtil -ldl
 
-SRCS := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c \
+SRCS := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c \
         src/bond_store.c src/host.c src/le.c \
         src/web.c src/web_page.c \
         src/config.c src/migrate.c src/evstream.c src/hotkey.c src/lock.c src/netinfo.c src/usb_desc.c \
