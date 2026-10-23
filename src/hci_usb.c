@@ -1,4 +1,5 @@
 #include "evstream.h"
+#include "attrib.h"
 #include "hci_usb.h"
 #include "log.h"
 #include "usb_desc.h"
@@ -82,12 +83,17 @@ typedef struct {
     int dd_ok;
     unsigned reads_done, reads_empty, status_hist[48];
     unsigned events_seen, acl_seen;
+#if !WHATEVERPAD_PROBE
     unsigned char sample[12][24];
     int sample_len[12], n_sample;
     unsigned char last_cmd[40];
     int last_cmd_len;
     int first_idx, first_len, first_frames;     /* the first read to finish */
     unsigned char first_bytes[16];
+#else
+    int sample_len[12], n_sample, last_cmd_len;
+    int first_idx, first_len, first_frames;
+#endif
 } usb_ctx;
 
 static usb_ctx g_ctx;
@@ -98,6 +104,7 @@ static void ring_put(ring *r, const unsigned char *p, int n)
 {
     if (n > HCI_PKT_MAX) n = HCI_PKT_MAX;
     if (r->count == RING) {             /* full: the oldest goes */
+        if (r == &g_ctx.events) attrib_overflow();
         r->head = (r->head + 1) % RING;
         r->count--;
     }
@@ -179,9 +186,13 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
 
     c->events_seen++;
     if (c->n_sample < 12) {
+#if !WHATEVERPAD_PROBE
         int k = len < 24 ? len : 24;
         memcpy(c->sample[c->n_sample], ev, (size_t)k);
         c->sample_len[c->n_sample++] = k;
+#else
+        c->sample_len[c->n_sample++] = len;
+#endif
     }
     ring_put(&c->events, ev, len);
 }
@@ -230,7 +241,9 @@ static int reap(usb_ctx *c)
             c->first_idx = done.ep_index;
             c->first_len = n;
             c->first_frames = c->ep[done.ep_index].aFrames;
+#if !WHATEVERPAD_PROBE
             memcpy(c->first_bytes, c->buf[done.ep_index], n < 16 ? (size_t)n : 16);
+#endif
         }
         c->reads_done++;
         {
@@ -292,8 +305,12 @@ static int op_cmd(void *ctx, unsigned opcode, const void *params, int plen)
     put16(pkt, opcode);
     pkt[2] = (unsigned char)plen;
     if (plen) memcpy(pkt + 3, params, (size_t)plen);
+#if !WHATEVERPAD_PROBE
     c->last_cmd_len = 3 + plen < (int)sizeof c->last_cmd ? 3 + plen : (int)sizeof c->last_cmd;
     memcpy(c->last_cmd, pkt, (size_t)c->last_cmd_len);
+#else
+    c->last_cmd_len = 3 + plen;
+#endif
 
     memset(&req, 0, sizeof req);
     req.ucr_data = pkt;
@@ -461,9 +478,14 @@ static void op_close(void *ctx)
 static void op_diag(void *ctx)
 {
     usb_ctx *c = ctx;
+#if !WHATEVERPAD_PROBE
     char hex[3 * 24 + 1];
+#endif
     unsigned i;
-    int k, j;
+    int j;
+#if !WHATEVERPAD_PROBE
+    int k;
+#endif
 
     if (c->dd_ok)
         log_line("diag: device %04x:%04x class %02x/%02x/%02x, USB %04x, %d endpoint-0 bytes",
@@ -475,22 +497,35 @@ static void op_diag(void *ctx)
     log_line("diag: %u reads finished (%u empty or failed); %u events and %u ACL packets seen",
              c->reads_done, c->reads_empty, c->events_seen, c->acl_seen);
     if (c->reads_done) {
+#if WHATEVERPAD_PROBE
+        log_line("diag: first read transfer %d, %d bytes in %d frame(s)",
+                 c->first_idx, c->first_len, c->first_frames);
+#else
         for (k = 0; k < c->first_len && k < 16; k++) snprintf(hex + 3 * k, 4, "%02x ", c->first_bytes[k]);
         if (c->first_len <= 0) hex[0] = '\0';
         log_line("diag: the first read to finish was transfer %d (%s), %d bytes in %d frame(s): %s",
                  c->first_idx, c->first_idx < N_EVENT_RD ? "events" : "ACL in",
                  c->first_len, c->first_frames, hex);
+#endif
         log_line("diag: using interface %d: events %#x, ACL in %#x, ACL out %#x (%d HCI function(s) in the chip)",
                  c->iface, c->ep_events, c->ep_acl_in, c->ep_acl_out, c->n_functions);
     }
     for (i = 0; i < 48; i++)
         if (c->status_hist[i]) log_line("diag: %u reads ended with USB status %u", c->status_hist[i], i);
     for (j = 0; j < c->n_sample; j++) {
+#if WHATEVERPAD_PROBE
+        log_line("diag: event %d: len %d", j + 1, c->sample_len[j]);
+#else
         for (k = 0; k < c->sample_len[j]; k++) snprintf(hex + 3 * k, 4, "%02x ", c->sample[j][k]);
         log_line("diag: event %d: %s", j + 1, hex);
+#endif
     }
+#if WHATEVERPAD_PROBE
+    if (c->last_cmd_len) log_line("diag: last command sent: len %d", c->last_cmd_len);
+#else
     for (k = 0; k < c->last_cmd_len && k < 24; k++) snprintf(hex + 3 * k, 4, "%02x ", c->last_cmd[k]);
     if (c->last_cmd_len) log_line("diag: last command sent: %s", hex);
+#endif
 
     /* Read-only questions about the device: what it calls itself, its whole
      * configuration (every interface and endpoint), and which kernel driver
@@ -515,12 +550,14 @@ static void op_diag(void *ctx)
         if (ioctl(c->fd, USB_GET_FULL_DESC, &gd) == 0) {
             int total = gd.ugd_actlen < (int)sizeof cfg ? gd.ugd_actlen : (int)sizeof cfg;
             log_line("diag: configuration descriptor, %d bytes", total);
+#if !WHATEVERPAD_PROBE
             for (j = 0; j < total; j += 24) {
                 char line[3 * 24 + 1];
                 int m = total - j < 24 ? total - j : 24;
                 for (k = 0; k < m; k++) snprintf(line + 3 * k, 4, "%02x ", cfg[j + k]);
                 log_line("diag: cfg[%03d] %s", j, line);
             }
+#endif
         } else {
             log_line("diag: the configuration descriptor could not be read (errno %d)", errno);
         }

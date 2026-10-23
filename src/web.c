@@ -1,4 +1,5 @@
 #include "web.h"
+#include "attrib.h"
 #include "log.h"
 #include "util.h"
 
@@ -170,7 +171,7 @@ static void api_state(web_t *w, int fd)
         { PAD_TOUCHPAD, "touchpad" },
     };
     host_t *h = *w->cfg.host;
-    char out[8192], a[18], combo[100];
+    char out[8192 + ATTRIB_JSON_MAX], a[18], combo[100];
     size_t n = 0;
     int i, first = 1;
 
@@ -235,7 +236,9 @@ static void api_state(web_t *w, int fd)
             p.connected ? "true" : "false");
         first = 0;
     }
-    PUT("]}");
+    PUT("],\"attrib\":");
+    n += attrib_json(out + n, sizeof out - n - 2);
+    PUT("}");
 #undef PUT
     respond(fd, 200, "application/json", out, n);
 }
