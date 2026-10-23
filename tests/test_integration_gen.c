@@ -69,8 +69,11 @@ typedef struct {
     unsigned seed, scenario;
     int le, positive, released, lost, foreign_create, fault, identity, add_fail, delete_fail;
     int reenter, reentry_case, serving, refuse_send, port, logpipe[2], foreign_stimulus, reassignment_stimulus;
+    int reassignment_pending;
+    unsigned reassignment_create, reassignment_version, duplicate_copies, last_real_answer;
     int opens, uninits, closes, commands, acl, inputs, connects, disconnects, generation;
-    int stop_count[XFERS], open[XFERS], busy[XFERS], cancelled[XFERS];
+    int start_count[XFERS], complete_count[XFERS], stop_count[XFERS];
+    int open[XFERS], busy[XFERS], cancelled[XFERS];
     int initialized, fd_open, out_done, churn;
     unsigned inject_op, latest, barrier_parent;
     unsigned setting_owner[6], setting_pending[6];
@@ -81,6 +84,7 @@ typedef struct {
     int acknowledgements[MAX_COMMANDS], foreign_handle, foreign_inputs;
     unsigned link_invocation, slot_invocation[4];
     unsigned handle_owner, handle_version;
+    unsigned handle_value, reassignment_handle;
     int handle_live;
     sim_origin delivery_origin;
     unsigned delivery_code;
@@ -155,6 +159,7 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
 {
     (void)ud;
     REQUIRE(origin.invocation < MAX_COMMANDS);
+    if (origin.foreign) f.assumptions |= 4;
     invocation *r = &f.history[origin.invocation];
     if (kind == SIM_COMMAND) {
         REQUIRE(origin.invocation && n >= 0 && n <= 255);
@@ -163,6 +168,8 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
         r->at = now_ms();
         if (n) memcpy(r->p, p, (size_t)n);
         f.latest = origin.invocation;
+        if (f.reassignment_pending && origin.foreign && create(code))
+            f.reassignment_create = origin.invocation;
         if (f.barrier_parent && code != 0x2018) f.barrier_parent = 0;
         int index = setting_index(code);
         if (index >= 0) f.setting_pending[index] = origin.invocation;
@@ -177,6 +184,15 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
         unsigned op = le16(p + (code == 0x0e ? 1 : 2));
         int status = p[code == 0x0e ? 3 : 0];
         if (!op) return; /* credit-only NOP */
+        if (kind == SIM_DELIVERED && origin.invocation) {
+            if (origin.copy) {
+                if (op == 0x0c1a || op == 0x200c) f.duplicate_copies |= 1;
+                if (op == 0x2018) f.duplicate_copies |= 2;
+            } else {
+                if (origin.invocation < f.last_real_answer) f.assumptions |= 2;
+                if (origin.invocation > f.last_real_answer) f.last_real_answer = origin.invocation;
+            }
+        }
         if (origin.invocation) REQUIRE(r->op == op);
         if (kind == SIM_GENERATED) {
             if (!status && origin.invocation && !r->accepted) {
@@ -225,6 +241,7 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
         (code == 0x3e && n >= 19 && p[0] == 1 && !p[1])) {
         if (kind == SIM_GENERATED && !r->resource_version) {
             f.handle_owner = origin.invocation;
+            f.handle_value = le16(p + (code == 3 ? 1 : 2));
             r->resource_version = ++f.handle_version; f.handle_live = 1;
         }
         if (kind == SIM_DELIVERED) {
@@ -234,6 +251,11 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
             f.generation++;
             f.link_invocation = origin.invocation;
             if (origin.foreign) f.foreign_handle = 1;
+            if (f.reassignment_pending && origin.invocation == f.reassignment_create &&
+                r->terminal && f.handle_owner == origin.invocation &&
+                r->resource_version > f.reassignment_version &&
+                le16(p + (code == 3 ? 1 : 2)) == f.reassignment_handle && !f.last_input)
+                f.reassignment_stimulus = 1;
         }
     }
     if (kind == SIM_GENERATED && code == 5 && n >= 4 && !p[0]) f.handle_live = 0;
@@ -368,7 +390,8 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         return 0;
     case USB_FS_OPEN: REQUIRE(!f.open[i]); f.open[i] = 1; return 0;
     case USB_FS_START:
-        REQUIRE(f.initialized && f.open[i] && !f.busy[i]);
+        REQUIRE(f.initialized && f.open[i] && !f.busy[i] && !f.cancelled[i]);
+        f.start_count[i]++;
         f.busy[i] = 1;
         if (i >= 60) {
             f.acl++;
@@ -379,14 +402,14 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         return 0;
     case USB_FS_STOP:
         REQUIRE(f.initialized && f.open[i]);
-        REQUIRE(f.busy[i] || f.cancelled[i]);
+        REQUIRE(f.busy[i] && !f.cancelled[i]);
         f.stop_count[i]++; f.busy[i] = 0; f.cancelled[i] = 1;
         return 0;
     case USB_FS_COMPLETE: {
-        int n = 0, found = -1, complete_event = 0;
+        int n = 0, found = -1, complete_event = 0, cancelled_completion = 0;
         unsigned char bytes[HCI_PKT_MAX];
         for (i = 0; i < XFERS; i++) if (f.cancelled[i]) {
-            found = (int)i; f.cancelled[i] = 0; break;
+            found = (int)i; f.cancelled[i] = 0; cancelled_completion = 1; break;
         }
         if (found < 0 && f.out_done) { found = f.out_done - 1; f.out_done = 0; }
         int failed_completion = 0;
@@ -415,6 +438,10 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         ((struct usb_fs_complete *)arg)->ep_index = (unsigned char)found;
         ep->pLength[0] = (uint32_t)n; ep->aFrames = n > 0; ep->status = (unsigned)failed_completion;
         if (n) memcpy(ep->ppBuffer[0], bytes, (size_t)n);
+        if (!cancelled_completion) {
+            REQUIRE(f.busy[found]);
+            f.complete_count[found]++;
+        }
         f.busy[found] = 0;
         if (complete_event) {
             REQUIRE(f.delivery_pending);
@@ -426,7 +453,9 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
     case USB_FS_UNINIT:
         if (mutated("leak-usb")) return 0;
         REQUIRE(f.initialized);
-        for (i = 0; i < XFERS; i++) if (f.busy[i]) violation(USB_INVENTORY);
+        for (i = 0; i < XFERS; i++)
+            if (f.busy[i] || f.start_count[i] != f.complete_count[i] + f.stop_count[i])
+                violation(USB_INVENTORY);
         f.initialized = 0; f.uninits++;
         return 0;
     case USB_DO_REQUEST: {
@@ -607,8 +636,9 @@ static void connected(void *ud, int slot, const pad_info *info)
 static void input(void *ud, int slot, const pad_state *state)
 {
     (void)ud;
-    if (f.foreign_handle) f.foreign_inputs++;
-    else f.last_input = now_ms();
+    if (f.foreign_handle || (f.handle_live && f.history[f.handle_owner].origin.foreign))
+        f.foreign_inputs++;
+    else if (f.handle_live) f.last_input = now_ms();
     vpad_update(slot, state);
 }
 static void disconnected(void *ud, int slot)
@@ -668,6 +698,7 @@ static void execute(step s)
         raw(0x2018, NULL, 0);
         sim_origin old_barrier = f.history[f.latest].origin;
         if (s.action == FOREIGN_ACK) { old.foreign = 1; old.invocation = 0; }
+        else { old.copy = 1; old_barrier.copy = 1; }
         unsigned char cc[] = {1, (unsigned char)scan, (unsigned char)(scan >> 8), 0};
         causal_event(old, 0x0e, cc, sizeof cc, 0);
         if (s.action == DUPLICATE_ACK) {
@@ -685,10 +716,12 @@ static void execute(step s)
     case FOREIGN_CREATE: f.foreign_create = 1; break;
     case VANISH:
         if (f.last_input && f.link_invocation && !f.history[f.link_invocation].origin.foreign)
-            f.reassignment_stimulus = 1;
+            f.reassignment_pending = 1;
+        f.reassignment_version = f.handle_version;
+        f.reassignment_handle = f.handle_value;
         if (!f.le) sim_vanish(f.classic);
         f.handle_live = 0;
-        f.assumptions |= 5; f.foreign_handle = 1; f.last_input = 0;
+        f.assumptions |= 1; f.last_input = 0;
         break;
     case REUSE:
         if (!f.le && f.scenario == 8) {
@@ -736,8 +769,6 @@ static void begin(unsigned seed)
     event_len = event_offset = 0;
     f.seed = seed; f.scenario = seed % 16; f.le = f.scenario == 2 || f.scenario == 5;
     f.positive = f.scenario < 3; f.identity = 1; f.authid = 0x4800000000000001ull;
-    f.assumptions = f.scenario == 6 || f.scenario == 7 ? 4u : 0u;
-    if (f.scenario == 4) f.assumptions |= 2;
     if (f.le) {
         sim_le_pad p = {0};
         const unsigned char addr[] = {0x51,0x52,0x53,0x54,0x55,0xd6};
@@ -923,6 +954,10 @@ int main(int argc, char **argv)
     if (mutation && !mutated("refuse-everything") && !mutated("drop-input") &&
         !mutated("foreign-delete") && !mutated("duplicate-delete") && !mutated("truncate-http") &&
         !mutated("leak-usb") && !mutated("drop-delete")) return 2;
+    if (strict && (single || mutation)) {
+        fprintf(stderr, "STRICT_ERROR scope=partial-profile requires=fast-or-full\n");
+        return 2;
+    }
     signal(SIGPIPE, SIG_IGN);
     const char *log_path = getenv("INTEGRATION_LOG");
     REQUIRE(log_open(log_path ? log_path : "/dev/null"));
@@ -935,12 +970,14 @@ int main(int argc, char **argv)
     unsigned sample[PROPERTY_COUNT], assumptions[8] = {0};
     for (unsigned p = 0; p < PROPERTY_COUNT; p++) sample[p] = ~0u;
     unsigned hard = 0, foreign_stimuli = 0, reassignment_stimuli = 0, failing_properties = 0;
+    unsigned duplicate_stimuli = 0, unexpected_passes = 0, expected_cases = 0;
     for (unsigned seed = first; seed < first + seeds; seed++) {
         step trace[MAX_STEPS];
         schedule(seed, trace, steps);
         unsigned bad = replay(seed, trace, steps);
         if (f.scenario == 7) { REQUIRE(f.foreign_stimulus); foreign_stimuli++; }
         if (f.scenario == 8) { REQUIRE(f.reassignment_stimulus); reassignment_stimuli++; }
+        if (f.scenario == 4) { REQUIRE(f.duplicate_copies == 3); duplicate_stimuli++; }
         assumptions[f.assumptions]++;
         if (f.positive && !(bad & (1u << POSITIVE_INPUT))) positives[f.scenario]++;
         for (unsigned p = 0; p < PROPERTY_COUNT; p++) {
@@ -954,6 +991,20 @@ int main(int argc, char **argv)
                 if (!properties[p].todo) hard++;
             }
         }
+    }
+    if (strict) {
+        for (unsigned policy = 0; policy < 2; policy++) for (unsigned p = 0; p < PROPERTY_COUNT; p++) {
+            if (!properties[p].todo || (policy && p == NO_RESTORE_UNDO)) continue;
+            expected_cases++;
+            if (!counts[policy][p]) {
+                unexpected_passes++;
+                printf("XPASS policy=%s property=%s todo=%d\n",
+                    policy ? "SINGLE_PRODUCER-projection" : "NO_RESTORE-projection",
+                    properties[p].name, properties[p].todo);
+            }
+        }
+        printf("STRICT expected=%u xfail=%u xpass=%u\n",
+            expected_cases, expected_cases - unexpected_passes, unexpected_passes);
     }
     for (unsigned policy = 0; policy < 2; policy++) for (unsigned p = 0; p < PROPERTY_COUNT; p++) {
         printf("PROPERTY policy=%s %s violations=%u/%u eligible-violations=%u residual-violations=%u %s",
@@ -976,9 +1027,11 @@ int main(int argc, char **argv)
     log_close();
     printf("INTEGRATION seeds=%u first=%u steps=%u scheduled=%u checks=%u commands=%u generated=%u delivered=%u empty-error-completions=%u"
            " positives=DS4:%u,8BitDo:%u,LE:%u foreign-Create-with-fresh-input-before-refusal=%u"
-           " unobserved-reassignment=%u hard=%u replays=%u\n",
+           " unobserved-reassignment=%u two-duplicate-traces=%u hard=%u xpass=%u replays=%u\n",
         seeds, first, steps, seeds * steps, checks, submitted, generated_events, deliveries, empty_completions,
-        positives[0], positives[1], positives[2], foreign_stimuli, reassignment_stimuli, hard, runs - seeds);
+        positives[0], positives[1], positives[2], foreign_stimuli, reassignment_stimuli,
+        duplicate_stimuli, hard, unexpected_passes, runs - seeds);
+    if (unexpected_passes) return 2;
     if (mutation) return hard ? 1 : 0;
     return hard || (strict && failing_properties) ? 1 : 0;
 }

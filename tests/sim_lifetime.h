@@ -11,6 +11,7 @@ typedef struct {
 typedef struct {
     unsigned invocation;
     int foreign;
+    int copy;
 } sim_origin;
 
 enum sim_observation { SIM_COMMAND, SIM_GENERATED, SIM_DELIVERED };

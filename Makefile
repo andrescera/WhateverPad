@@ -231,16 +231,21 @@ check-mutations: test-ownership
 	  printf '%s killed (exit 1): %s\n' "$$id" "$$first"; \
 	done
 
-.PHONY: test-integration check-integration check-integration-mutations
+.PHONY: test-integration test-integration-oracle check-integration check-integration-mutations
 test: test-integration
 ci: check-integration check-integration-mutations
-$(BUILD)/test_integration_gen: $(BUILD)/test_hci_usb.o $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c src/usb_desc.c src/evstream.c tests/sim.c tests/sim_le.c tests/test_integration_gen.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
+INTEGRATION_SRCS := $(BUILD)/test_hci_usb.o $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c src/usb_desc.c src/evstream.c tests/sim.c tests/sim_le.c tests/test_integration_gen.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h
+$(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
-test-integration: $(BUILD)/test_integration_gen
+$(BUILD)/test_integration_oracle: $(INTEGRATION_SRCS) tests/integration_oracle_faults.c | $(BUILD)
+	cc $(HOST_CFLAGS) -Wl,--wrap=test_usb_ioctl,--wrap=web_start,--wrap=web_poll,--wrap=vpad_update,--wrap=sim_foreign_command -o $@ $(filter %.c %.o,$^)
+test-integration-oracle: $(BUILD)/test_integration_gen $(BUILD)/test_integration_oracle
+	sh tests/test_integration_oracle.sh ./$(BUILD)/test_integration_gen ./$(BUILD)/test_integration_oracle
+test-integration: $(BUILD)/test_integration_gen test-integration-oracle
 	./$(BUILD)/test_integration_gen
 check-integration: $(BUILD)/test_integration_gen
 	./$(BUILD)/test_integration_gen --full
-check-integration-mutations: $(BUILD)/test_integration_gen
+check-integration-mutations: $(BUILD)/test_integration_gen test-integration-oracle
 	@set -eu; for id in refuse-everything drop-input drop-delete foreign-delete duplicate-delete truncate-http leak-usb; do \
 	  status=0; ./$(BUILD)/test_integration_gen --mutate $$id > $(BUILD)/integration-$$id.log 2>&1 || status=$$?; \
 	  test "$$status" -eq 1 && grep -Eq '^(FAIL|PROPERTY .* FAIL)' $(BUILD)/integration-$$id.log; \
