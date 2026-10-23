@@ -156,8 +156,9 @@ row from "planned" to "works" with a citation and a test, not before.
   startup (`src/config.c:pscombo_load`, `src/ps5_main.c:main`) and set from the page
   (`src/config.c:pscombo_set`). `menu_combo` and `menu_hold_ms` are parsed by
   `src/config.c:config_load`, but the payload never calls that parser, and
-  `src/hotkey.c:hotkey_update` is never called either; `src/ps5_main.c` records that this
-  build has no console hotkey. Wiring the settings is planned: todos 7 and 17.
+  `src/hotkey.c:hotkey_update` is never called either, so no menu hotkey is active in this
+  build; the comment in `src/ps5_main.c` that describes one is stale. Wiring the settings
+  is planned: todos 7 and 17.
 - Migration from AnyPad copies supported configuration only when the destination is
   absent, preserves the originals, and reports conflicts (planned: todos 7 and 17). It
   never imports system bonds, adapter-unbound keys, or a legacy LAN/developer opt-in.

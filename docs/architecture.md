@@ -151,8 +151,9 @@ Around it: `src/ps5_ui.c:ui_open_browser` opens the page,
 `src/ps5_apps.c:apps_install_launcher` registers the Media row entry,
 `src/launcher.c:launcher_write` writes its `param.json` and icon, and
 `src/ps5_sysinfo.c:sysinfo_log` records the console model and software version.
-`src/hotkey.c:hotkey_update` implements menu-combination detection, but the payload never
-calls it, and `src/ps5_main.c:main` states that this build has no console hotkey.
+`src/hotkey.c:hotkey_update` implements menu-combination detection, but nothing in the
+payload calls it, and the comment in `src/ps5_main.c` that describes a console hotkey is
+stale.
 
 ## 8. Configuration, bonds, and files
 
@@ -264,9 +265,9 @@ These are properties of this tree, not opinions. Each one is the gap a later tod
   (`tests/test_session.c:expected_failure`). This is the bug class the ledger replaces
   (section 13).
 - `config.ini` and the menu hotkey are not wired. `src/config.c:config_load` and
-  `src/hotkey.c:hotkey_update` have no production caller, and `src/ps5_main.c` states there
-  is no console hotkey; only `ps_combos.txt` is loaded (`src/config.c:pscombo_load`).
-  Wiring the settings is planned: todos 7 and 17.
+  `src/hotkey.c:hotkey_update` have no production caller, and the comment in
+  `src/ps5_main.c` that describes a console hotkey is stale; only `ps_combos.txt` is
+  loaded (`src/config.c:pscombo_load`). Wiring the settings is planned: todos 7 and 17.
 - There is no session module and no ownership module in this tree. Their absence is the
   point of the next section.
 - The page is a desktop dashboard with a 236 px sidebar (`web/index.html`), not the
