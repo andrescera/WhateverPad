@@ -7,7 +7,18 @@
 #ifndef PH_HCI_H
 #define PH_HCI_H
 
+#include "ownership.h"
+
 #define HCI_PKT_MAX 1100
+
+typedef enum { HCI_SUBMIT_COMMAND, HCI_SUBMIT_ACL } hci_submission_kind;
+typedef struct {
+    hci_submission_kind kind;
+    union {
+        const own_token *command;
+        struct { own_acl_lane *lane; const own_acl_token *token; } acl;
+    } token;
+} hci_submission;
 
 typedef struct hci_ops {
     /* Sends an HCI command. Returns 0 on a transport error. */
@@ -47,6 +58,8 @@ typedef struct hci_ops {
     int  (*chip_vendor)(void *ctx);
     /* Optional: USB product id, 0 if unavailable. */
     int  (*chip_product)(void *ctx);
+    /* Token-only final output boundary. Legacy operations remain until migration. */
+    own_submit_result (*op_submit)(void *ctx, const hci_submission *);
 } hci_ops;
 
 typedef struct {

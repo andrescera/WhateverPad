@@ -5,6 +5,10 @@ version is set in `src/version.h` and is also in the first line of the log, in
 the start-up notification, on the web page, and in the binary
 (`strings WhateverPad-PS5-*.elf | grep whateverpad-version`).
 
+## Sin publicar
+
+- Nuevo logo sin fondo: icono de 512x512 RGBA para la consola y las README, y versión de 96x96 en la cabecera web, sin recuadro ni recorte.
+
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
 The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.

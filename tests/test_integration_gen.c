@@ -23,7 +23,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-enum { MAX_STEPS = 128, MAX_COMMANDS = 1024, XFERS = 62, FD = 973 };
+enum { MAX_STEPS = 128, MAX_COMMANDS = 1024, CMD = 62, XFERS = 63, FD = 973 };
 enum property {
     NO_CANCEL, NORMAL_ADMISSION, COMMAND_SERIALIZATION, NO_RESTORE_UNDO, CAUSAL_UNDO, FRESH_HANDLE,
     TERMINAL_REQUIRED, CALLBACK_ONCE, VPAD_ADMISSION, CLEANUP_BOUND,
@@ -31,7 +31,7 @@ enum property {
     USB_INVENTORY, VENDOR_IDENTITY, HTTP_FRAME, POSITIVE_INPUT, PROPERTY_COUNT
 };
 static const struct { const char *name; int todo; } properties[] = {
-    {"no-cancel-or-reset", 13}, {"no-normal-effect-after-release", 13},
+    {"no-cancel-or-reset", 0}, {"no-normal-effect-after-release", 13},
     {"one-unanswered-command-no-resubmission", 13},
     {"no-restore-policy-no-undo", 13}, {"undo-needs-own-ack-barrier-and-version", 14},
     {"disconnect-needs-fresh-owned-input", 14}, {"status-is-not-link-completion", 14},
@@ -110,7 +110,7 @@ typedef struct {
     int opens, uninits, closes, commands, acl, inputs, connects, disconnects, generation;
     int start_count[XFERS], complete_count[XFERS], stop_count[XFERS];
     int open[XFERS], busy[XFERS], cancelled[XFERS];
-    int initialized, fd_open, out_done, churn;
+    int initialized, fd_open, out_done, command_done, command_status, churn;
     unsigned inject_op, latest, barrier_parent;
     unsigned setting_owner[6], setting_pending[6];
     unsigned char original[6][8];
@@ -422,14 +422,32 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
     case USB_GET_DEVICEINFO: case USB_GET_IFACE_DRIVER: errno = ENOTTY; return -1;
     case USB_FS_INIT:
         REQUIRE(!f.initialized);
+        REQUIRE(((struct usb_fs_init *)arg)->ep_index_max == XFERS);
         f.ep = ((struct usb_fs_init *)arg)->pEndpoints; f.initialized = 1;
         return 0;
     case USB_FS_OPEN: REQUIRE(!f.open[i]); f.open[i] = 1; return 0;
     case USB_FS_START:
         REQUIRE(f.initialized && f.open[i] && !f.busy[i] && !f.cancelled[i]);
+        if (i == CMD) {
+            const struct usb_device_request *r = f.ep[i].ppBuffer[0];
+            const unsigned char *p = f.ep[i].ppBuffer[1];
+            REQUIRE(f.ep[i].nFrames == 2 && f.ep[i].pLength[0] == sizeof *r);
+            REQUIRE(r->bmRequestType == UT_WRITE_CLASS_DEVICE && !r->bRequest &&
+                    !UGETW(r->wValue) && !UGETW(r->wIndex));
+            REQUIRE(UGETW(r->wLength) == f.ep[i].pLength[1] &&
+                    f.ep[i].pLength[1] == (unsigned)(3 + p[2]));
+            if (mutated("refuse-everything") || f.lost ||
+                (f.fault == REFUSE && le16(p) == f.inject_op)) {
+                f.fault = 0; errno = EIO; return -1;
+            }
+            wire_command(p);
+            f.command_status = f.fault == UNCERTAIN && le16(p) == f.inject_op;
+            if (f.command_status) { f.fault = 0; f.ambiguous = 1; }
+            f.command_done = 1;
+        }
         f.start_count[i]++;
         f.busy[i] = 1;
-        if (i >= 60) {
+        if (i >= 60 && i < CMD) {
             f.acl++;
             if (f.released) violation(NORMAL_ADMISSION);
             REQUIRE(f.controller.ops->acl_send(f.controller.ctx, f.ep[i].ppBuffer[0], (int)f.ep[i].pLength[0]));
@@ -448,6 +466,7 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
             found = (int)i; f.cancelled[i] = 0; cancelled_completion = 1; break;
         }
         if (found < 0 && f.out_done) { found = f.out_done - 1; f.out_done = 0; }
+        if (found < 0 && f.command_done) found = CMD;
         int failed_completion = 0;
         if (found < 0 && f.churn && f.busy[0]) {
             found = 0; f.churn--; empty_completions++; failed_completion = 1;
@@ -473,6 +492,10 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
         struct usb_fs_endpoint *ep = &f.ep[found];
         ((struct usb_fs_complete *)arg)->ep_index = (unsigned char)found;
         ep->pLength[0] = (uint32_t)n; ep->aFrames = n > 0; ep->status = (unsigned)failed_completion;
+        if (found == CMD) {
+            f.command_done = 0;
+            ep->status = (unsigned)f.command_status;
+        }
         if (n) memcpy(ep->ppBuffer[0], bytes, (size_t)n);
         if (!cancelled_completion) {
             REQUIRE(f.busy[found]);
@@ -494,17 +517,6 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
                 violation(USB_INVENTORY);
         f.initialized = 0; f.uninits++;
         return 0;
-    case USB_DO_REQUEST: {
-        const unsigned char *p = ((struct usb_ctl_request *)arg)->ucr_data;
-        if (mutated("refuse-everything") || f.lost || (f.fault == REFUSE && le16(p) == f.inject_op)) {
-            f.fault = 0; errno = EIO; return -1;
-        }
-        wire_command(p);
-        if (f.fault == UNCERTAIN && le16(p) == f.inject_op) {
-            f.fault = 0; f.ambiguous = 1; errno = EIO; return -1;
-        }
-        return 0;
-    }
     default: REQUIRE(0); return -1;
     }
 }

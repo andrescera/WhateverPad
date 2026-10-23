@@ -755,7 +755,8 @@ own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now
     p.status = a->status;
     p.random_len = a->random_len;
     for (unsigned i = 0; i < 8; i++) p.random |= (uint64_t)a->random[i] << (8*i);
-    p.credit = a->opcode == 0 && !a->malformed && !a->overflow && a->event == OWN_CC;
+    p.credit = a->opcode == 0 && !a->malformed && !a->overflow &&
+               (a->event == OWN_CC || (a->event == OWN_CS && a->status == 0));
     own_record *r = record(l, l->waiter);
     if (r && !l->ambiguities && !l->transport_closed && !a->malformed && !a->overflow &&
         !r->submit_pending && now < r->phase_ack_by) {
@@ -1424,4 +1425,153 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
                 if (l->handles_seen[b] & (1u << bit)) N(8*b + bit);
 #undef N
     return w.n;
+}
+
+/* ACL capabilities are separate from the frozen HCI/local transition encoding.
+ * One lane retains one packet; issuing or completing output grants no new lease.
+ */
+struct own_acl_lane {
+    own_ledger *ledger;
+    uint64_t instance, serial, epoch, attempt;
+    link_ref link;
+    own_ref owner;
+    own_acl_token token;
+    uint8_t packet[OWN_ACL_MAX];
+    uint16_t len;
+    uint8_t prepared, submit_pending;
+    own_submit_result result;
+};
+
+own_acl_lane *own_acl_new(own_ledger *l)
+{
+    static uint64_t instance;
+    if (!l || instance == UINT64_MAX) return NULL;
+    own_acl_lane *lane = calloc(1, sizeof *lane);
+    if (lane) {
+        lane->ledger = l;
+        lane->instance = ++instance;
+    }
+    return lane;
+}
+
+void own_acl_free(own_acl_lane *lane)
+{
+    if (!lane) return;
+    wipe(lane, sizeof *lane);
+    free(lane);
+}
+
+static own_result acl_allowed(own_ledger *l, link_ref ref, uint64_t now)
+{
+    own_tick(l, now);
+    if (!session_accepts(&l->session) || !admits(l)) return OWN_STOPPED;
+    own_link *p = link_at(l, ref);
+    if (!p || (p->state != UP && p->state != READY) || !p->has_handle)
+        return OWN_NO_PROOF;
+    own_record *r = record(l, p->owner);
+    if (!r || !r->lease || !r->acked || !r->barrier_done || !r->terminal_seen ||
+        r->terminal_failed || r->proof_veto || l->ambiguities)
+        return OWN_NO_PROOF;
+    return OWN_OK;
+}
+
+own_result own_acl_prepare(own_acl_lane *lane, link_ref link, const uint8_t *packet,
+                           size_t len, uint64_t now, own_acl_token *out)
+{
+    if (!lane || !out || !packet || len < 4 || len > OWN_ACL_MAX ||
+        len != 4 + ((size_t)packet[2] | (size_t)packet[3] << 8))
+        return OWN_INVALID;
+    own_ledger *l = lane->ledger;
+    own_result result = acl_allowed(l, link, now);
+    if (result != OWN_OK) return result;
+    own_link *p = link_at(l, link);
+    unsigned handle = (packet[0] | (unsigned)packet[1] << 8) & 0x0fff;
+    if (handle != p->handle) return OWN_NO_PROOF;
+    if (lane->prepared || lane->submit_pending) return OWN_BUSY;
+    if (lane->serial == UINT64_MAX) {
+        own_detector_trip(l, now);
+        return OWN_STOPPED;
+    }
+    lane->token = (own_acl_token){{lane->instance, ++lane->serial,
+                                  l->session.attempt, l->epoch}};
+    lane->epoch = l->epoch;
+    lane->attempt = l->session.attempt;
+    lane->link = link;
+    lane->owner = p->owner;
+    lane->len = (uint16_t)len;
+    memcpy(lane->packet, packet, len);
+    lane->prepared = 1;
+    *out = lane->token;
+    return OWN_OK;
+}
+
+own_result own_acl_commit(own_ledger *l, own_acl_lane *lane, const own_acl_token *token,
+                          uint64_t now, own_acl_effect *out)
+{
+    if (!l || !lane || !token || !out || lane->ledger != l || !lane->prepared ||
+        memcmp(token, &lane->token, sizeof *token)) return OWN_INVALID;
+    own_result result = acl_allowed(l, lane->link, now);
+    own_link *p = link_at(l, lane->link);
+    if (result == OWN_OK &&
+        (lane->epoch != l->epoch || lane->attempt != l->session.attempt ||
+         !same_ref(lane->owner, p->owner))) result = OWN_INVALID;
+    lane->prepared = 0;
+    if (result == OWN_OK) {
+        *out = (own_acl_effect){.link = lane->link, .handle = p->handle, .len = lane->len};
+        memcpy(out->packet, lane->packet, lane->len);
+        lane->submit_pending = 1; /* Consume before any external call. */
+    }
+    wipe(lane->packet, sizeof lane->packet);
+    lane->len = 0;
+    return result;
+}
+
+void own_acl_submitted(own_acl_lane *lane, const own_acl_token *token,
+                       own_submit_result result, uint64_t now)
+{
+    if (!lane || !token || !lane->submit_pending ||
+        memcmp(token, &lane->token, sizeof *token)) return;
+    lane->submit_pending = 0;
+    lane->result = result;
+    if (result == OWN_SEND_UNCERTAIN) own_detector_trip(lane->ledger, now);
+}
+
+own_result own_commit_hci(own_ledger *l, const own_token *token, uint64_t now,
+                          own_effect *out, uint64_t *ack_by)
+{
+    if (!l || !token || !out || !ack_by || token->_opaque[4] != OWN_EFFECT_HCI)
+        return OWN_INVALID;
+    own_result result = own_commit(l, token, now, out);
+    if (result == OWN_OK) *ack_by = record(l, out->owner)->phase_ack_by;
+    return result;
+}
+
+void own_observe_disconnect(own_ledger *l, uint16_t handle, uint64_t now)
+{
+    for (unsigned i = 0; i < OWN_LINK_MAX; i++) {
+        own_link *p = &l->links[i];
+        own_record *r = record(l, p->owner);
+        if ((p->has_handle && p->handle == handle) ||
+            (r && !r->undo_terminal && r->terminal_seen && !r->terminal_failed &&
+             r->terminal.kind == OWN_TERM_CONNECTION && r->terminal.handle == handle))
+            own_disconnected(l, p->ref, handle, now);
+    }
+}
+
+void own_observe_connection(own_ledger *l, uint8_t le, uint8_t address_type,
+                            const uint8_t address[6], uint16_t handle, uint8_t status,
+                            uint64_t now)
+{
+    for (unsigned i = 0; i < OWN_LINK_MAX; i++) {
+        own_link *p = &l->links[i];
+        own_record *r = record(l, p->owner);
+        if (!r || !r->sent || commands[r->desc].class != CREATE ||
+            !same_link(p->ref, r->c.link) || r->c.peer.le != le ||
+            r->c.peer.address_type != address_type ||
+            memcmp(r->c.peer.wire, address, 6)) continue;
+        own_terminal_event terminal = {
+            .kind = OWN_TERM_CONNECTION, .peer = r->c.peer, .handle = handle, .status = status
+        };
+        own_terminal(l, r->ref, &terminal, now);
+    }
 }

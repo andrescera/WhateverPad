@@ -96,13 +96,14 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/attrib.h src/probe.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h | $(BUILD)
+USB_STANDIN := $(BUILD)/test_hci_usb.o tests/usb_standin/receipt.c tests/usb_standin/receipt.h
+$(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/ownership.h src/session.h src/attrib.h src/probe.h tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h tests/usb_standin/syscalls.h tests/usb_standin/receipt.h | $(BUILD)
 	cc $(HOST_CFLAGS) -Itests/usb_standin -include tests/usb_standin/syscalls.h -c -o $@ $<
 
-$(BUILD)/test_hci_usb: $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
+$(BUILD)/test_hci_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/test_attrib: $(CORE) $(BUILD)/test_hci_usb.o src/usb_desc.c src/evstream.c tests/sim.c tests/test_attrib.c tests/test_hci_usb.c src/attrib.h | $(BUILD)
+$(BUILD)/test_attrib: $(CORE) $(USB_STANDIN) src/usb_desc.c src/evstream.c tests/sim.c tests/test_attrib.c tests/test_hci_usb.c src/attrib.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
 
 test-attrib: $(BUILD)/test_attrib
@@ -261,7 +262,7 @@ check-mutations: test-ownership
 .PHONY: test-integration test-integration-oracle check-integration check-integration-mutations
 test: test-integration
 ci: check-integration check-integration-mutations
-INTEGRATION_SRCS := $(BUILD)/test_hci_usb.o $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c src/usb_desc.c src/evstream.c tests/sim.c tests/sim_le.c tests/test_integration_gen.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h
+INTEGRATION_SRCS := $(USB_STANDIN) $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c src/usb_desc.c src/evstream.c tests/sim.c tests/sim_le.c tests/test_integration_gen.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 $(BUILD)/test_integration_oracle: $(INTEGRATION_SRCS) tests/integration_oracle_faults.c | $(BUILD)

@@ -251,3 +251,24 @@ void attrib_log_summary(void)
              counts.classes[ATTRIB_UNMATCHED], counts.untracked, counts.classes[ATTRIB_UNTRACKED], counts.overflow,
              counts.unanswered, counts.timeout, counts.requests, counts.requests_untracked);
 }
+
+enum attrib_class attrib_observe_receipt(const unsigned char *e, int len, long now,
+                                         own_provenance provenance)
+{
+    unsigned ev, op;
+    if (provenance == OWN_RECEIPT_SEQUENCED || len <= 0 ||
+        (e[0] != 0x0e && e[0] != 0x0f))
+        return attrib_observe(e, len, now);
+    ev = e[0];
+    if (ev == 0x0e && len == 5 && e[1] == 3 && !le16(e + 3))
+        return attrib_observe(e, len, now);
+    if (len < 6 || e[1] < 4 || len != 2 + e[1] || (ev == 0x0f && e[1] != 4)) {
+        attrib_poll(now);
+        return record(ATTRIB_MALFORMED, ev, 0, 0, 0, now);
+    }
+    op = le16(e + (ev == 0x0e ? 3 : 4));
+    if (!op && (ev == 0x0e || e[2] == 0)) return attrib_observe(e, len, now);
+    attrib_poll(now);
+    return record(ATTRIB_UNMATCHED, ev, op, e[ev == 0x0e ? 5 : 2],
+                  e[ev == 0x0e ? 2 : 3], now);
+}
