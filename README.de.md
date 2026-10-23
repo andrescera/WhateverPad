@@ -116,6 +116,12 @@ Es verändert **weder** Spiele, **noch** die Firmware der PS5, **noch** den Jail
 
 Mehrere Controller können gleichzeitig zusammen mit dem DualSense verwendet werden.
 
+### PS einrichten
+
+Für Controller ohne brauchbare PS-Taste (Switch Pro, 8BitDo und andere) kannst du mit der Schaltfläche **PS einrichten** **eine Taste oder eine Kombination aus drei** wählen, die als PS-Taste dient. Wähle, wie viele, drücke sie am Controller und halte sie eine Sekunde: WhateverPad erkennt sie von selbst. Die Einstellung wird für dieses Controller-Modell gespeichert.
+
+DualShock 4 und DualSense haben eine eigene PS-Taste, daher erscheint die Option für sie nicht.
+
 ---
 
 # Jeder Start beginnt sauber

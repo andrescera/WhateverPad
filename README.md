@@ -122,6 +122,12 @@ It does **not** modify games, the PS5 firmware or the jailbreak. Your PS5 must a
 
 Several controllers can be used at the same time, together with the DualSense.
 
+### Configure PS
+
+For controllers without a usable PS button (Switch Pro, 8BitDo and others), the **Configure PS** button lets you choose **one button or a combination of three** that will act as the PS button. Choose how many, press them on the controller and hold them for one second: WhateverPad detects them by itself. The setting is saved for that controller model.
+
+DualShock 4 and DualSense controllers have their own PS button, so this option does not appear for them.
+
 ---
 
 # Every run starts clean
@@ -294,6 +300,12 @@ WhateverPad PS5 se ejecuta como un payload residente en una PS5 con jailbreak. U
 4. **Elige el usuario.** Cuando la consola lo pregunte, elige **Juego rápido / Invitado**.
 
 Se pueden usar varios mandos a la vez, junto con el DualSense.
+
+### Configurar PS
+
+Para los mandos sin un botón PS que funcione (Switch Pro, 8BitDo y otros), el botón **Configurar PS** permite elegir **un botón o una combinación de tres** que hará de botón PS. Eliges cuántos, los pulsas en el mando y los mantienes un segundo: WhateverPad los detecta solo. El ajuste se guarda para ese modelo de mando.
+
+Los DualShock 4 y los DualSense tienen su propio botón PS, así que esta opción no aparece para ellos.
 
 ---
 

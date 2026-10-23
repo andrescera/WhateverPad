@@ -116,6 +116,12 @@ WhateverPad PS5 以常驻 payload 的形式运行在已越狱的 PS5 上。它�
 
 可以同时使用多个手柄，并与 DualSense 一起使用。
 
+### 设置 PS
+
+对于没有可用 PS 键的手柄（Switch Pro、8BitDo 等），**设置 PS** 按钮可让你选择**一个按键或三个按键的组合**来充当 PS 键。选择数量，在手柄上按下这些按键并保持一秒：WhateverPad 会自动检测。该设置会针对此手柄型号保存。
+
+DualShock 4 和 DualSense 自带 PS 键，因此它们不会显示此选项。
+
 ---
 
 # 每次运行都从零开始

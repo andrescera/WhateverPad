@@ -116,6 +116,12 @@ WhateverPad PS5 viene eseguito come payload residente su una PS5 con jailbreak. 
 
 Si possono usare più controller insieme, oltre al DualSense.
 
+### Configura PS
+
+Per i controller senza un tasto PS utilizzabile (Switch Pro, 8BitDo e altri), il pulsante **Configura PS** permette di scegliere **un tasto o una combinazione di tre** che farà da tasto PS. Scegli quanti, premili sul controller e tienili premuti per un secondo: WhateverPad li rileva da solo. L'impostazione viene salvata per quel modello di controller.
+
+I DualShock 4 e i DualSense hanno il loro tasto PS, quindi per loro questa opzione non compare.
+
 ---
 
 # Ogni avvio parte da zero

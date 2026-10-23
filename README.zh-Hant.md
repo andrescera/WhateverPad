@@ -116,6 +116,12 @@ WhateverPad PS5 以常駐 payload 的形式執行在已越獄的 PS5 上。它�
 
 可以同時使用多個控制器，並與 DualSense 一起使用。
 
+### 設定 PS
+
+對於沒有可用 PS 鍵的控制器（Switch Pro、8BitDo 等），**設定 PS** 按鈕可讓你選擇**一個按鍵或三個按鍵的組合**來充當 PS 鍵。選擇數量，在控制器上按下這些按鍵並保持一秒：WhateverPad 會自動偵測。該設定會針對此控制器型號儲存。
+
+DualShock 4 和 DualSense 本身就有 PS 鍵，因此不會顯示此選項。
+
 ---
 
 # 每次執行都從零開始

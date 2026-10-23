@@ -116,6 +116,12 @@ O WhateverPad PS5 corre como um payload residente numa PS5 com jailbreak. Usa o 
 
 Podem usar-se vários comandos ao mesmo tempo, juntamente com o DualSense.
 
+### Configurar PS
+
+Para comandos sem um botão PS utilizável (Switch Pro, 8BitDo e outros), o botão **Configurar PS** permite escolher **um botão ou uma combinação de três** que fará de botão PS. Escolha quantos, prima-os no comando e mantenha-os premidos durante um segundo: o WhateverPad deteta-os sozinho. A definição fica guardada para esse modelo de comando.
+
+Os DualShock 4 e os DualSense têm o seu próprio botão PS, por isso esta opção não aparece para eles.
+
 ---
 
 # Cada execução começa limpa

@@ -116,6 +116,12 @@ Il **ne** modifie **ni** les jeux, **ni** le firmware de la PS5, **ni** le jailb
 
 Plusieurs manettes peuvent être utilisées en même temps, avec la DualSense.
 
+### Configurer PS
+
+Pour les manettes sans touche PS utilisable (Switch Pro, 8BitDo et autres), le bouton **Configurer PS** permet de choisir **une touche ou une combinaison de trois** qui servira de touche PS. Choisissez combien, appuyez dessus sur la manette et maintenez-les une seconde : WhateverPad les détecte tout seul. Le réglage est enregistré pour ce modèle de manette.
+
+Les DualShock 4 et DualSense ont leur propre touche PS, cette option n'apparaît donc pas pour elles.
+
 ---
 
 # Chaque exécution part de zéro
