@@ -11,7 +11,8 @@ will fit. Two conventions:
   repository. Do not read a planned section as a description of today's behaviour.
 
 `PRODUCT.md` holds the users, jobs, rules, and interface direction. This file holds the
-code map.
+code map. The runtime map follows foundation baseline `2ce2933`; sections 9 and 10
+include todo 5's landed build changes.
 
 ## 1. Runtime shape
 
@@ -194,9 +195,11 @@ profile encoders such as `src/profiles.c:ds4_output`).
 
 One page, embedded in the payload, and a small JSON API.
 
-- `web/index.html` is the source. `src/web_page.c:web_page_html` is generated from it by a
-  Makefile rule that pipes the HTML through `xxd -i`. `src/icon_data.c:icon_png_data` is
-  generated the same way from `assets/icon0.png`.
+- `web/index.html` is the source. `tools/generate-assets.sh` emits
+  `src/web_page.c:web_page_html` and `src/icon_data.c:icon_png_data` from that page and
+  `assets/icon0.png` in the tracked array format. `Makefile:check-generated` generates
+  comparison files under `build/` and fails on drift; ordinary builds do not rewrite
+  the tracked embeds.
 - `src/web.c:web_start` binds port 8095 on all interfaces and serves the embedded page.
   `src/web.c:web_poll` accepts and completes requests. The page is re-served if the
   console address changes or the listener dies (`src/ps5_main.c:main`,
@@ -247,8 +250,16 @@ USB transport, session, lock, config, virtual pad, crypto, profiles, host, LE,
 compatibility, web, and launcher. `Makefile:fuzz` runs the fuzz targets. The console
 payload is built by `ps5.mk`, from one `SRCS` list
 (`ps5.mk:SRCS`), either with the SDK toolchain or through `tools/build-elf-docker.sh`.
-Today `tools/build-elf-docker.sh` keeps its own compile loop, which duplicates `SRCS`;
-one recipe plus `make sanitize`, `make check-generated`, and CI is planned: todo 5.
+At foundation baseline `2ce2933`, the Docker helper had its own compile loop and source
+list. Todo 5 replaced it with `make ps5` inside the SDK image, using the same `ps5.mk`
+recipe. `Makefile:ps5` first runs `check-generated`.
+
+`Makefile:sanitize` runs the host test target with AddressSanitizer and
+UndefinedBehaviorSanitizer. `Makefile:ci` runs `test`, `sanitize`, `fuzz`, and
+`check-generated`, then the ownership and mutation check targets if they exist.
+The landed workflow in `.github/workflows/ci.yml` runs `make ci` for pull requests
+and pushes to `main`, not feature-branch pushes. This build plumbing does not implement
+the planned ownership or reconnect work.
 
 ## 11. Module map
 
@@ -294,8 +305,6 @@ These are properties of this tree, not opinions. Each one is the gap a later tod
   point of the next section.
 - The page is a desktop dashboard with a 236 px sidebar (`web/index.html`), not the
   console-first shell in `PRODUCT.md`.
-- The Docker helper and `ps5.mk` carry separate source lists
-  (`ps5.mk:SRCS`, `tools/build-elf-docker.sh`), so the two builds can drift. Todo 5 fixes it.
 
 ## 13. Planned: the ownership ledger (todos 4, 13 to 15)
 
@@ -370,7 +379,6 @@ Short pointers, all absent from this tree.
 - Durable bonds and startup order (planned: todo 17). Reconnect for Classic (18) and LE
   identities (19). Device actions (20) and the web contract that exposes them (21, 22).
 - Console-first shell, flows, locales, and browser coverage (planned: todos 23 to 25).
-- Build plumbing: one recipe, `check-generated`, `sanitize`, CI (planned: todo 5).
 - Documentation trim and community files (planned: todos 26, 27, 29).
 
 ## 15. Citation and maintenance rules
