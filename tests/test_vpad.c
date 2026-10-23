@@ -3,22 +3,65 @@
  * the console source itself. */
 #include "../src/ps5_vpad.h"
 #include "../src/util.h"
+#include "../src/web.h"
 
 
 #include <stdint.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-static int g_fail;
+static int g_fail, pending, strict_mode;
 #define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+
+static void expected_failure(int todo, const char *name, int desired, const char *effect)
+{
+    printf("%s expected-failing-until-todo-%d %s\n", desired ? "XPASS" : "XFAIL", todo, name);
+    if (!desired) {
+        pending++;
+        if (strict_mode) printf("FAIL %s: %s (todo-%d)\n", name, effect, todo);
+    }
+}
+#define EFFECT(todo, name, c) expected_failure(todo, name, (c), #c)
 
 /* What the stand-ins were asked, in order. */
 static char g_calls[64];
 static int g_inited, g_priv_result_after_init, g_init_result;
 static uint64_t g_authid = 0x4800000000000001ull;
 static uint8_t g_caps[16];
+static int log_pipe[2], adds, binds, deletes, frames;
+static int fail_library, fail_symbol, add_result, bind_result;
+static int32_t deleted_handle;
+static int web_port;
+
+/* Only web.c's bind is redirected; HTTP and vendor-log sockets stay separate. */
+int test_vpad_web_bind(int fd, const struct sockaddr *addr, socklen_t len)
+{
+    int result = bind(fd, addr, len);
+    if (result == 0) {
+        struct sockaddr_in bound;
+        socklen_t n = sizeof bound;
+        CHECK(getsockname(fd, (struct sockaddr *)&bound, &n) == 0);
+        web_port = ntohs(bound.sin_port);
+    }
+    return result;
+}
+
+int test_vpad_socket(int domain, int type, int protocol)
+{
+    (void)domain; (void)type; (void)protocol;
+    return dup(log_pipe[0]);
+}
+
+int test_vpad_connect(int fd, const struct sockaddr *addr, socklen_t n)
+{
+    (void)fd; (void)addr; (void)n;
+    return 0;
+}
 
 static long g_now = 100000;
 static long fake_clock(void) { return g_now; }
@@ -70,18 +113,26 @@ int32_t scePadReadState(int32_t h, void *d)
     p[76] = (unsigned char)g_pad_connected;
     return 0;
 }
-int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t) { (void)p; (void)t; return 0; }
-int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; return 0; }
-int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { (void)h; return 0; }
+int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t)
+{
+    static const char candidate[] =
+        "SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x11112222][type:1][subType:22][capabilityBattery:0]\n";
+    (void)p; (void)t;
+    adds++;
+    if (!add_result) CHECK(write(log_pipe[1], candidate, sizeof candidate - 1) == sizeof candidate - 1);
+    return add_result;
+}
+int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; frames++; return 0; }
+int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { deleted_handle = h; deletes++; return 0; }
 uint64_t kernel_get_ucred_authid(pid_t pid) { (void)pid; return g_authid; }
 int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a) { (void)pid; g_authid = a; return 0; }
 int32_t kernel_get_ucred_caps(pid_t pid, uint8_t c[16]) { (void)pid; memcpy(c, g_caps, 16); return 0; }
 int32_t kernel_set_ucred_caps(pid_t pid, const uint8_t c[16]) { (void)pid; memcpy(g_caps, c, 16); return 0; }
 int sceKernelSendNotificationRequest(int a, void *r, size_t n, int b) { (void)a; (void)r; (void)n; (void)b; return 0; }
 
-static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; (void)u; return 0; }
-void *dlopen(const char *path, int mode) { (void)path; (void)mode; return (void *)1; }
-void *dlsym(void *h, const char *name) { (void)h; (void)name; return (void *)fake_bind; }
+static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; (void)u; binds++; return bind_result; }
+void *dlopen(const char *path, int mode) { (void)path; (void)mode; return fail_library ? NULL : (void *)1; }
+void *dlsym(void *h, const char *name) { (void)h; (void)name; return fail_symbol ? NULL : (void *)fake_bind; }
 
 static void reset(int init_result, int priv_after_init)
 {
@@ -91,8 +142,220 @@ static void reset(int init_result, int priv_after_init)
     g_priv_result_after_init = priv_after_init;
 }
 
-int main(void)
+static void test_refused_vendor_libraries(void)
 {
+    fail_library = 1;
+    CHECK(!vpad_init() && !vpad_add(0));
+    fail_library = 0; fail_symbol = 1;
+    CHECK(!vpad_init() && !vpad_add(0));
+    fail_symbol = 0;
+}
+
+/* T:164-211: vendor effects only, with real identification from a pipe. */
+static void test_refused_vendor_acquisitions_do_not_invent_ownership(void)
+{
+    CHECK(pipe(log_pipe) == 0);
+    ph_clock_hook = fake_clock;
+    reset(0, 0);
+    CHECK(vpad_init());
+    add_result = -1;
+    CHECK(vpad_add(0));
+    vpad_poll(g_now);
+    CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+    add_result = 0;
+    CHECK(vpad_add(1));
+    vpad_poll(g_now);
+    EFFECT(10, "refused-vendor-add-does-not-block-next-add", adds == 2);
+    vpad_remove(0);
+    g_now += 3001;
+    vpad_poll(g_now);
+    vpad_poll(g_now);
+    CHECK(adds == 2);
+    bind_result = -1;
+    vpad_poll(g_now);
+    g_now += 301;
+    vpad_poll(g_now);
+    CHECK(binds == 1 && deletes == 1 && frames == 0);
+    CHECK(deleted_handle == 0x11112222);
+    vpad_remove(1); vpad_remove(1);
+    CHECK(deletes == 1);
+    bind_result = 0;
+    vpad_close_physical();
+    g_pad_opened = 1; /* GetHandle supplies a borrowed handle. */
+    int before = g_closed;
+    uint32_t buttons;
+    g_now += 6000;
+    CHECK(vpad_read_physical(&buttons));
+    vpad_close_physical();
+    CHECK(g_closed == before && g_pad_opened == 1);
+    g_pad_opened = 0; g_open_result = -1; g_now += 6000;
+    CHECK(!vpad_read_physical(&buttons));
+    vpad_close_physical();
+    CHECK(g_closed == before);
+    g_open_result = 7;
+    close(log_pipe[0]); close(log_pipe[1]);
+}
+
+static void web_vpad_request(web_t *web, int stop)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(web_port),
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    int connected = connect(fd, (struct sockaddr *)&address, sizeof address);
+    CHECK(connected == 0);
+    if (connected != 0) { close(fd); return; }
+    struct pollfd ready = {.fd = fd, .events = POLLIN};
+    const char *request = stop
+        ? "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1\r\nX-WhateverPad: 1\r\n\r\n"
+        : "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    CHECK(send(fd, request, strlen(request), 0) == (ssize_t)strlen(request));
+    CHECK(shutdown(fd, SHUT_WR) == 0);
+    web_poll(web);
+    char out[2048];
+    int bytes = 0;
+    while (bytes < (int)sizeof out - 1) {
+        int available = poll(&ready, 1, 1000);
+        CHECK(available > 0);
+        if (available <= 0) break;
+        int n = (int)recv(fd, out + bytes, sizeof out - 1 - (size_t)bytes, 0);
+        CHECK(n >= 0);
+        if (n <= 0) break;
+        bytes += n;
+    }
+    out[bytes] = 0;
+    const char *body = strstr(out, "\r\n\r\n");
+    const char *length = strstr(out, "\r\nContent-Length: ");
+    unsigned n = 0;
+    CHECK(bytes > 0 && !strncmp(out, "HTTP/1.1 200", 12) && body && length &&
+          sscanf(length, "\r\nContent-Length: %u", &n) == 1 &&
+          (size_t)bytes == (size_t)(body + 4 - out) + n);
+    if (stop) CHECK(body && !strcmp(body + 4, "{\"ok\":true}"));
+    CHECK(close(fd) == 0);
+}
+
+/* RV1 C / review r3 B6: ps5_main polls web Stop before queued/pending vpad work. */
+static void test_web_stop_preempts_queued_and_pending_effects(void)
+{
+    ph_clock_hook = fake_clock;
+    for (int mode = 0; mode < 3; mode++) {
+        CHECK(pipe(log_pipe) == 0);
+        adds = binds = deletes = frames = 0;
+        reset(0, 0);
+        CHECK(vpad_init());
+        CHECK(vpad_add(0));
+        CHECK(adds == 0);
+        if (mode == 2) {
+            vpad_poll(g_now);
+            CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+            CHECK(vpad_add(1));
+            CHECK(adds == 1);
+        }
+        host_t *host = NULL;
+        volatile int stop = 0, retry = 0, bt = WEB_BT_FAILED;
+        web_cfg cfg = {.host = &host, .stop = &stop, .retry = &retry,
+            .bt_state = &bt, .version = "vpad-test"};
+        web_port = 0;
+        web_t *web = web_start(&cfg, 0);
+        CHECK(web != NULL && web_port > 0);
+        if (web) {
+            web_vpad_request(web, mode != 0);
+            CHECK(stop == (mode != 0) && retry == 0);
+            vpad_poll(g_now);
+            if (mode != 1) {
+                if (mode == 0) vpad_poll(g_now);
+                g_now += 301;
+                vpad_poll(g_now);
+                if (mode == 2) vpad_poll(g_now);
+            }
+            pad_state input = {.buttons = PAD_CROSS};
+            vpad_update(0, &input);
+            vpad_update(1, &input);
+            printf("WEB_VPAD mode=%d stop=%d adds=%d binds=%d deletes=%d frames=%d\n",
+                   mode, stop, adds, binds, deletes, frames);
+            if (mode == 1)
+                EFFECT(10, "web-stop-before-queued-creation",
+                       adds == 0 && binds == 0 && deletes == 0 && frames == 0);
+            else if (mode == 2)
+                EFFECT(10, "web-stop-drains-identification-without-queued-creation",
+                       adds == 1 && binds == 0 && deletes == 1 && frames == 0);
+            else CHECK(adds == 1 && binds == 1 && deletes == 0 && frames == 1);
+            web_stop(web);
+        }
+        vpad_remove(0); vpad_remove(1);
+        vpad_poll(g_now); g_now += 301; vpad_poll(g_now);
+        CHECK(deletes == adds && deleted_handle == 0x11112222);
+        int removed = deletes;
+        vpad_remove(0); vpad_remove(1); vpad_poll(g_now);
+        CHECK(deletes == removed);
+        CHECK(vpad_creds_restore());
+        CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+    }
+}
+
+/* Review r4 B7: a pending removal cannot choose an unidentified device. */
+static void test_pending_removal_preserves_unidentified_devices(void)
+{
+    ph_clock_hook = fake_clock;
+    for (int candidates = 0; candidates <= 2; candidates += 2) {
+        CHECK(pipe(log_pipe) == 0);
+        adds = binds = deletes = frames = 0;
+        reset(0, 0);
+        CHECK(vpad_init());
+        CHECK(vpad_add(0));
+        vpad_poll(g_now);
+        CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+        if (candidates == 0) {
+            /* Withhold the successful Add's log event, not the Add itself. */
+            char line[512];
+            ssize_t n = read(log_pipe[0], line, sizeof line - 1);
+            CHECK(n > 0);
+            if (n > 0) {
+                line[n] = 0;
+                CHECK(strstr(line, "DeviceId:0x11112222") != NULL);
+            }
+        } else {
+            const char second[] =
+                "SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x33334444][type:1][subType:22][capabilityBattery:0]\n";
+            CHECK(write(log_pipe[1], second, sizeof second - 1) == sizeof second - 1);
+        }
+        host_t *host = NULL;
+        volatile int stop = 0, retry = 0, bt = WEB_BT_FAILED;
+        web_cfg cfg = {.host = &host, .stop = &stop, .retry = &retry,
+            .bt_state = &bt, .version = "vpad-preservation"};
+        web_port = 0;
+        web_t *web = web_start(&cfg, 0);
+        CHECK(web != NULL && web_port > 0);
+        if (web) {
+            web_vpad_request(web, 1);
+            CHECK(stop == 1 && retry == 0);
+            web_stop(web);
+        }
+        vpad_remove(0);
+        vpad_poll(g_now);
+        g_now += 3001;
+        vpad_poll(g_now);
+        pad_state input = {.buttons = PAD_CROSS};
+        vpad_update(0, &input);
+        printf("PRESERVATION candidates=%d adds=%d binds=%d deletes=%d frames=%d\n",
+               candidates, adds, binds, deletes, frames);
+        CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+        vpad_remove(0);
+        vpad_poll(g_now);
+        vpad_update(0, &input);
+        CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+        CHECK(vpad_creds_restore());
+        CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    strict_mode = argc == 2 && !strcmp(argv[1], "--expected-failures");
+    if (argc > 2 || (argc == 2 && !strict_mode)) return 2;
+    test_refused_vendor_libraries();
     printf("vpad_init: libScePad is initialised before its privilege is set\n");
     reset(0, 0);
     CHECK(vpad_init() == 1);
@@ -223,6 +486,11 @@ int main(void)
         CHECK(vpad_choose_user(none, 0x1111, 0x1111, "other") == -1);       /* nobody signed in */
     }
 
+    test_refused_vendor_acquisitions_do_not_invent_ownership();
+    test_web_stop_preempts_queued_and_pending_effects();
+    test_pending_removal_preserves_unidentified_devices();
+    ph_clock_hook = NULL;
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
-    return g_fail != 0;
+    printf("%d expected-failing vpad cases\n", pending);
+    return g_fail != 0 || (strict_mode && pending != 0);
 }
