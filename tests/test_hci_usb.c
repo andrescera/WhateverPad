@@ -1182,15 +1182,296 @@ static void test_actual_receipt_provenance_reaches_classifier(void)
     CHECK(violations == 0);
 }
 
+static void test_credit_only_events_leave_command_lane_untouched(void)
+{
+    unsigned violations = 0;
+    for (unsigned policy = 0; policy < 2; policy++) for (unsigned waiting = 0; waiting < 3; waiting++) {
+        hci_t h;
+        own_token token, next;
+        own_ref parent = {0};
+        own_summary summary;
+        unsigned updates = 0;
+        int failed = 0;
+        reset(); attrib_reset(); h = start();
+        own_ledger *l = bound(&h, (own_policy)policy);
+        if (waiting) {
+            static const unsigned char inquiry[] = {0x33,0x8b,0x9e,1,0};
+            parent = prepare(l, waiting == 1 ? 0x1009 : 0x0401,
+                             waiting == 1 ? NULL : inquiry, waiting == 1 ? 0 : 5, &token);
+            CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        }
+        /* Exercise every legal one-octet credit value, including zero. */
+        for (unsigned value = 0; value < 256 && !failed; value++) {
+            unsigned char cc[] = {0x0e,3,(unsigned char)(value + 1),0,0};
+            unsigned char cs[] = {0x0f,4,0,(unsigned char)(value + 1),0,0};
+            for (unsigned form = 0; form < 2; form++) {
+                receive_event(h, form ? cs : cc, form ? sizeof cs : sizeof cc);
+                updates++;
+                own_snapshot(l, &summary);
+                CHECK(usb.last_receipt == OWN_RECEIPT_NONE);
+                CHECK(attrib_get()->classes[ATTRIB_NOP] == updates);
+                CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0);
+                CHECK(attrib_get()->unanswered == (waiting != 0) && usb.commands == (waiting != 0));
+                own_result lane = own_next_hci(l, (uint64_t)clock_ms, &next);
+                if (summary.credit_nops != updates || summary.ambiguity_count ||
+                    summary.runtime.reason != SESSION_NONE ||
+                    lane != (waiting ? OWN_BUSY : OWN_STOPPED)) {
+                    failed = 1;
+                    break;
+                }
+            }
+        }
+        printf("CREDIT_NOP policy=%u waiter=%u updates=%u credits=%u ambiguities=%u reason=%d\n",
+               policy, waiting, updates, summary.credit_nops, summary.ambiguity_count,
+               summary.runtime.reason);
+        violations += failed;
+        if (!failed && waiting) {
+            acknowledge(h, waiting == 1 ? 0x1009 : 0x0401, waiting != 1, 0);
+            CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED);
+            CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
+            if (waiting == 2) {
+                own_terminal_event terminal = {.kind = OWN_TERM_INQUIRY};
+                own_terminal(l, parent, &terminal, (uint64_t)clock_ms);
+            }
+        }
+        closed_once(h); own_free(l);
+    }
+    CHECK(violations == 0);
+}
+
+static void test_unassociated_events_do_not_answer_commands(void)
+{
+    static const unsigned char packets[][11] = {
+        {0x13,5,1,0x41,0,3,0},                  /* completed ACL packets */
+        {0x48,9,4,0,1,0x41,0,2,0,3,0},         /* completed data blocks */
+        {0xff,6,0x0f,4,0,1,0,0},               /* opaque vendor payload */
+        {0xfe,1,0},                             /* unsupported event */
+        {0x3e,1,0xff},                          /* unsupported LE subevent */
+        {5,4,1,0x41,0,0xff}                    /* failure: reason ignored */
+    };
+    for (unsigned policy = 0; policy < 2; policy++) {
+        hci_t h;
+        own_token token, next;
+        own_summary summary;
+        reset(); attrib_reset(); h = start();
+        own_ledger *l = bound(&h, (own_policy)policy);
+        prepare(l, 0x1009, NULL, 0, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        for (unsigned i = 0; i < sizeof packets / sizeof packets[0]; i++) {
+            unsigned before = usb.receipt_calls;
+            receive_event(h, packets[i], 2 + packets[i][1]);
+            own_snapshot(l, &summary);
+            CHECK(usb.receipt_calls == before && summary.ambiguity_count == 0);
+            CHECK(own_next_hci(l, (uint64_t)clock_ms, &next) == OWN_BUSY);
+            CHECK(attrib_get()->unanswered == 1 && attrib_get()->classes[ATTRIB_SOLICITED] == 0);
+        }
+        acknowledge(h, 0x1009, 0, 0);
+        CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED && attrib_get()->unanswered == 0);
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_credit_reassembly_and_real_response(void)
+{
+    static const unsigned char cs[] = {0x0f,4,0,1,0,0};
+    static const unsigned char cc[] = {0x0e,3,0,0,0};
+    static const unsigned char extra[] = {0x0e,5,255,0,0,0xff,0x7e};
+    static const unsigned char answer[] = {0x0e,4,1,9,0x10,0};
+    for (unsigned policy = 0; policy < 2; policy++) {
+        hci_t h;
+        own_token token, next;
+        own_summary summary;
+        unsigned char out[HCI_PKT_MAX], batch[sizeof cc + sizeof extra + sizeof answer];
+        reset(); attrib_reset(); h = start();
+        own_ledger *l = bound(&h, (own_policy)policy);
+        prepare(l, 0x1009, NULL, 0, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        h.ops->pump(h.ctx, 0); completion(0, cs, 3);
+        CHECK(h.ops->pump(h.ctx, 0) == 0 && usb.receipt_calls == 0);
+        h.ops->pump(h.ctx, 0); completion(0, cs + 3, 3);
+        CHECK(h.ops->pump(h.ctx, 0) == 1);
+        CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof cs && !memcmp(out, cs, sizeof cs));
+        CHECK(usb.last_receipt == OWN_RECEIPT_NONE && usb.receipt_calls == 1);
+        CHECK(own_next_hci(l, (uint64_t)clock_ms, &next) == OWN_BUSY);
+        memcpy(batch, cc, sizeof cc);
+        memcpy(batch + sizeof cc, extra, sizeof extra);
+        memcpy(batch + sizeof cc + sizeof extra, answer, sizeof answer);
+        h.ops->pump(h.ctx, 0); completion(0, batch, sizeof batch);
+        CHECK(h.ops->pump(h.ctx, 0) == 1 && usb.receipt_calls == 4);
+        CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof cc && !memcmp(out, cc, sizeof cc));
+        CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof extra && !memcmp(out, extra, sizeof extra));
+        CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof answer && !memcmp(out, answer, sizeof answer));
+        own_snapshot(l, &summary);
+        CHECK(summary.credit_nops == 3 && summary.ambiguity_count == 0);
+        CHECK(usb.last_receipt == OWN_RECEIPT_SEQUENCED);
+        CHECK(attrib_get()->classes[ATTRIB_NOP] == 3 &&
+              attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_credits_cannot_hide_real_ambiguity_or_timeout(void)
+{
+    static const unsigned char bad[][6] = {
+        {0x0e,4,1,5,0x10,0},       /* unsolicited opcode */
+        {0x0f,4,0,1,9,0x10},       /* wrong event type */
+        {0x0f,4,0x0c,1,0,0},       /* opcode-zero Status must be success */
+        {0x0e,2,1,0,0,0}           /* truncated opcode */
+    };
+    static const unsigned char cs[] = {0x0f,4,0,1,0,0};
+    for (unsigned policy = 0; policy < 2; policy++) {
+        for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            hci_t h;
+            own_token token;
+            own_summary summary;
+            reset(); attrib_reset(); h = start();
+            own_ledger *l = bound(&h, (own_policy)policy);
+            prepare(l, 0x1009, NULL, 0, &token);
+            CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+            receive_event(h, bad[i], i == 3 ? 4 : 6);
+            own_snapshot(l, &summary);
+            CHECK(summary.runtime.reason == SESSION_AMBIGUOUS && summary.ambiguity_count > 0);
+            CHECK(summary.credit_nops == 0 && attrib_get()->classes[ATTRIB_SOLICITED] == 0);
+            CHECK(attrib_get()->classes[ATTRIB_NOP] == 0 && attrib_get()->unanswered == 1);
+            if (!i) {
+                unsigned before = summary.ambiguity_count;
+                unsigned char out[16];
+                CHECK(usb.busy[1]);
+                completion(1, cs, sizeof cs);
+                CHECK(h.ops->pump(h.ctx, 0) == 1);
+                CHECK(h.ops->next_event(h.ctx, out, sizeof out) == sizeof cs);
+                own_snapshot(l, &summary);
+                CHECK(summary.runtime.reason == SESSION_AMBIGUOUS &&
+                      summary.ambiguity_count == before && summary.credit_nops == 1);
+            }
+            closed_once(h); own_free(l);
+        }
+        hci_t h;
+        own_token token;
+        own_summary summary;
+        reset(); attrib_reset(); h = start();
+        own_ledger *l = bound(&h, (own_policy)policy);
+        prepare(l, 0x1009, NULL, 0, &token);
+        CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+        clock_ms = 2999;
+        receive_event(h, cs, sizeof cs);
+        own_snapshot(l, &summary);
+        CHECK(summary.runtime.reason == SESSION_NONE && summary.credit_nops == 1);
+        clock_ms = 3000;
+        h.ops->pump(h.ctx, 0);
+        own_snapshot(l, &summary);
+        CHECK(summary.runtime.reason == SESSION_AMBIGUOUS && summary.ambiguity_count > 0);
+        CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1 && usb.commands == 1);
+        closed_once(h); own_free(l);
+    }
+}
+
+static void test_failed_le_event_ignored_fields_cannot_revoke_a_link(void)
+{
+    unsigned violations = 0;
+    static const unsigned char connected[] = {
+        0x3e,19,1,0,0x41,0,0,0,1,2,3,4,5,6,24,0,0,0,72,0,0
+    };
+    static const unsigned char rand[] = {0x0e,12,1,0x18,0x20,0,1,0,0,0,0,0,0,0};
+    for (unsigned policy = 0; policy < 2; policy++) for (unsigned enhanced = 0; enhanced < 2; enhanced++) {
+        hci_t h;
+        own_ref parent;
+        link_ref link;
+        own_token command;
+        own_acl_token output;
+        own_summary summary;
+        unsigned char wire[sizeof connected + sizeof rand], popped[HCI_PKT_MAX], failure[33];
+        reset(); attrib_reset(); h = start();
+        own_ledger *l = bound(&h, (own_policy)policy);
+        own_peer peer = {.le = 1, .wire = {1,2,3,4,5,6}, .identity = {1,2,3,4,5,6}};
+        own_command c = {.opcode = 0x200d, .plen = 25, .ack_by = 3000,
+                         .terminal_by = 5000, .peer = peer};
+        CHECK(own_reserve_link(l, &peer, &link) == OWN_OK);
+        c.link = link; memcpy(c.params + 6, peer.wire, 6);
+        CHECK(own_prepare(l, &c, &parent) == OWN_OK);
+        CHECK(own_next_hci(l, (uint64_t)clock_ms, &command) == OWN_OK);
+        CHECK(hci_usb_submit(&h, &command) == OWN_SENT);
+        acknowledge(h, 0x200d, 1, 0);
+        CHECK(own_next_hci(l, (uint64_t)clock_ms, &command) == OWN_OK);
+        CHECK(hci_usb_submit(&h, &command) == OWN_SENT);
+        memcpy(wire, connected, sizeof connected);
+        memcpy(wire + sizeof connected, rand, sizeof rand);
+        h.ops->pump(h.ctx, 0); completion(0, wire, sizeof wire);
+        CHECK(h.ops->pump(h.ctx, 0) == 1);
+        CHECK(h.ops->next_event(h.ctx, popped, sizeof popped) == sizeof connected);
+        CHECK(!memcmp(popped, connected, sizeof connected));
+        CHECK(h.ops->next_event(h.ctx, popped, sizeof popped) == sizeof rand);
+        own_acl_lane *lane = own_acl_new(l);
+        static const unsigned char packet[] = {0x41,0x20,0,0};
+        CHECK(lane != NULL);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, (uint64_t)clock_ms, &output) == OWN_OK);
+        memset(failure, 0xff, sizeof failure);
+        failure[0] = 0x3e; failure[1] = enhanced ? 31 : 19;
+        failure[2] = enhanced ? 0x0a : 1; failure[3] = 0x0c;
+        /* Only status/subevent are valid on failure; these bytes may be arbitrary. */
+        failure[7] = 0; memcpy(failure + 8, peer.wire, 6);
+        receive_event(h, failure, enhanced ? 33 : 21);
+        own_snapshot(l, &summary);
+        own_submit_result sent = acl_submit(h, lane, &output);
+        printf("FAILED_LE policy=%u enhanced=%u ambiguities=%u sent=%d outputs=%d\n",
+               policy, enhanced, summary.ambiguity_count, sent, usb.outputs);
+        violations += summary.ambiguity_count != 0 || sent != OWN_SENT || usb.outputs != 1;
+        closed_once(h); own_acl_free(lane); own_free(l);
+    }
+    CHECK(violations == 0);
+}
+
+static void test_failed_classic_attempt_does_not_end_an_existing_link(void)
+{
+    unsigned violations = 0;
+    for (unsigned policy = 0; policy < 2; policy++) for (unsigned ignored = 0; ignored < 2; ignored++) {
+        hci_t h;
+        own_ref parent;
+        own_acl_token token;
+        own_summary summary;
+        unsigned char failure[] = {3,11,0x0c,0xff,0xff,1,2,3,4,5,6,1,0xff};
+        static const unsigned char packet[] = {0x41,0x20,0,0};
+        reset(); attrib_reset(); h = start();
+        own_ledger *l = bound(&h, (own_policy)policy);
+        link_ref link = acquire_link(h, l, &parent);
+        own_acl_lane *lane = own_acl_new(l);
+        CHECK(lane != NULL);
+        CHECK(own_acl_prepare(lane, link, packet, sizeof packet, (uint64_t)clock_ms, &token) == OWN_OK);
+        if (ignored) failure[11] = 0xff;
+        receive_event(h, failure, sizeof failure);
+        own_snapshot(l, &summary);
+        own_submit_result sent = acl_submit(h, lane, &token);
+        printf("FAILED_CLASSIC policy=%u ignored_type=%u ambiguities=%u sent=%d outputs=%d\n",
+               policy, ignored, summary.ambiguity_count, sent, usb.outputs);
+        violations += summary.ambiguity_count != 0 || sent != OWN_SENT || usb.outputs != 1;
+        closed_once(h); own_acl_free(lane); own_free(l);
+    }
+    CHECK(violations == 0);
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
     int acl_boundary = argc == 2 && !strcmp(argv[1], "--acl-boundary");
     int queued_connection = argc == 2 && !strcmp(argv[1], "--queued-connection");
     int receipt_classifier = argc == 2 && !strcmp(argv[1], "--receipt-classifier");
+    int credit_nop = argc == 2 && !strcmp(argv[1], "--credit-nop");
+    int event_sweep = argc == 2 && !strcmp(argv[1], "--event-sweep");
     strict_mode = argc == 2 && !strcmp(argv[1], "--expected-failures");
     if (argc > 2 || (argc == 2 && !strict_mode && !acl_boundary &&
-                    !queued_connection && !receipt_classifier)) return 2;
+                    !queued_connection && !receipt_classifier && !credit_nop && !event_sweep)) return 2;
+    if (event_sweep) {
+        test_unassociated_events_do_not_answer_commands();
+        test_failed_le_event_ignored_fields_cannot_revoke_a_link();
+        test_failed_classic_attempt_does_not_end_an_existing_link();
+        goto done;
+    }
+    if (credit_nop) {
+        test_credit_only_events_leave_command_lane_untouched();
+        test_credit_reassembly_and_real_response();
+        test_credits_cannot_hide_real_ambiguity_or_timeout();
+        goto done;
+    }
     if (queued_connection) {
         test_queued_connection_cannot_remint_a_disconnected_lease();
         goto done;
@@ -1233,6 +1514,12 @@ int main(int argc, char **argv)
     test_derived_disconnect_requires_a_live_fresh_lease();
     test_queued_connection_cannot_remint_a_disconnected_lease();
     test_actual_receipt_provenance_reaches_classifier();
+    test_credit_only_events_leave_command_lane_untouched();
+    test_credit_reassembly_and_real_response();
+    test_credits_cannot_hide_real_ambiguity_or_timeout();
+    test_unassociated_events_do_not_answer_commands();
+    test_failed_le_event_ignored_fields_cannot_revoke_a_link();
+    test_failed_classic_attempt_does_not_end_an_existing_link();
 done:
     ph_clock_hook = NULL;
     printf("%d USB lifetime checks, %d failed; %d expected-failing cases\n", checks, failures, pending);

@@ -239,11 +239,12 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
     if (c->ledger) {
         long now = now_ms();
         if (ev[0] != OWN_CC && ev[0] != OWN_CS) attrib_observe(ev, len, now);
-        if (ev[0] == 3 && len == 13 && ev[11] == 1)
+        /* Failure events do not provide a usable connection identity tuple. */
+        if (ev[0] == 3 && len == 13 && ev[2] == 0 && ev[11] == 1)
             own_observe_connection(c->ledger, 0, 0, ev + 5, (uint16_t)le16(ev + 3),
                                    ev[2], (uint64_t)now);
         if (ev[0] == 0x3e && len >= 3 &&
-            ((ev[2] == 1 && len == 21) || (ev[2] == 0x0a && len == 33)))
+            ((ev[2] == 1 && len == 21) || (ev[2] == 0x0a && len == 33)) && ev[3] == 0)
             own_observe_connection(c->ledger, 1, ev[7], ev + 8, (uint16_t)le16(ev + 4),
                                    ev[3], (uint64_t)now);
         if (ev[0] == 5) {

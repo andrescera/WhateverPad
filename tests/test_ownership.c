@@ -1112,6 +1112,29 @@ static void typed_hci_phase_deadlines(own_policy policy)
     own_free(l);
 }
 
+static void credit_events(own_policy policy)
+{
+    for (unsigned form = 0; form < 2; form++) {
+        own_ledger *l = own_new(policy, 1);
+        own_ack credit = {.event = form ? OWN_CS : OWN_CC};
+        own_receipt receipt;
+        own_summary summary;
+        own_token next;
+        CHECK(l && own_activate(l));
+        prepare(l, 0x1009, 0);
+        submit(l, 0x1009, 0);
+        CHECK(own_backend_receipt(l, &credit, 1, &receipt) == OWN_RECEIPT_NONE);
+        own_receive(l, &receipt, 1);
+        own_snapshot(l, &summary);
+        CHECK(summary.credit_nops == 1 && summary.ambiguity_count == 0 &&
+              summary.runtime.reason == SESSION_NONE);
+        CHECK(own_next_hci(l, 1, &next) == OWN_BUSY);
+        ack(l, 0x1009, 0, 0, 2);
+        CHECK(own_next_hci(l, 2, &next) != OWN_BUSY);
+        own_free(l);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--residual-r1") == 0) {
@@ -1134,6 +1157,7 @@ int main(int argc, char **argv)
         acl_output(policy);
         typed_hci_commit(policy);
         typed_hci_phase_deadlines(policy);
+        credit_events(policy);
     }
     printf("ownership checks=%d violations=%d\n", checks, failed);
     return failed != 0;

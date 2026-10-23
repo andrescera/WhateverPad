@@ -755,7 +755,8 @@ own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now
     p.status = a->status;
     p.random_len = a->random_len;
     for (unsigned i = 0; i < 8; i++) p.random |= (uint64_t)a->random[i] << (8*i);
-    p.credit = a->opcode == 0 && !a->malformed && !a->overflow && a->event == OWN_CC;
+    p.credit = a->opcode == 0 && !a->malformed && !a->overflow &&
+               (a->event == OWN_CC || (a->event == OWN_CS && a->status == 0));
     own_record *r = record(l, l->waiter);
     if (r && !l->ambiguities && !l->transport_closed && !a->malformed && !a->overflow &&
         !r->submit_pending && now < r->phase_ack_by) {
