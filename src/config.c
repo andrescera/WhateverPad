@@ -2,6 +2,7 @@
 #include "log.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,10 @@ void config_defaults(whateverpad_config *c)
 {
     c->menu_combo = PAD_OPTIONS | PAD_L2 | PAD_R2;
     c->menu_hold_ms = 1500;
+    c->auto_reconnect = 1;
+    c->lan_access = 0;
+    c->developer_mode = 0;
+    c->notifications = 1;
 }
 
 static int parse_buttons(const char *text, uint32_t *mask, int least);
@@ -63,6 +68,7 @@ void config_combo_text(uint32_t mask, char *out, size_t max)
 {
     size_t i, n = 0;
 
+    if (!max) return;
     out[0] = '\0';
     for (i = 0; i < N_BUTTONS; i++) {
         int w;
@@ -83,44 +89,79 @@ static char *trim(char *s)
     return s;
 }
 
-int config_load(whateverpad_config *c, const char *path)
+static int parse_line(whateverpad_config *c, char *line)
 {
-    char line[160];
-    FILE *f = fopen(path, "r");
-    int bad = 0, no = 0;
+    char *eq, *key = trim(line), *val;
+    int *boolean = NULL;
 
-    if (!f) return 0;
-    while (fgets(line, sizeof line, f)) {
-        char *eq, *key, *val;
-        no++;
-        key = trim(line);
-        if (!*key || *key == '#') continue;
-        eq = strchr(key, '=');
-        if (!eq) {
-            log_line("config %s:%d: not understood", path, no);
+    if (!*key || *key == '#') return 0;
+    eq = strchr(key, '=');
+    if (!eq) return 1;
+    *eq = '\0';
+    val = trim(eq + 1);
+    key = trim(key);
+    if (strcmp(key, "menu_combo") == 0) {
+        uint32_t m;
+        if (config_parse_combo(val, &m)) {
+            c->menu_combo = m;
+            return 0;
+        }
+    } else if (strcmp(key, "menu_hold_ms") == 0) {
+        char *end;
+        long v;
+        errno = 0;
+        v = strtol(val, &end, 10);
+        if (!errno && end != val && !*end && v >= 500 && v <= 5000) {
+            c->menu_hold_ms = (int)v;
+            return 0;
+        }
+    } else if (strcmp(key, "auto_reconnect") == 0) boolean = &c->auto_reconnect;
+    else if (strcmp(key, "lan_access") == 0) boolean = &c->lan_access;
+    else if (strcmp(key, "developer_mode") == 0) boolean = &c->developer_mode;
+    else if (strcmp(key, "notifications") == 0) boolean = &c->notifications;
+    if (boolean && (val[0] == '0' || val[0] == '1') && !val[1]) {
+        *boolean = val[0] - '0';
+        return 0;
+    }
+    return 1;
+}
+
+int config_parse(whateverpad_config *c, const char *bytes, size_t len)
+{
+    size_t pos = 0;
+    int bad = 0;
+
+    if (len > CONFIG_MAX_BYTES) return 1;
+    while (pos < len) {
+        char line[CONFIG_LINE_MAX + 1];
+        size_t start = pos, n;
+        while (pos < len && bytes[pos] != '\n') pos++;
+        n = pos - start;
+        if (pos < len) pos++;
+        if (n > CONFIG_LINE_MAX || memchr(bytes + start, '\0', n)) {
             bad++;
             continue;
         }
-        *eq = '\0';
-        val = trim(eq + 1);
-        key = trim(key);
-        if (strcmp(key, "menu_combo") == 0) {
-            uint32_t m;
-            if (config_parse_combo(val, &m)) {
-                c->menu_combo = m;
-                continue;
-            }
-        } else if (strcmp(key, "menu_hold_ms") == 0) {
-            int v = atoi(val);
-            if (v >= 500 && v <= 5000) {
-                c->menu_hold_ms = v;
-                continue;
-            }
-        }
-        log_line("config %s:%d: '%s' is not valid, default kept", path, no, key);
-        bad++;
+        memcpy(line, bytes + start, n);
+        line[n] = '\0';
+        bad += parse_line(c, line);
     }
-    fclose(f);
+    return bad;
+}
+
+int config_load(whateverpad_config *c, const char *path)
+{
+    char bytes[CONFIG_MAX_BYTES + 1];
+    FILE *f = fopen(path, "rb");
+    size_t n;
+    int bad;
+
+    if (!f) return errno == ENOENT ? 0 : 1;
+    n = fread(bytes, 1, sizeof bytes, f);
+    bad = ferror(f) != 0;
+    if (fclose(f)) bad = 1;
+    if (!bad) bad = config_parse(c, bytes, n);
+    if (bad) log_line("config %s: %d invalid line(s) or read error, prior settings kept", path, bad);
     return bad;
 }
 
@@ -128,6 +169,7 @@ void config_combo_keys(uint32_t mask, char *out, size_t max)
 {
     size_t i, n = 0;
 
+    if (!max) return;
     out[0] = '\0';
     for (i = 0; i < N_BUTTONS; i++) {
         int w;

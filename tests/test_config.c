@@ -40,6 +40,56 @@ static void test_config(void)
     CHECK(c.menu_hold_ms == 2000);
 }
 
+static void test_settings(void)
+{
+    whateverpad_config c;
+    const char *keys[] = { "auto_reconnect", "lan_access", "developer_mode", "notifications" };
+    const char *bad[] = { "2", "-1", "01", "10", "+1", "true", "1junk", "" };
+    char line[256], large[5000];
+    size_t i, j;
+
+    puts("config: strict persistent settings and bounded input");
+    config_defaults(&c);
+    CHECK(c.auto_reconnect == 1 && c.lan_access == 0 &&
+          c.developer_mode == 0 && c.notifications == 1);
+    for (i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        for (j = 0; j < sizeof bad / sizeof bad[0]; j++) {
+            whateverpad_config before = c;
+            snprintf(line, sizeof line, "%s = %s\n", keys[i], bad[j]);
+            CHECK(config_parse(&c, line, strlen(line)) == 1);
+            CHECK(memcmp(&before, &c, sizeof c) == 0);
+        }
+    }
+    strcpy(line, "auto_reconnect=0\nlan_access=1\ndeveloper_mode=1\nnotifications=0\n");
+    CHECK(config_parse(&c, line, strlen(line)) == 0);
+    CHECK(!c.auto_reconnect && c.lan_access && c.developer_mode && !c.notifications);
+    strcpy(line, "auto_reconnect = 1\r\nlan_access = 0\ndeveloper_mode = 0\nnotifications = 1");
+    CHECK(config_parse(&c, line, strlen(line)) == 0);
+    CHECK(c.auto_reconnect && !c.lan_access && !c.developer_mode && c.notifications);
+    strcpy(line, "menu_hold_ms=2000oops\nmenu_hold_ms=99999999999999999999999999\n");
+    CHECK(config_parse(&c, line, strlen(line)) == 2);
+    CHECK(c.menu_hold_ms == 1500);
+    memset(large, ' ', sizeof large);
+    memcpy(large, "notifications=0", 15);
+    CHECK(config_parse(&c, large, 300) == 1);
+    CHECK(c.notifications == 1); /* Never accept the first fragment of a long line. */
+    CHECK(config_parse(&c, large, sizeof large) != 0);
+    CHECK(config_parse(&c, "notifications=0\0junk\n", sizeof "notifications=0\0junk\n" - 1) == 1);
+    CHECK(c.notifications == 1);
+    {
+        FILE *f = fopen("build/test_settings.ini", "w");
+        CHECK(f != NULL);
+        if (f) {
+            fputs("auto_reconnect=0\nnotifications=0\nlan_access=1\ndeveloper_mode=1\n", f);
+            CHECK(fclose(f) == 0);
+            config_defaults(&c);
+            CHECK(config_load(&c, "build/test_settings.ini") == 0);
+            CHECK(!c.auto_reconnect && !c.notifications && c.lan_access && c.developer_mode);
+            CHECK(remove("build/test_settings.ini") == 0);
+        }
+    }
+}
+
 static void test_hotkey(void)
 {
     const uint32_t combo = PAD_OPTIONS | PAD_L2 | PAD_R2;
@@ -123,9 +173,51 @@ static void test_pscombo(void)
     remove(path);
 }
 
-int main(void)
+static unsigned seed = 8917;
+static unsigned random_byte(void) { seed = seed * 1664525u + 1013904223u; return seed >> 24; }
+
+static int fuzz_config(void)
 {
+    static const char valid[] = "menu_combo=l1+r1\nmenu_hold_ms=2300\nauto_reconnect=0\n"
+        "lan_access=1\ndeveloper_mode=0\nnotifications=1\n";
+    char bytes[CONFIG_MAX_BYTES + 2];
+    unsigned i, j, accepted = 0;
+
+    for (i = 0; i < 20000; i++) {
+        whateverpad_config c, before;
+        size_t n = ((size_t)random_byte() << 8 | random_byte()) % sizeof bytes;
+        uint32_t mask;
+        config_defaults(&c);
+        before = c;
+        for (j = 0; j < sizeof bytes; j++) bytes[j] = (char)random_byte();
+        if (i & 1) {
+            memcpy(bytes, valid, sizeof valid - 1);
+            n = sizeof valid - 1;
+            bytes[random_byte() % n] = (char)random_byte();
+        }
+        if (!config_parse(&c, bytes, n)) accepted++;
+        CHECK(c.auto_reconnect == 0 || c.auto_reconnect == 1);
+        CHECK(c.lan_access == 0 || c.lan_access == 1);
+        CHECK(c.developer_mode == 0 || c.developer_mode == 1);
+        CHECK(c.notifications == 0 || c.notifications == 1);
+        CHECK(c.menu_hold_ms >= 500 && c.menu_hold_ms <= 5000);
+        if (n > CONFIG_MAX_BYTES) CHECK(memcmp(&before, &c, sizeof c) == 0);
+        bytes[sizeof bytes - 1] = '\0';
+        (void)config_parse_combo(bytes, &mask);
+        (void)config_parse_keys(bytes, &mask);
+        config_combo_keys(c.menu_combo, bytes, random_byte() % 96);
+        config_combo_text(c.menu_combo, bytes, random_byte() % 96);
+    }
+    printf("config fuzz: 20000 fixed-seed inputs, %u accepted, %d failed checks\n", accepted, g_fail);
+    return g_fail != 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && !strcmp(argv[1], "--fuzz")) return fuzz_config();
+    if (argc != 1) return 1;
     test_config();
+    test_settings();
     test_pscombo();
     test_hotkey();
     test_netinfo();

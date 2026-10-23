@@ -1,4 +1,5 @@
 #include "host_int.h"
+#include "attrib.h"
 #include "log.h"
 #include "util.h"
 
@@ -34,6 +35,10 @@ tune_t g_tune = { 1, PS_PAIR_INTERVAL, PS_PAIR_WINDOW, 0, 8, 0, HOST_EV_READS, 1
 
 static void log_hex(const char *what, unsigned op, const unsigned char *p, int len)
 {
+#if WHATEVERPAD_PROBE
+    (void)p;
+    log_line("%s %04x: len %d", what, op, len);
+#else
     char hex[3 * 48 + 1];
     int k;
 
@@ -41,6 +46,7 @@ static void log_hex(const char *what, unsigned op, const unsigned char *p, int l
     hex[3 * k] = 0;
     if (op) log_line("%s %04x: %s(len %d)", what, op, hex, len);
     else log_line("%s: %s(len %d)", what, hex, len);
+#endif
 }
 
 /* With fewer event reads kept while idle (dialog mode), a command opens them
@@ -55,6 +61,11 @@ static void reads_for(host_t *h, int n)
 
 int send_cmd(host_t *h, unsigned op, const void *p, int len)
 {
+    int sent;
+#if WHATEVERPAD_PROBE
+    /* Also covers LE and raw/developer callers of the common submit path. */
+    if (op == 0x0402 || op == 0x0408 || op == 0x200e || op == 0x0c03) return 0;
+#endif
     if (h->reads_now < HOST_EV_READS) {
         h->full_reads_until = now_ms() + 2000;
         reads_for(h, HOST_EV_READS);
@@ -62,11 +73,13 @@ int send_cmd(host_t *h, unsigned op, const void *p, int len)
     if (g_tune.trace) {
         unsigned char c[64];
         int k = len < (int)sizeof c ? len : (int)sizeof c;
-        memcpy(c, p, (size_t)k);
+        if (k) memcpy(c, p, (size_t)k);   /* empty commands pass NULL: copying zero bytes from it is still UB */
         if (op == OP_LINK_KEY_REPLY && k >= 22) memset(c + 6, 0, 16);   /* never a key in the log */
         log_hex("trace cmd", op, c, len);
     }
-    return h->hci.ops->cmd(h->hci.ctx, op, p, len);
+    sent = h->hci.ops->cmd(h->hci.ctx, op, p, len);
+    attrib_submit(op, sent, now_ms());
+    return sent;
 }
 
 int slot_of(host_t *h, const link_t *l) { return (int)(l - h->links); }
@@ -1330,8 +1343,11 @@ static void report_existing_link(host_t *h)
 static void trace_linking(host_t *h, const unsigned char *ev, int len)
 {
     static int budget = 300;
+#if !WHATEVERPAD_PROBE
     char hex[3 * 12 + 1];
-    int i, linking = 0, k;
+    int k;
+#endif
+    int i, linking = 0;
 
     if (budget <= 0) return;
     switch (ev[0]) {
@@ -1343,8 +1359,12 @@ static void trace_linking(host_t *h, const unsigned char *ev, int len)
         if (h->links[i].used && !h->links[i].ready) linking = 1;   /* pairing or reconnecting */
     if (!linking) return;
     budget--;
+#if WHATEVERPAD_PROBE
+    log_line("link event: type %02x, len %d", ev[0], len);
+#else
     for (k = 0; k < len && k < 12; k++) snprintf(hex + 3 * k, 4, "%02x ", ev[k]);
     log_line("link event: %s(len %d)", hex, len);
+#endif
 }
 
 /* Validate only discovery events. A plausible header is not proof of
@@ -1382,6 +1402,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     link_t *l;
     int i;
 
+    attrib_observe(ev, len, now_ms());
     if (len < 2) return;
     if (g_tune.trace && ev[0] != 0x13) {
         unsigned char c[64];
@@ -1398,6 +1419,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         return;
     }
     trace_linking(h, ev, len);
+#if WHATEVERPAD_PROBE
+    /* Observe metadata without answering requests or entering pairing protocols. */
+    if (ev[0] != 0x0e && ev[0] != 0x0f) return;
+#endif
     switch (ev[0]) {
     case 0x01:  /* Inquiry Complete */
         if (len != 3) break;            /* a damaged event: not an end of inquiry */
@@ -1847,6 +1872,7 @@ static void pump(host_t *h, int timeout_ms)
     int n;
 
     if (h->hci.ops->pump(h->hci.ctx, timeout_ms) < 0) h->dead = 1;
+    attrib_poll(now_ms());
     if (h->ev.idle) h->ev.idle(h->ev.ud);
     while ((n = h->hci.ops->next_event(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
@@ -2001,6 +2027,10 @@ void host_poll(host_t *h, int timeout_ms)
     if (!h) return;                     /* no Bluetooth: nothing to do */
 
     pump(h, timeout_ms);
+#if WHATEVERPAD_PROBE
+    reads_for(h, HOST_EV_READS);
+    return; /* Observation only: no idle watchdog retransmits or protocol retries. */
+#endif
     now = now_ms();
     /* Event reads: all of them while pairing or waiting for a reply; while
      * idle, as many as the dialog mode says (all, unless changed). */
@@ -2103,6 +2133,11 @@ int host_pair(host_t *h, int seconds)
 {
     long now = now_ms();
 
+#if WHATEVERPAD_PROBE
+    (void)h;
+    (void)seconds;
+    return 0;
+#endif
     /* A fresh request or cancellation must not inherit an old candidate. */
     h->defer_at = 0;
     h->collision_blocked = 0;
@@ -2276,11 +2311,12 @@ int hci_sync(host_t *h, unsigned op, const void *p, int plen)
 {
     int attempt;
 
-    for (attempt = 1; attempt <= 3; attempt++) {
+    for (attempt = 1; attempt <= (WHATEVERPAD_PROBE ? 1 : 3); attempt++) {
         long deadline = now_ms() + (attempt == 3 ? 3000 : 1000);
 
         h->cc_op = 0;
         if (!send_cmd(h, op, p, plen)) return 0;
+        attrib_deadline(op, deadline);
         while (h->cc_op != op && now_ms() < deadline) pump(h, 20);
         if (h->cc_op == op) return h->cc_len > 5 && h->cc[5] == 0;
     }
@@ -2298,18 +2334,24 @@ int hci_sync(host_t *h, unsigned op, const void *p, int plen)
  * Bluetooth off and on in the settings. */
 static void chip_read(host_t *h, const char *name, unsigned op, const void *p, int plen)
 {
+#if !WHATEVERPAD_PROBE
     char hex[3 * 40 + 1];
     int i, n;
+#endif
 
     hci_sync(h, op, p, plen);
     if (h->cc_op != op || h->cc_len < 6) {
         log_line("chip: %s: no reply", name);
         return;
     }
+#if WHATEVERPAD_PROBE
+    log_line("chip: %s: status %#04x, len %d", name, h->cc[5], h->cc_len - 6);
+#else
     n = h->cc_len - 6;
     for (i = 0; i < n && i < 40; i++) snprintf(hex + 3 * i, 4, "%02x ", h->cc[6 + i]);
     hex[3 * (i < 40 ? i : 40)] = 0;
     log_line("chip: %s: status %#04x%s %s", name, h->cc[5], n > 40 ? " (first 40 bytes)" : "", hex);
+#endif
 }
 
 static void chip_report(host_t *h)
@@ -2395,7 +2437,7 @@ static int setup(host_t *h)
     }
     memcpy(h->bdaddr, h->cc + 6, 6);
     log_line("controller address %s", addr_str(h->bdaddr));
-    chip_report(h);
+    if (!WHATEVERPAD_PROBE) chip_report(h); /* report repeats setup's queries */
     le_setup(h);
     return 1;
 }
@@ -2469,6 +2511,9 @@ void host_close(host_t *h)
     long deadline;
 
     if (!h) return;
+#if WHATEVERPAD_PROBE
+    h->dead = 1; /* NO_RESTORE: local cleanup only, never guessed radio undo. */
+#endif
     for (i = 0; i < HOST_MAX_PADS; i++) {
         if (!h->links[i].used) continue;
         if (h->dead) link_free(h, &h->links[i]);    /* nothing to tell the pad */
@@ -2544,6 +2589,7 @@ int host_raw_cmd(host_t *h, unsigned op, const unsigned char *p, int plen, unsig
     log_hex("dialog: command", op, p, plen);
     h->cc_op = 0;
     if (!send_cmd(h, op, p, plen)) return 0;
+    attrib_deadline(op, deadline);
     while (h->cc_op != op && now_ms() < deadline) pump(h, 20);
     if (h->cc_op != op || h->cc_len < 6) {
         log_line("dialog: command %04x: no Command Complete (see the log for a Command Status)", op);

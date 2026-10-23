@@ -15,6 +15,7 @@ else
 fi
 docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
     -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk -e BUILD_REF="$BUILD_REF" \
+    -e WHATEVERPAD_PROBE="${WHATEVERPAD_PROBE:-0}" \
     -v "$PROJ":/src -w /src "$@" "$IMAGE" sh -ec '
     test -f "$PS5_PAYLOAD_SDK/toolchain/prospero.mk" || {
         echo "PS5 payload SDK missing at $PS5_PAYLOAD_SDK" >&2
