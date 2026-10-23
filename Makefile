@@ -7,7 +7,8 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 
-CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c
+OWN_CORE := src/ownership.c src/session.c
+CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
 WEB    := src/web.c src/web_page.c
 HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 
@@ -139,3 +140,40 @@ clean:
 # Targeted regressions from the direct HearBridge review.
 $(BUILD)/test_hearbridge: $(CORE) tests/sim.c tests/test_hearbridge.c tests/test_host.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DEXPECT_CFG=1 -DEXPECT_BACKOFF=1 -o $@ $(CORE) tests/sim.c tests/test_hearbridge.c
+
+OWN_HEADERS := src/ownership.h src/session.h
+OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_ownership_explore $(BUILD)/test_session_policy
+
+.PHONY: test-ownership check-mutations check-ownership
+test: test-ownership
+test-ownership: $(OWN_TESTS)
+	./$(BUILD)/test_ownership
+	./$(BUILD)/test_ownership_explore
+	./$(BUILD)/test_session_policy
+
+$(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+$(BUILD)/test_ownership_explore: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -O2 -o $@ $(filter %.c,$^)
+
+$(BUILD)/test_session_policy: src/session.c tests/test_session_policy.c src/session.h | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+check-ownership:
+	sh tools/check-ownership.sh
+
+check-mutations: test-ownership
+	@set -eu; for id in ack_by_opcode ownership_on_sent resend_missing_ack deadline_is_teardown rearm_undo_duplicate readback_is_lease claims_after_callback deadline_only_idle expired_retry failed_http_deadline retry_without_cleanup; do \
+	  case $$id in \
+	    ack_by_opcode) test=test_ownership_explore;; \
+	    expired_retry|failed_http_deadline|retry_without_cleanup) test=test_session_policy;; \
+	    *) test=test_ownership;; \
+	  esac; \
+	  cc $(HOST_CFLAGS) -O2 -DOWN_MUTATION=$$id $(OWN_CORE) tests/$$test.c -o $(BUILD)/mutation-$$id; \
+	  status=0; $(BUILD)/mutation-$$id > $(BUILD)/mutation-$$id.log 2>&1 || status=$$?; \
+	  if [ "$$status" -ne 1 ]; then printf '%s survived or failed invalidly (exit %s)\n' "$$id" "$$status"; exit 1; fi; \
+	  first=""; while IFS= read -r line; do case $$line in FAIL*) first=$$line; break;; esac; done < $(BUILD)/mutation-$$id.log; \
+	  if [ -z "$$first" ]; then printf '%s exited 1 without a test failure\n' "$$id"; exit 1; fi; \
+	  printf '%s killed (exit 1): %s\n' "$$id" "$$first"; \
+	done
