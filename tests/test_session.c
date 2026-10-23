@@ -70,7 +70,7 @@ static sim_pad pad_fixture(void)
     return p;
 }
 
-typedef struct { int connects, disconnects; } seen;
+typedef struct { int connects, disconnects, states; } seen;
 static void connected(void *ud, int slot, const pad_info *info)
 {
     (void)slot; (void)info; ((seen *)ud)->connects++;
@@ -310,7 +310,18 @@ static void test_le_terminal_seams(void)
     sim_le_free(s);
 }
 
-static void test_expected_current_le_status_loses_pending_ownership(void)
+static const hci_ops *pending_base;
+static int create_statuses, create_terminals;
+static int pending_event(void *ctx, unsigned char *out, int max)
+{
+    int n = pending_base->next_event(ctx, out, max);
+    if (n == 6 && out[0] == 0x0f && out[2] == 0 && le16(out + 4) == 0x200d)
+        create_statuses++;
+    if (n == 21 && out[0] == 0x3e && out[2] == 1) create_terminals++;
+    return n;
+}
+
+static void test_le_status_retains_pending_ownership(int lost_terminal)
 {
     sim_le_pad p = {0};
     sim_le_t *s;
@@ -320,41 +331,113 @@ static void test_expected_current_le_status_loses_pending_ownership(void)
     host_events ev = observers(&callbacks);
     unsigned char packet[300];
     long deadline;
-    int i, found = 0;
     next_db();
     memcpy(p.addr, third_party, 6);
     p.vid = 0x045e; p.pid = 0x0b13;
     s = sim_le_new(&p);
     transport = sim_le_hci(s);
+    hci_ops ops = *transport.ops;
+    pending_base = transport.ops;
+    ops.next_event = pending_event;
+    transport.ops = &ops;
+    create_statuses = create_terminals = 0;
     h = host_open(transport, db, &ev);
     CHECK(h != NULL);
     if (!h) { transport.ops->close(transport.ctx); sim_le_free(s); return; }
-    sim_le_delay_events(s, 0x3e, 1, 1, 10000);
+    sim_le_delay_events(s, 0x3e, 1, 1, lost_terminal ? -1 : 10000);
     CHECK(host_pair(h, 30));
     deadline = sim_le_now() + 1000;
     while (!sim_le_creates(s) && sim_le_now() < deadline) host_poll(h, 5);
     CHECK(sim_le_creates(s) == 1 && callbacks.connects == 0);
-    for (i = 0; i < HOST_MAX_PADS; i++) {
-        link_t *l = &h->links[i];
-        if (!l->used || !l->le) continue;
-        found++;
-        CHECK(!l->connected && !l->le_s.create_out); /* current Command Status behavior */
-        expected_failure(3, "LE-Create-ownership-through-terminal", l->le_s.create_out != 0);
-    }
-    CHECK(found == 1);
+    CHECK(create_statuses == 1 && create_terminals == 0);
+    long start = sim_le_now();
     host_close(h);
+    CHECK(sim_le_now() - start <= 10000);
     CHECK(sim_le_cancels(s) == 0 && sim_le_resources(s).closes == 1);
+    CHECK(sim_le_resources(s).uninits == 1 && create_terminals == 0);
     CHECK(callbacks.connects == 0 && callbacks.disconnects == 0);
     transport.ops->pump(transport.ctx, 10000);
-    CHECK(sim_le_system_event(s, packet, sizeof packet) == 21);
-    CHECK(packet[0] == 0x3e && packet[2] == 1 && memcmp(packet + 8, third_party, 6) == 0);
+    if (!lost_terminal) {
+        CHECK(sim_le_system_event(s, packet, sizeof packet) == 21);
+        CHECK(packet[0] == 0x3e && packet[2] == 1 && memcmp(packet + 8, third_party, 6) == 0);
+    }
     CHECK(sim_le_system_event(s, packet, sizeof packet) == 0);
-    printf("SESSION expected-current LE shutdown: Create -> Status(success, create_out=0)"
-           " -> host_close(cancel=0 close=1) -> +10000ms late Connection Complete(system=1, callbacks=0)\n");
+    printf("PASS inherited-control LE-Create-ownership-through-terminal:"
+           " Status=1 terminal-before-close=0 cancel=0 close=1 callbacks=0 late-system=%d\n",
+           !lost_terminal);
     sim_le_free(s);
 }
 
 static const hci_ops *effect_base;
+static int dhkey_mode, dhkey_requests, dhkey_checks, encryptions;
+static int dhkey_cmd(void *ctx, unsigned op, const void *p, int n)
+{
+    if (op == 0x2026) {
+        dhkey_requests++;
+        CHECK(n == 64);
+        if (dhkey_mode) {
+            static const unsigned char refused[] = {0x0c, 1, 0x26, 0x20};
+            static const unsigned char foreign[34] = {9, 0};
+            sim_le_inject_event(ctx, 0x0f, refused, sizeof refused);
+            if (dhkey_mode == 1) sim_le_inject_event(ctx, 0x3e, foreign, sizeof foreign);
+            return 1; /* Delivered to HCI, refused there; no local DHKey was generated. */
+        }
+    }
+    if (op == 0x2019) encryptions++;
+    return effect_base->cmd(ctx, op, p, n);
+}
+
+static int dhkey_acl(void *ctx, const unsigned char *p, int n)
+{
+    if (n >= 9 && le16(p + 6) == 6 && p[8] == 0x0d) dhkey_checks++;
+    return effect_base->acl_send(ctx, p, n);
+}
+
+static void pairing_state(void *ud, int slot, const pad_state *state)
+{
+    (void)slot; (void)state; ((seen *)ud)->states++;
+}
+
+/* Review Appendix 3 / T:630-655, with accepted and no-foreign-result controls. */
+static void test_rejected_dhkey_cannot_claim_foreign_result(void)
+{
+    for (dhkey_mode = 0; dhkey_mode < 3; dhkey_mode++) {
+        sim_le_pad p = {0};
+        memcpy(p.addr, third_party, 6);
+        p.sc = 1; p.vid = 0x045e; p.pid = 0x0b13;
+        p.map[0] = 5; p.map_len = 1; p.report_len = 16;
+        p.rid_in = 1; p.rid_out = 3; p.mtu = 185;
+        sim_le_t *sim = sim_le_new(&p);
+        hci_t io = sim_le_hci(sim);
+        hci_ops ops = *io.ops;
+        effect_base = io.ops; ops.cmd = dhkey_cmd; ops.acl_send = dhkey_acl; io.ops = &ops;
+        seen callbacks = {0};
+        host_events ev = {connected, pairing_state, disconnected, &callbacks, NULL};
+        dhkey_requests = dhkey_checks = encryptions = 0;
+        next_db();
+        host_t *h = host_open(io, db, &ev);
+        CHECK(h != NULL);
+        if (h) {
+            CHECK(host_pair(h, 30));
+            long end = sim_le_now() + (dhkey_mode ? 1000 : 8000);
+            while (sim_le_now() < end) host_poll(h, 5);
+            CHECK(dhkey_requests > 0);
+            if (!dhkey_mode) {
+                CHECK(dhkey_checks > 0 && encryptions > 0 && sim_le_encrypted(sim));
+                CHECK(callbacks.connects == 1 && callbacks.states > 0 && !sim_le_error(sim));
+            } else if (dhkey_mode == 1) {
+                EFFECT(14, "rejected-dhkey-cannot-claim-foreign-result", dhkey_checks == 0 && encryptions == 0);
+                CHECK(callbacks.connects == 0 && callbacks.states == 0);
+            } else CHECK(dhkey_checks == 0 && encryptions == 0 && callbacks.connects == 0);
+            printf("DHKEY mode=%d attempts=%d smp_dhkey_checks=%d encryptions=%d connects=%d states=%d\n",
+                   dhkey_mode, dhkey_requests, dhkey_checks, encryptions, callbacks.connects, callbacks.states);
+            host_close(h);
+        } else io.ops->close(io.ctx);
+        CHECK(sim_le_resources(sim).closes == 1);
+        sim_le_free(sim);
+    }
+}
+
 static int foreign_order, inquiry_commands, inquiry_cancels;
 static int foreign_create(void *ctx, unsigned op, const void *p, int n)
 {
@@ -800,7 +883,9 @@ int main(int argc, char **argv)
     test_classic_close_callbacks(0);
     test_classic_close_callbacks(1);
     test_le_terminal_seams();
-    test_expected_current_le_status_loses_pending_ownership();
+    test_le_status_retains_pending_ownership(0);
+    test_le_status_retains_pending_ownership(1);
+    test_rejected_dhkey_cannot_claim_foreign_result();
     test_foreign_create_status_never_authorizes_cancel();
     test_foreign_inquiry_untouched();
     test_raw_cancels_never_reach_controller();

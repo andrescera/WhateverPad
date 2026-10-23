@@ -39,6 +39,18 @@ static web_t *g_web;
 static volatile int g_bt_state = WEB_BT_OK, g_retry;
 static char g_reason[200] = "";
 static int g_phys_readable = 1;
+static int refuse_response, refused_sends;
+
+/* Interpose only the OS send boundary; ordinary traffic still uses real TCP. */
+ssize_t send(int fd, const void *buf, size_t n, int flags)
+{
+    if (refuse_response) {
+        refused_sends++;
+        errno = EPIPE;
+        return -1;
+    }
+    return sendto(fd, buf, n, flags, NULL, 0);
+}
 
 static int fake_physical(uint32_t *buttons, int *err)
 {
@@ -67,11 +79,25 @@ static void run(int ms)
     }
 }
 
+static int response(struct pollfd *ready, char *out, int max)
+{
+    int n = 0;
+    while (n < max - 1) {
+        ssize_t k;
+        if (poll(ready, 1, 1000) <= 0) { CHECK(0); break; }
+        k = recv(ready->fd, out + n, (size_t)(max - 1 - n), 0);
+        if (k > 0) n += (int)k;
+        else { CHECK(k == 0 || (k < 0 && errno == ECONNRESET)); break; }
+    }
+    out[n] = '\0';
+    return n;
+}
+
 /* Sends a raw request and serves it; returns the response (status line on). */
 static int request(const char *raw, size_t rawlen, char *out, int max)
 {
     struct sockaddr_in sin;
-    int fd = socket(AF_INET, SOCK_STREAM, 0), n = 0;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct pollfd ready = {.fd = fd, .events = POLLIN};
 
     memset(&sin, 0, sizeof sin);
@@ -82,18 +108,12 @@ static int request(const char *raw, size_t rawlen, char *out, int max)
         close(fd);
         return -1;
     }
-    if (rawlen) CHECK(send(fd, raw, rawlen, 0) == (ssize_t)rawlen);
+    /* The request is delivered even when the server's response send fails. */
+    if (rawlen) CHECK(sendto(fd, raw, rawlen, 0, NULL, 0) == (ssize_t)rawlen);
     CHECK(shutdown(fd, SHUT_WR) == 0);
     web_poll(g_web);                      /* all request bytes or EOF are available */
     web_poll(g_web);                      /* truncated input now exposes the write-half EOF */
-    while (n < max - 1) {
-        ssize_t k;
-        if (poll(&ready, 1, 1000) <= 0) { CHECK(0); break; }
-        k = recv(fd, out + n, (size_t)(max - 1 - n), 0);
-        if (k > 0) n += (int)k;
-        else { CHECK(k == 0 || (k < 0 && errno == ECONNRESET)); break; }
-    }
-    out[n] = '\0';
+    int n = response(&ready, out, max);
     close(fd);
     return n;
 }
@@ -156,10 +176,69 @@ static void test_failed_startup_reports_after_cleanup_deadline(void)
         CHECK(strstr(out, "\"bluetooth\":\"failed\"") && strstr(out, "\"reason\":\"startup failed\""));
         bytes = get("POST", "/api/retry", out, sizeof out);
         CHECK(complete_response(out, bytes, 200) && strstr(out, "{\"ok\":true}") && g_retry == 1);
+        g_retry = 0;
+        refused_sends = 0; refuse_response = 1;
+        bytes = get("POST", "/api/retry", out, sizeof out);
+        refuse_response = 0;
+        CHECK(refused_sends > 0 && bytes == 0 && !stop);
+        EFFECT(11, "undeliverable-retry-does-not-arm-action", g_retry == 0);
+        printf("UNDELIVERABLE_RETRY sends=%d bytes=%d retry=%d transport_closes=%d\n",
+               refused_sends, bytes, g_retry, sim_resources(sim).closes);
+        g_retry = 0;
+        bytes = get("POST", "/api/retry", out, sizeof out);
+        CHECK(complete_response(out, bytes, 200) && strstr(out, "{\"ok\":true}") && g_retry == 1);
         web_stop(g_web); g_web = NULL;
     }
     sim_free(sim); g_retry = 0; g_bt_state = WEB_BT_OK;
     unlink("build/test_web_failed.db");
+}
+
+static int idle_client(void)
+{
+    struct sockaddr_in sin = {.sin_family = AF_INET, .sin_port = htons(PORT),
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(fd >= 0 && connect(fd, (struct sockaddr *)&sin, sizeof sin) == 0);
+    web_poll(g_web);
+    return fd;
+}
+
+/* T route matrix / review Appendix 2: admission and request time use real sockets. */
+static void test_client_saturation_and_timeout(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    hci_t io = sim_hci(sim);
+    volatile int stop = 0;
+    web_cfg cfg = {.host = &g_host, .stop = &stop, .retry = &g_retry,
+        .bt_state = &g_bt_state, .version = "clients"};
+    int clients[8];
+    char out[2048];
+    g_host = NULL; g_retry = 0; g_bt_state = WEB_BT_FAILED;
+    g_web = web_start(&cfg, PORT);
+    CHECK(g_web != NULL);
+    if (g_web) {
+        for (int i = 0; i < 8; i++) clients[i] = idle_client();
+        int bytes = get("POST", "/api/retry", out, sizeof out);
+        CHECK(complete_response(out, bytes, 429) && !g_retry && !stop);
+        for (int i = 0; i < 8; i++) close(clients[i]);
+        web_poll(g_web);
+        bytes = get("GET", "/api/state", out, sizeof out);
+        CHECK(complete_response(out, bytes, 200));
+        int fd = idle_client();
+        struct pollfd ready = {.fd = fd, .events = POLLIN};
+        io.ops->pump(io.ctx, 3000); web_poll(g_web);
+        CHECK(poll(&ready, 1, 0) == 0);
+        io.ops->pump(io.ctx, 1); web_poll(g_web);
+        bytes = response(&ready, out, sizeof out);
+        EFFECT(11, "idle-client-complete-timeout", complete_response(out, bytes, 408));
+        CHECK(!g_retry && !stop);
+        close(fd);
+        web_stop(g_web); g_web = NULL;
+    }
+    io.ops->close(io.ctx);
+    CHECK(sim_resources(sim).closes == 1);
+    sim_free(sim); ph_clock_hook = NULL; g_bt_state = WEB_BT_OK;
 }
 
 /* T:236-357: M's expressible states; session-only rows are in task-2.md. */
@@ -243,6 +322,7 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     g_port = 20000 + (int)(getpid() % 20000);
     test_failed_startup_reports_after_cleanup_deadline();
+    test_client_saturation_and_timeout();
     test_routes_reply_completely_in_available_states();
     unlink("build/test_web.db");
     memset(&pad, 0, sizeof pad);
