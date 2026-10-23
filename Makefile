@@ -15,7 +15,7 @@ HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(C
 
 BUILD := build
 
-.PHONY: all test test-attrib fuzz demo ps5 send clean check-generated sanitize ci
+.PHONY: all test test-attrib fuzz demo ps5 send clean check-generated sanitize ci quick
 
 all: test
 
@@ -137,6 +137,14 @@ ci:
 	@checks="$$( $(MAKE) -qp | awk -F: '/^check-(ownership|mutations):/ { print $$1 }' )"; \
 	  if [ -n "$$checks" ]; then $(MAKE) $$checks; fi
 
+quick:
+	$(MAKE) check-ownership test-explorer-results
+	$(MAKE) test OWN_EXPLORE=0
+	$(MAKE) sanitize OWN_EXPLORE=0
+	$(MAKE) fuzz check-generated
+	$(MAKE) test-attrib BUILD=build/probe WHATEVERPAD_PROBE=1
+	$(MAKE) check-mutations OWN_EXPLORE=0
+
 fuzz: | $(BUILD)
 	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
 	./$(BUILD)/test_fuzz
@@ -164,23 +172,39 @@ $(BUILD)/test_hearbridge: $(CORE) tests/sim.c tests/test_hearbridge.c tests/test
 	cc $(HOST_CFLAGS) -DEXPECT_CFG=1 -DEXPECT_BACKOFF=1 -o $@ $(CORE) tests/sim.c tests/test_hearbridge.c
 
 OWN_HEADERS := src/ownership.h src/session.h
-OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_ownership_explore $(BUILD)/test_session_policy
+OWN_EXPLORE ?= 1
+OWN_EXPLORE_WORKERS ?= 4
+OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_session_policy
+ifeq ($(OWN_EXPLORE),1)
+OWN_TESTS += $(BUILD)/test_ownership_explore
+endif
 
-.PHONY: test-ownership check-mutations check-ownership sanitize-ownership
+.PHONY: test-ownership check-mutations check-ownership sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
 test: test-ownership
 test-ownership: $(OWN_TESTS)
 	./$(BUILD)/test_ownership
+ifeq ($(OWN_EXPLORE),1)
 	./$(BUILD)/test_ownership_explore
+endif
 	./$(BUILD)/test_session_policy
 
 sanitize-ownership:
 	$(MAKE) test-ownership BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
+test-ownership-case: $(BUILD)/test_ownership_explore
+	@./$(BUILD)/test_ownership_explore --policy "$(POLICY)" --case "$(CASE)"
+
+sanitize-ownership-case:
+	@$(MAKE) --no-print-directory test-ownership-case BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
+
+test-explorer-results: $(BUILD)/test_ownership_explore
+	sh tests/test_explorer_results.sh $(BUILD)/test_ownership_explore
+
 $(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
 $(BUILD)/test_ownership_explore: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
-	cc $(HOST_CFLAGS) -O2 -o $@ $(filter %.c,$^)
+	cc $(HOST_CFLAGS) -O2 -DOWN_EXPLORE_WORKERS=$(OWN_EXPLORE_WORKERS) -o $@ $(filter %.c,$^)
 
 $(BUILD)/test_session_policy: src/session.c tests/test_session_policy.c src/session.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)

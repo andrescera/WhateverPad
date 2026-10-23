@@ -25,6 +25,15 @@ static const char *const scenario_names[] = {
     "scan", "mask", "query", "classic", "le-create", "inquiry",
     "auth", "encryption", "p256", "dhkey", "virtual"
 };
+static int case_json;
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
+#define EXPLORE_BUILD "sanitized"
+#else
+#define EXPLORE_BUILD "normal"
+#endif
 enum action {
     PREPARE_OLD, PREPARE_NEW, SEND, NOT_SENT, UNCERTAIN, HOLD, COMMIT_HELD,
     LOCAL_SUCCESS, LOCAL_REFUSAL, OLD_ACK, FOREIGN_ACK, OLD_RAND, RAND,
@@ -734,8 +743,15 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
             }
         }
     }
-    printf("class=%s policy=%d states=%zu edges=%llu\n", scenario_names[s], policy,
-           q.count, (unsigned long long)edges);
+    if (case_json)
+        printf("{\"class\":\"%s\",\"policy\":%d,\"build\":\"%s\",\"depth\":%d,"
+               "\"states\":%zu,\"edges\":%llu,\"violations\":0,\"g\":%s,\"h\":%s}\n",
+               scenario_names[s], policy, EXPLORE_BUILD, DEPTH, q.count,
+               (unsigned long long)edges, q.saw_g ? "true" : "false",
+               q.saw_h ? "true" : "false");
+    else
+        printf("class=%s policy=%d states=%zu edges=%llu\n", scenario_names[s], policy,
+               q.count, (unsigned long long)edges);
     *saw_g |= q.saw_g; *saw_h |= q.saw_h;
     size_t count = q.count;
     for (size_t i = 0; i < q.count; i++) free(q.nodes[i].key);
@@ -823,8 +839,26 @@ static int policy_cases(own_policy policy, size_t *states, int *g, int *h)
 #endif
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc != 1) {
+        const char *policy_arg = NULL, *case_arg = NULL;
+        if (argc != 5) goto usage;
+        for (int i = 1; i < argc; i += 2) {
+            if (!strcmp(argv[i], "--policy") && !policy_arg) policy_arg = argv[i+1];
+            else if (!strcmp(argv[i], "--case") && !case_arg) case_arg = argv[i+1];
+            else goto usage;
+        }
+        if (!policy_arg || !case_arg ||
+            (strcmp(policy_arg, "0") && strcmp(policy_arg, "1"))) goto usage;
+        enum scenario s = SCAN;
+        while (s < SCENARIOS && strcmp(case_arg, scenario_names[s])) s++;
+        if (s == SCENARIOS) goto usage;
+        int g = 0, h = 0;
+        case_json = 1;
+        explore((own_policy)(policy_arg[0] - '0'), s, &g, &h);
+        return 0;
+    }
     for (own_policy policy = OWN_POLICY_NO_RESTORE; policy <= OWN_POLICY_SINGLE_PRODUCER; policy++) {
         size_t count = 0;
         int g = 0, h = 0;
@@ -835,4 +869,7 @@ int main(void)
                policy == OWN_POLICY_NO_RESTORE ? "NO_RESTORE" : "SINGLE_PRODUCER", count);
     }
     return 0;
+usage:
+    fprintf(stderr, "usage: %s [--policy 0|1 --case <class>]\n", argv[0]);
+    return 2;
 }

@@ -8,10 +8,64 @@ permissions:
   contents: read
 
 jobs:
-  host:
+  quick:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: make ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: make quick
+
+  explore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        policy: [1, 0]
+        case: [virtual, dhkey, encryption, auth, scan, mask, classic, le-create, p256, inquiry, query]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run both builds of one depth-12 case
+        env:
+          POLICY: ${{ matrix.policy }}
+          CASE: ${{ matrix.case }}
+        run: |
+          make -s --no-print-directory test-ownership-case OWN_EXPLORE_WORKERS=1 > result.jsonl
+          make -s --no-print-directory sanitize-ownership-case OWN_EXPLORE_WORKERS=1 >> result.jsonl
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: explore-${{ matrix.policy }}-${{ matrix.case }}
+          path: result.jsonl
+          if-no-files-found: error
+
+  host:
+    name: host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [quick, explore]
+    if: always()
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: explore-*
+          path: results
+      - name: Require quick checks and every explorer result
+        env:
+          QUICK_RESULT: ${{ needs.quick.result }}
+          EXPLORE_RESULT: ${{ needs.explore.result }}
+        run: |
+          test "$QUICK_RESULT" = success
+          test "$EXPLORE_RESULT" = success
+          sh tools/check-explorer-results.sh results
