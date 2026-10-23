@@ -773,3 +773,204 @@ T2 commit: `4c01c9aa098bc9a9f88a9c9886ec5391e1dd932e`
 It contains exactly the six test/simulator files, with no `.omo/`, build-file
 or production changes. The separate repair identity is recorded in
 `E/task-5-harness-repair.md`.
+
+## B7 preservation controls - 2026-10-23
+
+Starting candidate: `724be2d83a96d0bec760dd70ff7e78c5d50dbe34`,
+branch `wave0/t2-reproducers`, initially clean. The first command was
+`date -u`, exit 0: `Fri Oct 23 06:20:16 AM UTC 2026`, inside the owner's
+`05:23:06Z` to `09:23:06Z` window.
+
+This addition addresses review r4's single blocker B7,
+`T2-C2-PORT-AVAILABLE-INVENTORY`. Only `tests/test_vpad.c` and this appended
+evidence change. Existing assertions and expected-failure registrations remain
+unchanged. The owner's five inherited strict failures plus the faithful
+hard-passing sixth identity remain intact; neither new control is an XFAIL.
+
+`test_pending_removal_preserves_unidentified_devices` replays Appendix A using
+the existing vendor stand-ins, real HTTP helper, public vpad calls, log pipe
+and virtual clock:
+
+| Control | Independent stimulus | External oracle | Baseline status |
+|---|---|---|---|
+| Zero candidates | Actual successful Add; consume its sole log event before production can identify it; complete real POST Stop; public pending removal; advance 3001 virtual ms | Add/Bind/Delete/input = `1/0/0/0`, also after another remove, poll and attempted input | Hard pass; no strict error |
+| Two candidates | Actual successful Add emits `11112222`; append distinct `33334444` before production reads either; complete real POST Stop; public pending removal; drain identification and advance 3001 virtual ms | Add/Bind/Delete/input = `1/0/0/0`, also after another remove, poll and attempted input | Hard pass; no strict error |
+
+The oracle is the vendor-call counters, not production slot, match, generation
+or ownership fields. No Bind, Delete or input call is allowed for either
+unidentified inventory. The repeated public removal and attempted input cannot
+turn ambiguity into authority. HTTP replies are checked completely by the
+existing helper; sockets, pipes and credentials are cleaned up. Virtual time
+crosses the identification deadline without a sleep.
+
+`make build/test_vpad` and the namespace-isolated `./build/test_vpad` both
+exited 0. The output was:
+
+```text
+PRESERVATION candidates=0 adds=1 binds=0 deletes=0 frames=0
+PRESERVATION candidates=2 adds=1 binds=0 deletes=0 frames=0
+all vpad checks passed
+3 expected-failing vpad cases
+```
+
+### Exact Appendix A mutation demonstration
+
+The exact mutation was applied temporarily to compiler input, as in the
+review's own recipe. No tracked production file was edited. From the worktree,
+with `set -euo pipefail`:
+
+```sh
+F='-std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -Itests -D_DEFAULT_SOURCE'
+VF="$F -D_DARWIN_C_SOURCE -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym -Dsocket=test_vpad_socket -Dconnect=test_vpad_connect"
+LF="$F -Ddlopen=test_vpad_dlopen -Ddlsym=test_vpad_dlsym"
+CORE='src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c'
+before=$(sha256sum src/ps5_vpad.c)
+perl -0pe '$n=s/    if \(g_matches != 1\) \{/    if (g_matches != 1) {\n        if (g_matches > 1) scePadVirtualDeviceDeleteDevice((int32_t)g_match_dev);/; die "V5 replacement count $n" unless $n==1;' src/ps5_vpad.c |
+  cc $VF -c -o build/b7-mutant.o -x c -
+cc $LF -o build/b7-mutant build/b7-mutant.o build/test_vpad_web.o $CORE src/web_page.c tests/test_vpad.c
+set +e
+env -u MAKEFLAGS -u MFLAGS unshare -Urn -- bash -c \
+  'ip link set lo up && ./build/b7-mutant' > build/b7-mutation.log 2>&1
+result=$?
+set -e
+printf 'MUTATION_VPAD_EXIT=%s\n' "$result"
+test "$result" -eq 1
+test "$before" = "$(sha256sum src/ps5_vpad.c)"
+GIT_MASTER=1 git diff --exit-code HEAD -- src
+rm build/b7-mutant.o build/b7-mutant
+```
+
+Compile and link each exited 0. The mutated permanent suite exited **1**,
+with exactly two hard failures, both in the new two-candidate control:
+
+```text
+PRESERVATION candidates=0 adds=1 binds=0 deletes=0 frames=0
+PRESERVATION candidates=2 adds=1 binds=0 deletes=1 frames=0
+  FAIL tests/test_vpad.c:343  adds == 1 && binds == 0 && deletes == 0 && frames == 0
+  FAIL tests/test_vpad.c:347  adds == 1 && binds == 0 && deletes == 0 && frames == 0
+2 check(s) failed
+3 expected-failing vpad cases
+```
+
+The zero-candidate control and all previous hard checks still passed. The
+runner required exit 1, verified the production SHA-256 was unchanged and the
+production diff empty, then removed both mutant artifacts; each check/removal
+exited 0. The mutation runner exited 0 only after those requirements held.
+The mutation log remains under ignored `build/`; no mutation is committed.
+This supplemental mutant was not sanitizer-built.
+
+One initial shell-quoting attempt exited 2 before compiling the mutation; the
+corrected compiler-input command above supplied the actual result. The
+upstream lookup exited 128 because this local branch has no configured
+upstream. Neither diagnostic was treated as a test result or retried for luck.
+
+### Canonical verification recipe
+
+Verification uses the unchanged Makefile recipes, sequentially in one private
+user/network namespace. Only that namespace's ephemeral-port range changes,
+avoiding the inherited web fixture's PID-derived listener range. The initial
+vpad build created `build/` before these log redirects.
+
+```sh
+env -u MAKEFLAGS -u MFLAGS unshare -Urn -- bash -c '
+set -eu
+ip link set lo up
+sysctl -w net.ipv4.ip_local_port_range="40000 60999"
+make -j1 test > build/b7-test.log 2>&1
+ASAN_OPTIONS=detect_leaks=1 make -j1 sanitize > build/b7-sanitize.log 2>&1
+for variant in normal san; do
+  prefix=build
+  if [ "$variant" = san ]; then prefix=build/san; fi
+  for suite in test_session test_hci_usb test_vpad test_web; do
+    set +e
+    ASAN_OPTIONS=detect_leaks=1 ./$prefix/$suite --expected-failures \
+      > build/b7-strict-$variant-$suite.log 2>&1
+    result=$?
+    set -e
+    printf "STRICT_%s_%s_EXIT=%s\n" "$variant" "$suite" "$result"
+    test "$result" -eq 1
+    count=$(grep -c "^XFAIL expected-failing-until-todo-" \
+      build/b7-strict-$variant-$suite.log)
+    case "$suite" in
+      test_session) expected=46;;
+      test_hci_usb) expected=2;;
+      test_vpad|test_web) expected=3;;
+    esac
+    test "$count" -eq "$expected"
+    if grep -Eq "^XPASS|^  FAIL|ERROR: AddressSanitizer|runtime error:|ERROR: LeakSanitizer" \
+      build/b7-strict-$variant-$suite.log; then exit 1; fi
+  done
+done
+'
+```
+
+The executed monitor additionally prints and requires each canonical make
+exit code to equal 0 before proceeding. Strict exits of 1 are the required
+honest failures, not canonical target failures. A separate resident-kernel
+audit compares every actual name, todo and first error against the 51-row
+historical table plus the three B5/B6 additions, and compares normal and
+sanitized ledgers; totals alone are not acceptance evidence.
+
+The first monitor (`mon_P82TTP7W4T0ESKCX`) reached its default 300000-ms
+watcher deadline, exit 1, after recording `MAKE_TEST_EXIT=0` and while the
+sanitized `test_compat` was running. Its process tree exited; a targeted `ps`
+check returned 1 with no matching processes. No completed `make sanitize`
+exit is attributed to that interrupted run. Its log is preserved as
+`build/b7-sanitize-timeout.log` (`mv`, exit 0). The remaining sanitizer and
+strict commands were then started under `mon_RPTRB4XCRXTYXYVR` with an explicit
+1800000-ms deadline. The already-passing normal gate was not repeated.
+
+The completed normal log was inspected in full through bounded read chunks:
+21559 lines, no hard failure or XPASS, all 54 exact names/todos, both faithful
+LE-Create hard-control variants, both new preservation controls and all ten
+historical METRIC values. An initial truncated-read audit stopped early and
+was discarded; it supplied no missing-coverage finding or test verdict.
+Both documented shell recipes also passed `bash -n` with exit 0.
+
+This is test-only B7 coverage, not a fix for the 54 recorded production
+failures or a claim of independent gate acceptance. No console, push, merge,
+main-branch edit, payload build, fuzz rerun or Ubuntu CI run was performed.
+
+### B7 final verification results
+
+The resumed monitor completed with exit 0. Canonical `make -j1 test` and
+`ASAN_OPTIONS=detect_leaks=1 make -j1 sanitize` each completed with exit **0**.
+Namespace setup (`unshare`, `ip link set lo up`, and the private `sysctl`)
+also succeeded, exit 0. Both new controls hard-pass in normal and sanitizer
+builds, including both repeated-removal assertions and attempted input.
+
+| Strict command | Exit | Exact XFAIL count |
+|---|---|---|
+| `./build/test_session --expected-failures` | 1 | 46 |
+| `./build/test_hci_usb --expected-failures` | 1 | 2 |
+| `./build/test_vpad --expected-failures` | 1 | 3 |
+| `./build/test_web --expected-failures` | 1 | 3 |
+| `./build/san/test_session --expected-failures` | 1 | 46 |
+| `./build/san/test_hci_usb --expected-failures` | 1 | 2 |
+| `./build/san/test_vpad --expected-failures` | 1 | 3 |
+| `./build/san/test_web --expected-failures` | 1 | 3 |
+
+Complete receipts were read in bounded chunks. The independent ledger audit
+matched every name, todo suffix and exact first error against the existing
+tables, rejected extra/duplicate/missing names, XPASS and hard failures, and
+compared each normal ledger to its sanitizer counterpart:
+`LEDGER_AUDIT_PASS 54 normal + 54 sanitizer`. The five inherited strict
+XFAILs and both hard-passing variants of the faithful sixth identity remain.
+Only hard-passing coverage increased: the two new controls each observed
+Add/Bind/Delete/input `1/0/0/0`.
+
+No hard assertion failure or ASan/UBSan/LeakSanitizer diagnostic occurred in either
+completed canonical run. Session/USB/host/lock/HearBridge checks remain
+558/659/1244/19/43; the ten historical METRIC lines are identical between
+normal and sanitizer runs. Language-server diagnostics on `tests/test_vpad.c`
+reported no diagnostics. `git diff --check`, staged-diff checks and protected
+path comparisons against the starting candidate exited 0. The C diff has
+57 added lines and no removed lines; no existing assertion was changed.
+
+Receipts are `build/b7-test.log`, `build/b7-sanitize.log`,
+`build/b7-strict-{normal,san}-{test_session,test_hci_usb,test_vpad,test_web}.log`,
+and the mutation/interrupted-run logs named above. Only the two allowed
+tracked files are included in the corrective commit; mutant object and binary
+are removed, production is byte-clean, and all started verification commands
+have finished. B7's previously escaping ambiguous Delete is now detected
+without manufacturing an expected failure or changing owner accounting.

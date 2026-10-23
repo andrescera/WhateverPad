@@ -294,6 +294,62 @@ static void test_web_stop_preempts_queued_and_pending_effects(void)
     }
 }
 
+/* Review r4 B7: a pending removal cannot choose an unidentified device. */
+static void test_pending_removal_preserves_unidentified_devices(void)
+{
+    ph_clock_hook = fake_clock;
+    for (int candidates = 0; candidates <= 2; candidates += 2) {
+        CHECK(pipe(log_pipe) == 0);
+        adds = binds = deletes = frames = 0;
+        reset(0, 0);
+        CHECK(vpad_init());
+        CHECK(vpad_add(0));
+        vpad_poll(g_now);
+        CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+        if (candidates == 0) {
+            /* Withhold the successful Add's log event, not the Add itself. */
+            char line[512];
+            ssize_t n = read(log_pipe[0], line, sizeof line - 1);
+            CHECK(n > 0);
+            if (n > 0) {
+                line[n] = 0;
+                CHECK(strstr(line, "DeviceId:0x11112222") != NULL);
+            }
+        } else {
+            const char second[] =
+                "SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x33334444][type:1][subType:22][capabilityBattery:0]\n";
+            CHECK(write(log_pipe[1], second, sizeof second - 1) == sizeof second - 1);
+        }
+        host_t *host = NULL;
+        volatile int stop = 0, retry = 0, bt = WEB_BT_FAILED;
+        web_cfg cfg = {.host = &host, .stop = &stop, .retry = &retry,
+            .bt_state = &bt, .version = "vpad-preservation"};
+        web_port = 0;
+        web_t *web = web_start(&cfg, 0);
+        CHECK(web != NULL && web_port > 0);
+        if (web) {
+            web_vpad_request(web, 1);
+            CHECK(stop == 1 && retry == 0);
+            web_stop(web);
+        }
+        vpad_remove(0);
+        vpad_poll(g_now);
+        g_now += 3001;
+        vpad_poll(g_now);
+        pad_state input = {.buttons = PAD_CROSS};
+        vpad_update(0, &input);
+        printf("PRESERVATION candidates=%d adds=%d binds=%d deletes=%d frames=%d\n",
+               candidates, adds, binds, deletes, frames);
+        CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+        vpad_remove(0);
+        vpad_poll(g_now);
+        vpad_update(0, &input);
+        CHECK(adds == 1 && binds == 0 && deletes == 0 && frames == 0);
+        CHECK(vpad_creds_restore());
+        CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -432,6 +488,7 @@ int main(int argc, char **argv)
 
     test_refused_vendor_acquisitions_do_not_invent_ownership();
     test_web_stop_preempts_queued_and_pending_effects();
+    test_pending_removal_preserves_unidentified_devices();
     ph_clock_hook = NULL;
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
     printf("%d expected-failing vpad cases\n", pending);
