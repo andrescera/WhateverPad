@@ -51,10 +51,12 @@ int main(void)
         if (scenario == 2) CHECK(s.connects == (EXPECT_CFG ? 1 : 0));
         else if (scenario != 4) CHECK(s.connects == 1);
         else if (EXPECT_BACKOFF) {
-            /* refused for ever: one fresh link
-             * after 3 refusals, then eight refusals and the link is closed */
-            CHECK(sim_channel_requests(sim) == 3 + 8);         /* one fresh link (FRESH_LINK_TRIES) */
-            CHECK(!sim_link_up(sim));
+            /* A4/A8: setup refusal has no fresh accepted input for radio undo.
+             * Retire the bridge after three refusals; leave the radio alone. */
+            CHECK(sim_channel_requests(sim) == 3);
+            CHECK(sim_link_up(sim));
+            CHECK(s.connects == 0 && s.states == 0 && !host_connected(h, 0));
+            CHECK(sim_disconnect_requests(sim) == 0);
         }
         if (s.connects) CHECK(s.states > 0);
         printf("METRIC kind=%d case=%d ready=%ld requests=%d cfg=%d hash=%08x connected=%d\n",

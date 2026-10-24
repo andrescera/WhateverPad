@@ -1462,7 +1462,7 @@ static void eir_name(const unsigned char *eir, int n, char *out, int max)
 
 /* Which PIN a pad asking for one gets: our address for Nintendo's Wii
  * pads (named "Nintendo RVL-...", or with the Wii Remote's class, or that
- * already refused "0000"), "0000" for the rest. */
+ * already refused "0000" on an earlier pairing), "0000" for the rest. */
 static int pin_is_address(const host_t *h, const link_t *l)
 {
     if (strncmp(l->name, "Nintendo RVL-", 13) == 0) return 1;
@@ -1804,10 +1804,12 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         }
         log_line("pad %s: authentication failed (status %#04x)", addr_str(l->addr), ev[2]);
         if (l->pin_zero) {
-            /* "0000" refused: its next try gets our address, as Wii pads want. */
+            /* Keep the PIN intent, but require a new manual pairing: setup
+             * failure has no accepted input authorizing radio Disconnect. */
             memcpy(h->pin_addr, l->addr, 6);
             h->pin_addr_set = 1;
-            log_line("pad %s: it refused the PIN 0000; next time this console's address", addr_str(l->addr));
+            host_pair(h, 0);
+            log_line("pad %s: PIN 0000 refused; turn this controller off and pair it again to use this console's address", addr_str(l->addr));
         }
         if (!l->pairing) db_forget(h, l->addr, 0, 0);     /* the pad lost its key */
         link_disconnect(h, l, "authentication failed");
@@ -1928,7 +1930,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             p[6] = 6;
             memcpy(p + 7, h->bdaddr, 6);
             l->pin_zero = 0;
-            log_line("pad %s: PIN requested; answering with this console's address (Wii pads)", addr_str(l->addr));
+            log_line("pad %s: PIN requested; answering with this console's address", addr_str(l->addr));
         } else {
             p[6] = 4;
             memcpy(p + 7, "0000", 4);

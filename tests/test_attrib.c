@@ -196,6 +196,69 @@ static int recording_cmd(void *ctx, unsigned op, const void *p, int n)
     return sim_model_command(ctx, op, p, n);
 }
 
+#if WHATEVERPAD_PROBE
+static const unsigned probe_startup[] = {
+    0x1002, 0x1005, 0x0c01, 0x2018, 0x0c55, 0x0c19, 0x0c1a, 0x2018,
+    0x1009, 0x2001, 0x2018, 0x2002, 0x200b, 0x2018
+};
+typedef struct {
+    struct { unsigned op, generated, answered, parent, barrier; } invocation[32];
+    unsigned count, pending, required_parent, barriers;
+    unsigned char random[4][8];
+    int startup;
+} probe_trace;
+
+static int probe_setting(unsigned op)
+{
+    return op == 0x0c01 || op == 0x0c1a || op == 0x2001 || op == 0x200b;
+}
+
+static void observe_probe(void *ud, enum sim_observation kind, sim_origin origin,
+                          unsigned code, const unsigned char *p, int n)
+{
+    probe_trace *t = ud;
+    if (!origin.invocation) return; /* deliberately injected raw events have no command origin */
+    CHECK(origin.invocation < sizeof t->invocation / sizeof t->invocation[0]);
+    CHECK(!origin.foreign && !origin.copy);
+    unsigned id = origin.invocation;
+    if (kind == SIM_COMMAND) {
+        CHECK(t->startup && t->count < sizeof probe_startup / sizeof probe_startup[0]);
+        /* The exact effect sequence catches retransmission even if the model
+         * assigns the repeated submission a new private invocation number. */
+        CHECK(code == probe_startup[t->count]);
+        CHECK(!t->invocation[id].op && !t->pending && attrib_get()->unanswered == 0);
+        if (code == 0x2018) {
+            CHECK(n == 0 && t->required_parent && id != t->required_parent);
+            CHECK(probe_setting(t->invocation[t->required_parent].op));
+            CHECK(!t->invocation[t->required_parent].barrier);
+            t->invocation[id].parent = t->required_parent;
+        } else CHECK(!t->required_parent);
+        t->invocation[id].op = code;
+        t->pending = id;
+        t->count++;
+        return;
+    }
+    CHECK(code == 0x0e && n >= 4 && !p[3]);
+    CHECK(t->invocation[id].op == le16(p + 1));
+    if (kind == SIM_GENERATED) {
+        CHECK(++t->invocation[id].generated == 1);
+        return; /* generation is not delivery of the required answer */
+    }
+    CHECK(kind == SIM_DELIVERED && t->pending == id);
+    CHECK(t->invocation[id].generated == 1 && ++t->invocation[id].answered == 1);
+    CHECK(attrib_get()->unanswered == 0);
+    t->pending = 0;
+    if (probe_setting(t->invocation[id].op)) t->required_parent = id;
+    if (t->invocation[id].op == 0x2018) {
+        CHECK(n == 12 && t->required_parent == t->invocation[id].parent && t->barriers < 4);
+        for (unsigned i = 0; i < t->barriers; i++) CHECK(memcmp(t->random[i], p + 4, 8));
+        memcpy(t->random[t->barriers++], p + 4, 8);
+        t->invocation[t->required_parent].barrier = 1;
+        t->required_parent = 0;
+    }
+}
+#endif
+
 static void test_host_profile(void)
 {
     sim_pad pad = { .mode = SIM_RECONNECT };
@@ -207,6 +270,8 @@ static void test_host_profile(void)
     unsigned i;
 #if WHATEVERPAD_PROBE
     int consumed;
+    probe_trace trace = {.startup = 1};
+    sim_observe(s, observe_probe, &trace);
 #endif
     static const unsigned char peer[6] = {1, 2, 0xaa, 0xbb, 0xcc, 0xdd};
     static const unsigned char linking_peer[6] = {9, 8, 7, 6, 5, 4};
@@ -224,6 +289,14 @@ static void test_host_profile(void)
     h = sim_open_host(s, "build/attrib-preserved.db", NULL);
     CHECK(h != NULL);
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
+#if WHATEVERPAD_PROBE
+    trace.startup = 0;
+    CHECK(trace.count == sizeof probe_startup / sizeof probe_startup[0] && ncommands == trace.count);
+    CHECK(!trace.pending && !trace.required_parent && trace.barriers == 4);
+    CHECK(attrib_get()->submitted == trace.count && !attrib_get()->unanswered && !attrib_get()->timeout);
+    for (i = 1; i <= trace.count; i++)
+        CHECK(trace.invocation[i].generated == 1 && trace.invocation[i].answered == 1);
+#endif
     /* Exercise both trace sinks, even with an outstanding, unready link. */
     from = log_seq();
     CHECK(host_tune_set(h, "trace", 1));
@@ -253,7 +326,9 @@ static void test_host_profile(void)
         }
     }
     /* Exceed the old yield threshold and watchdog idle threshold deterministically. */
+    i = ncommands;
     host_poll(h, 31000);
+    CHECK(ncommands == i);
     i = ncommands;
     consumed = sim_consumed_requests(s);
     sim_peer_request(s, peer, 0x002508);
@@ -263,13 +338,12 @@ static void test_host_profile(void)
     CHECK(sim_foreign_commands(s) == 0 && sim_rejects(s) == 0);
     host_close(h);
     CHECK(ncommands == i); /* no guessed restores, readbacks, or Disconnect */
-    for (i = 0; i < 65536 && commands[i] <= 1; i++) {}
-    CHECK(i == 65536);
+    CHECK(trace.count == sizeof probe_startup / sizeof probe_startup[0] && !trace.pending);
     CHECK(!commands[0x0402] && !commands[0x0408] && !commands[0x200e] && !commands[0x0c03]);
     log_since(from, logs, sizeof logs);
     CHECK(strstr(logs, (const char *)secret) == NULL);
     CHECK(strstr(logs, "5a 51 5f 53 45 43 52 45 54 5f 37 33") == NULL);
-    puts("PROBE start/idle/Stop: no repeated or forbidden command, no restore, no native reply; reads remain open");
+    puts("PROBE start/idle/Stop: 14 once-only invocations, 4 fresh required barriers, no idle/Stop submission");
 #else
     (void)i;
     (void)from;
@@ -296,19 +370,26 @@ static void test_probe_missing_answer(void)
     sim_t *s = sim_new(&pad);
     hci_t transport = sim_hci(s);
     host_t *h;
+    probe_trace trace = {.startup = 1};
     attrib_reset();
     memset(commands, 0, sizeof commands);
     ncommands = 0;
     sim_go_deaf(s);
     sim_output_hooks(s, recording_cmd, NULL);
+    sim_observe(s, observe_probe, &trace);
     h = host_prepare(transport, "build/attrib-absent.db", NULL);
     CHECK(h != NULL);
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
     sim_bind_ownership(s, host_ownership(h));
     CHECK(!host_start(h));
-    CHECK(ncommands == 1 && commands[0x1005] == 1);
+    CHECK(ncommands == 1 && commands[0x1002] == 1);
+    CHECK(commands[0x1005] == 0 && attrib_get()->submitted == 1);
+    CHECK(trace.count == 1 && trace.pending == 1 && trace.invocation[1].op == 0x1002);
+    CHECK(!trace.invocation[1].generated && !trace.invocation[1].answered);
     CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
     host_close(h); /* the caller retires the prepared host after failed startup */
+    CHECK(ncommands == 1 && attrib_get()->submitted == 1);
+    CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
     sim_free(s);
     puts("PROBE missing answer: one submission, one timeout, no retransmission");
 #endif

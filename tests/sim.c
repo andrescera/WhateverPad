@@ -9,7 +9,7 @@
 
 #define QLEN    256
 #define PKT     1100
-#define HANDLE  0x0041
+#define INITIAL_HANDLE 0x0041
 
 /* The pad's ends of its channels. */
 #define RCID_SDP  0x0070
@@ -56,6 +56,7 @@ struct sim {
     sim_lifetime life;
     own_ledger *ledger;
     uint64_t random_value;
+    unsigned handle;
     int connected, enc, has_key, got_output;
     unsigned char key[16];
     rchan sdp, ctrl, intr;
@@ -218,7 +219,7 @@ static void ev_handle(sim_t *s, unsigned char code, unsigned char status, int ex
     unsigned char p[4];
 
     p[0] = status;
-    put16(p + 1, HANDLE);
+    put16(p + 1, s->handle);
     p[3] = x;
     event(s, code, p, 3 + extra);
 }
@@ -229,7 +230,7 @@ static void conn_complete(sim_t *s)
     unsigned char p[11];
 
     p[0] = 0;
-    put16(p + 1, HANDLE);
+    put16(p + 1, s->handle);
     memcpy(p + 3, s->pad.addr, 6);
     p[9] = 1;
     p[10] = 0;
@@ -257,7 +258,7 @@ static void acl_to_host(sim_t *s, unsigned cid, const unsigned char *d, int n)
     unsigned char pkt[PKT];
 
     if (!s->life.acl_reads) return;
-    put16(pkt, HANDLE | 0x2000);
+    put16(pkt, s->handle | 0x2000);
     put16(pkt + 2, (unsigned)(4 + n));
     put16(pkt + 4, (unsigned)n);
     put16(pkt + 6, cid);
@@ -769,7 +770,7 @@ static int model_acl_send(void *ctx, const unsigned char *pkt, int len)
     d = pkt + 8;
 
     ncp[0] = 1;
-    put16(ncp + 1, HANDLE);
+    put16(ncp + 1, s->handle);
     put16(ncp + 3, 1);
     event(s, 0x13, ncp, 5);
 
@@ -1023,6 +1024,7 @@ sim_t *sim_new(const sim_pad *pad)
     sim_t *s = calloc(1, sizeof *s);
 
     s->pad = *pad;
+    s->handle = INITIAL_HANDLE;
     s->ssp = 1; /* Supported baseline; OFF is an explicit unsupported-state fixture. */
     s->trace_start = sim_now();
     s->empty_left = pad->eir_empty_rounds;
@@ -1093,6 +1095,12 @@ void sim_power_on(sim_t *s)
     sim_peer_request(s, s->pad.addr, s->pad.cod);
 }
 
+void sim_set_handle(sim_t *s, unsigned handle)
+{
+    assert(!s->connected && handle < 0x0f00);
+    s->handle = handle;
+}
+
 void sim_peer_request(sim_t *s, const unsigned char addr[6], uint32_t cod)
 {
     unsigned char p[10];
@@ -1111,7 +1119,7 @@ void sim_disconnect(sim_t *s)
 
     if (!s->connected) return;
     p[0] = 0;
-    put16(p + 1, HANDLE);
+    put16(p + 1, s->handle);
     p[3] = 0x13;
     event(s, 0x05, p, 4);
     s->connected = s->enc = s->got_output = s->got_feature = 0;
