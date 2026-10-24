@@ -57,6 +57,7 @@ typedef struct {
     pad_info info;
     pad_state state;
     int forget_on_connect, forget_on_query, reenter_disconnect, forget_result, reenter_result;
+    int inspect_retirement;
 } fixture;
 
 static int single_producer(void)
@@ -221,6 +222,14 @@ static void disconnected(void *ud, link_ref link)
     CHECK(same_link(link, f->current));
     f->disconnects++;
     f->disconnected = link;
+    if (f->inspect_retirement) {
+        pad_info info;
+        pad_state state;
+        host_paired_info paired;
+        CHECK(!host_connected(f->host, link.slot));
+        CHECK(!host_pad_get(f->host, link.slot, &info, &state));
+        CHECK(host_paired_get(f->host, 0, &paired) && !paired.connected);
+    }
     if (f->reenter_disconnect) {
         f->reenter_disconnect = 0;
         f->reenter_result = host_forget(f->host, f->info.addr);
@@ -449,6 +458,7 @@ static void positive(int kind)
     CHECK(f.states > previous_states);
     CHECK(!(f.state.buttons & PAD_CROSS) && f.state.lx == 0x80);
     CHECK(host_connected(f.host, f.current.slot));
+    f.inspect_retirement = 1;
     finish(&f, 1);
     CHECK(f.disconnects == 1 && same_link(f.disconnected, f.current));
 }
@@ -606,29 +616,147 @@ static void stale_input_close(void)
     CHECK(count(&f, DISCONNECT) == 0);
 }
 
+static void forget_during_query(fixture *f)
+{
+    f->fault_op = READ_ADDRESS;
+    f->fault_armed = f->forget_on_query = 1;
+    f->fault_delay = 300;
+    int len = 16;
+    unsigned char reply[16];
+    CHECK(host_raw_cmd(f->host, READ_ADDRESS, NULL, 0, reply, &len));
+}
+
 static void forget_while_command_busy(void)
 {
     fixture f;
     test_name = "busy command does not strand or resurrect local retirement";
     begin(&f, 0);
     if (!start(&f) || !pair(&f)) { finish(&f, 0); return; }
-    f.fault_op = READ_ADDRESS;
-    f.fault_armed = f.forget_on_query = 1;
-    f.fault_delay = 300;
-    int states = f.states, len = 16;
-    unsigned char reply[16];
-    CHECK(host_raw_cmd(f.host, READ_ADDRESS, NULL, 0, reply, &len));
+    pad_info info;
+    pad_state state;
+    host_paired_info paired;
+    CHECK(host_pad_get(f.host, f.current.slot, &info, &state));
+    CHECK(host_paired_get(f.host, 0, &paired) && paired.connected);
+    int states = f.states;
+    forget_during_query(&f);
     pump_until(&f, clock_now(&f) + 100, -1, -1);
     CHECK(f.forget_result == 1 && f.connects == 1 && f.disconnects == 1);
     CHECK(f.states == states && !host_connected(f.host, f.current.slot));
+    CHECK(!host_pad_get(f.host, f.current.slot, &info, &state));
+    CHECK(host_paired_count(f.host) == 0 && !host_paired_get(f.host, 0, &paired));
+    CHECK(own_link_retained(host_ownership(f.host), f.current));
     pad_output output = {0};
     CHECK(!host_set_output(f.host, f.current.slot, &output));
     CHECK(count(&f, DISCONNECT) == 0);
     finish(&f, 1);
+    CHECK(f.disconnects == 1);
 }
 
-int main(void)
+typedef struct {
+    fixture *f;
+    const hci_ops *base;
+    hci_ops ops;
+    uint64_t deadline;
+    unsigned pumps, blocked, closes;
+    int armed;
+} close_probe;
+
+static close_probe *closing;
+
+static int cutoff_pump(void *ctx, int timeout_ms)
 {
+    close_probe *p = closing;
+    if (!p->armed) return p->base->pump(ctx, timeout_ms);
+    p->pumps++;
+    own_ledger *ledger = host_ownership(p->f->host);
+    own_summary s;
+    own_snapshot(ledger, &s);
+    CHECK(s.runtime.deadline == p->deadline);
+    CHECK(own_link_retained(ledger, p->f->current));
+    if (!own_drain_allowed(ledger, (uint64_t)sim_now(), 0)) {
+        /* Model the USB cutoff return without advancing time; fail finitely
+         * if host_close repeats it instead of reaching finalization. */
+        if (++p->blocked == 2) {
+            CHECK(p->blocked == 0);
+            printf("host transactions: %u checks, %u failures (cutoff spin)\n", checks, failures);
+            exit(1);
+        }
+        return 0;
+    }
+    CHECK(timeout_ms > 0 &&
+          (uint64_t)timeout_ms <= p->deadline - SESSION_RESERVE_MS - (uint64_t)sim_now());
+    return p->base->pump(ctx, timeout_ms);
+}
+
+static void cutoff_close(void *ctx)
+{
+    close_probe *p = closing;
+    if (p->armed) {
+        CHECK(++p->closes == 1);
+        own_ledger *ledger = host_ownership(p->f->host);
+        own_summary s;
+        own_snapshot(ledger, &s);
+        CHECK(!s.transport_closed && s.runtime.deadline == p->deadline);
+        CHECK(p->f->disconnects == 1);
+        CHECK(own_link_retained(ledger, p->f->current));
+        CHECK(own_detach_link(ledger, p->f->current) == OWN_BUSY);
+    }
+    p->base->close(ctx);
+    if (p->armed) {
+        own_summary s;
+        own_snapshot(host_ownership(p->f->host), &s);
+        CHECK(s.transport_closed && s.runtime.deadline == p->deadline);
+        CHECK(own_link_retained(host_ownership(p->f->host), p->f->current));
+    }
+}
+
+static void close_at_cutoff(int crossing)
+{
+    fixture f;
+    test_name = crossing ? "close caps wait at existing work cutoff" :
+                           "close skips nonadvancing pump after existing cutoff";
+    begin(&f, 0);
+    close_probe p = {.f = &f, .base = f.transport.ops, .ops = *f.transport.ops};
+    p.ops.pump = cutoff_pump;
+    p.ops.close = cutoff_close;
+    closing = &p;
+    f.transport.ops = &p.ops;
+    if (!start(&f) || !pair(&f)) {
+        finish(&f, 0);
+        closing = NULL;
+        return;
+    }
+    forget_during_query(&f);
+    CHECK(f.forget_result == 1 && f.disconnects == 1);
+    own_ledger *ledger = host_ownership(f.host);
+    CHECK(own_link_retained(ledger, f.current));
+    CHECK(own_release(ledger, SESSION_STOP, (uint64_t)sim_now()));
+    own_summary s;
+    own_snapshot(ledger, &s);
+    p.deadline = s.runtime.deadline;
+    long cutoff = (long)(p.deadline - SESSION_RESERVE_MS);
+    p.base->pump(f.transport.ctx, (int)(cutoff - sim_now() + (crossing ? -7 : 1)));
+    CHECK(own_drain_allowed(ledger, (uint64_t)sim_now(), 0) == crossing);
+    p.armed = 1;
+    finish(&f, 0);
+    CHECK(p.closes == 1 && p.blocked == 0);
+    CHECK(p.pumps == (unsigned)crossing);
+    CHECK(sim_now() == cutoff + (crossing ? 0 : 1));
+    CHECK(f.disconnects == 1 && same_link(f.disconnected, f.first));
+    closing = NULL;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2) {
+        if (!strcmp(argv[1], "--close-cutoff-entry")) close_at_cutoff(0);
+        else if (!strcmp(argv[1], "--close-cutoff-crossing")) close_at_cutoff(1);
+        else if (!strcmp(argv[1], "--busy-forget")) forget_while_command_busy();
+        else if (!strcmp(argv[1], "--retiring-paired")) positive(0);
+        else return 2;
+        goto report;
+    }
+    if (argc != 1) return 2;
     for (int kind = 0; kind < 3; kind++) positive(kind);
     for (int le = 0; le < 2; le++) {
         pairing_mode_disabled(le);
@@ -643,7 +771,10 @@ int main(void)
     disconnect_reentrant();
     forget_in_connect();
     forget_while_command_busy();
+    close_at_cutoff(0);
+    close_at_cutoff(1);
     if (single_producer()) stale_input_close();
+report:
     printf("host transactions: %u checks, %u failures (%s)\n", checks, failures,
            single_producer() ? "SINGLE_PRODUCER" : "NO_RESTORE");
     return failures ? 1 : 0;

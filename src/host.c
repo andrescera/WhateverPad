@@ -2453,7 +2453,7 @@ int host_paired_get(const host_t *h, int i, host_paired_info *out)
     out->le = d->le;
     for (k = 0; k < HOST_MAX_PADS; k++) {
         const link_t *l = &h->links[k];
-        if (l->used && l->ready && l->le == d->le &&
+        if (host_connected(h, k) && l->le == d->le &&
             (!d->le || l->le_s.id_type == d->addr_type) &&
             memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
     }
@@ -2464,9 +2464,8 @@ int host_pad_get(const host_t *h, int slot, pad_info *info, pad_state *st)
 {
     const link_t *l;
 
-    if (slot < 0 || slot >= HOST_MAX_PADS) return 0;
+    if (!host_connected(h, slot)) return 0;
     l = &h->links[slot];
-    if (!l->used || !l->ready) return 0;
     memset(info, 0, sizeof *info);
     info->vid = l->vid;
     info->pid = l->pid;
@@ -2725,7 +2724,8 @@ int host_start(host_t *h)
 void host_close(host_t *h)
 {
     int i;
-    long deadline;
+    long now, deadline;
+    own_summary summary;
 
     if (!h) return;
     own_release(h->ownership, SESSION_STOP, (uint64_t)now_ms());
@@ -2737,12 +2737,16 @@ void host_close(host_t *h)
         if (h->dead) link_free(h, &h->links[i]);    /* nothing to tell the pad */
         else link_disconnect(h, &h->links[i], "closing");    /* the pad keeps its key: it reconnects next time */
     }
-    deadline = now_ms() + 2000;
+    own_snapshot(h->ownership, &summary);
+    now = now_ms();
+    deadline = now + session_work_remaining(&summary.runtime, (uint64_t)now, 2000);
     for (;;) {
         int any = 0;
         for (i = 0; i < HOST_MAX_PADS; i++) any |= h->links[i].used;
-        if (!any || now_ms() >= deadline) break;
-        pump(h, 50);
+        now = now_ms();
+        if (!any || now >= deadline ||
+            !own_drain_allowed(h->ownership, (uint64_t)now, 0)) break;
+        pump(h, deadline - now < 50 ? (int)(deadline - now) : 50);
     }
     if (!h->dead) host_flush(h); /* Only the ledger can select a derived undo. */
     if (h->hci.ops->close) h->hci.ops->close(h->hci.ctx);
