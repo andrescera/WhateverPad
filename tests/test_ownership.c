@@ -95,7 +95,8 @@ static link_ref connect_link(own_ledger *l, unsigned n, unsigned handle, own_ref
     /* Terminal-before-CS is retained, not published. */
     own_terminal_event term = { .kind = OWN_TERM_CONNECTION, .peer = c.peer,
                                .handle = (uint16_t)handle };
-    own_terminal(l, *out, &term, now + 1);
+    own_observe_connection(l, term.peer.le, term.peer.address_type, term.peer.wire,
+                           term.handle, term.status, now + 1);
     CHECK(own_input(l, link, (uint16_t)handle, now + 2) != OWN_OK);
     ack(l, 0x0405, 0, 0, now + 3);
     CHECK(own_input(l, link, (uint16_t)handle, now + 4) != OWN_OK);
@@ -339,7 +340,8 @@ static void collisions(own_policy policy)
     submit(l, 0x0405, 0);
     ack(l, 0x0405, 0, 0, 1);
     own_terminal_event term = { .kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 60 };
-    own_terminal(l, r, &term, 2);
+    own_observe_connection(l, term.peer.le, term.peer.address_type, term.peer.wire,
+                           term.handle, term.status, 2);
     CHECK(own_input(l, c.link, 60, 3) != OWN_OK);
     own_release(l, SESSION_STOP, 4);
     own_summary left;
@@ -449,7 +451,8 @@ static void links_and_virtual(own_policy policy)
     ack(l, 0x0405, 0, 0, 1351);
     barrier(l, 500, 1352);
     own_terminal_event term = { .kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 40 };
-    own_terminal(l, reused, &term, 1353);
+    own_observe_connection(l, term.peer.le, term.peer.address_type, term.peer.wire,
+                           term.handle, term.status, 1353);
     no_undo(l, reused, 1354);
     own_summary s;
     own_snapshot(l, &s);
@@ -561,7 +564,8 @@ static void interrupted_acquisitions(own_policy policy)
     CHECK(own_prepare(l, &c, &r) == OWN_OK);
     submit(l, 0x0405, 0);
     own_terminal_event term = { .kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 40 };
-    own_terminal(l, r, &term, 1);
+    own_observe_connection(l, term.peer.le, term.peer.address_type, term.peer.wire,
+                           term.handle, term.status, 1);
     own_disconnected(l, c.link, 40, 2); /* terminal before ACK, then disconnect */
     ack(l, 0x0405, 0, 0, 3);
     own_token t;
@@ -631,7 +635,8 @@ static void interrupted_acquisitions(own_policy policy)
         ack(l, 0x0405, 0, 0, 1);
         if (fence_sent) submit(l, 0x2018, 2);
         term = (own_terminal_event){ .kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 40 };
-        own_terminal(l, r, &term, 3);
+        own_observe_connection(l, term.peer.le, term.peer.address_type, term.peer.wire,
+                               term.handle, term.status, 3);
         own_disconnected(l, c.link, 40, 4);
         if (fence_sent) ack(l, 0x2018, 0, 91, 5);
         own_snapshot(l, &late);
@@ -702,7 +707,8 @@ static void continuity_and_identity(own_policy policy)
     ack(l, 0x0405, 0, 0, 21);
     barrier(l, 43, 22);
     own_terminal_event term = { .kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 40 };
-    own_terminal(l, r, &term, 23);
+    own_observe_connection(l, term.peer.le, term.peer.address_type, term.peer.wire,
+                           term.handle, term.status, 23);
     no_undo(l, r, 24);
     own_summary snap;
     own_snapshot(l, &snap);
@@ -947,7 +953,8 @@ static void acl_output(own_policy policy)
         CHECK(own_prepare(l, &c, &parent) == OWN_OK);
         submit(l, 0x0405, 0);
         own_terminal_event terminal = {.kind = OWN_TERM_CONNECTION, .peer = c.peer, .handle = 40};
-        own_terminal(l, parent, &terminal, 1);
+        own_observe_connection(l, terminal.peer.le, terminal.peer.address_type,
+                               terminal.peer.wire, terminal.handle, terminal.status, 1);
         ack(l, 0x0405, 0, 0, 2);
         CHECK(own_acl_prepare(lane, link, packet, sizeof packet, 2, &token) == OWN_NO_PROOF);
         barrier(l, 1, 3);

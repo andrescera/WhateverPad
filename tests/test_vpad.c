@@ -7,17 +7,19 @@
 #include "../src/log.h"
 
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-static int g_fail, pending, strict_mode;
-#define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+static int g_fail, g_checks, pending, strict_mode;
+#define CHECK(c) do { g_checks++; if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
 static void expected_failure(int todo, const char *name, int desired, const char *effect)
 {
@@ -41,6 +43,25 @@ static int fail_authid, fail_caps_read;
 #endif
 static int32_t deleted_handle;
 static int web_port;
+static int log_via_klog, reenter_remove, requeue_on_delete, delete_result;
+
+/* The klog fallback is a pipe too; never open a real kernel-log device. */
+int open(const char *path, int flags, ...)
+{
+    if (!strcmp(path, "/dev/klog")) {
+        int fd = dup(log_pipe[0]);
+        if (fd >= 0) CHECK(fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0);
+        return fd;
+    }
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    return openat(AT_FDCWD, path, flags, mode);
+}
 
 /* Only web.c's bind is redirected; HTTP and vendor-log sockets stay separate. */
 int test_vpad_web_bind(int fd, const struct sockaddr *addr, socklen_t len)
@@ -64,7 +85,7 @@ int test_vpad_socket(int domain, int type, int protocol)
 int test_vpad_connect(int fd, const struct sockaddr *addr, socklen_t n)
 {
     (void)fd; (void)addr; (void)n;
-    return 0;
+    return log_via_klog ? -1 : 0;
 }
 
 static long g_now = 100000;
@@ -127,7 +148,20 @@ int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t)
     return add_result;
 }
 int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; frames++; return 0; }
-int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { deleted_handle = h; deletes++; return 0; }
+int32_t scePadVirtualDeviceDeleteDevice(int32_t h)
+{
+    deleted_handle = h;
+    deletes++;
+    if (reenter_remove) {
+        reenter_remove = 0;
+        CHECK(!vpad_live(0));
+        pad_state input = {.buttons = PAD_CROSS};
+        vpad_update(0, &input);
+        vpad_remove(0);
+        if (requeue_on_delete) CHECK(vpad_add(0));
+    }
+    return delete_result;
+}
 uint64_t kernel_get_ucred_authid(pid_t pid) { (void)pid; return g_authid; }
 int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a)
 {
@@ -398,6 +432,140 @@ static void test_pending_removal_preserves_unidentified_devices(void)
     }
 }
 
+static void test_reentrant_removal_claims_device_before_delete(void)
+{
+    ph_clock_hook = fake_clock;
+    for (int requeue = 0; requeue < 2; requeue++) {
+        CHECK(pipe(log_pipe) == 0);
+        adds = binds = deletes = frames = 0;
+        reset(0, 0);
+        CHECK(vpad_init());
+        CHECK(vpad_add(0));
+        vpad_poll(g_now);
+        vpad_poll(g_now);
+        g_now += 301;
+        vpad_poll(g_now);
+        CHECK(vpad_live(0) && adds == 1 && binds == 1 && deletes == 0);
+
+        reenter_remove = 1;
+        requeue_on_delete = requeue;
+        delete_result = requeue ? -1 : 0;
+        vpad_remove(0);
+        printf("REENTRANT_VPAD requeue=%d result=%d deletes=%d frames=%d\n",
+               requeue, delete_result, deletes, frames);
+        CHECK(deletes == 1 && deleted_handle == 0x11112222 && frames == 0);
+        CHECK(!vpad_live(0));
+        if (requeue) {
+            vpad_poll(g_now);
+            CHECK(adds == 2);
+            vpad_poll(g_now);
+            g_now += 301;
+            vpad_poll(g_now);
+            CHECK(vpad_live(0) && binds == 2);
+        }
+        delete_result = 0;
+        vpad_remove(0);
+        int removed = deletes;
+        vpad_remove(0);
+        CHECK(deletes == removed && deletes == 1 + requeue);
+        CHECK(vpad_creds_restore());
+        CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+    }
+    requeue_on_delete = 0;
+}
+
+static void test_user_ids_are_not_logged(void)
+{
+    static const int32_t users[4] = {0x1234ab01, 0x2345bc02, 0x3456cd03, 0x4567de04};
+    int32_t saved_init = g_init_user, saved_fore = g_fore_user, saved_login[4];
+    memcpy(saved_login, g_login, sizeof saved_login);
+    CHECK(pipe(log_pipe) == 0);
+    adds = binds = deletes = frames = 0;
+    memcpy(g_login, users, sizeof g_login);
+    g_init_user = users[0];
+    g_fore_user = users[1];
+    ph_clock_hook = fake_clock;
+    reset(0, 0);
+    for (int phase = 0; phase < 3; phase++) {
+        unsigned long from = log_seq();
+        if (phase == 0) {
+            CHECK(vpad_init());
+        } else if (phase == 1) {
+            bind_result = (int32_t)0x809b0081;
+            CHECK(vpad_add(0));
+            vpad_poll(g_now);
+            vpad_poll(g_now);
+            g_now += 301;
+            vpad_poll(g_now);
+            CHECK(binds == 1 && deletes == 1 && !vpad_live(0));
+        } else {
+            uint32_t buttons;
+            vpad_close_physical();
+            g_pad_opened = 0;
+            g_open_result = (int32_t)0x80920004;
+            g_now += 6000;
+            CHECK(!vpad_read_physical(&buttons));
+            CHECK(vpad_physical_error() == g_open_result);
+        }
+        char logs[4096], secret[32];
+        CHECK(log_since(from, logs, sizeof logs) == log_seq() && logs[0]);
+        for (int i = 0; i < 4; i++) {
+            snprintf(secret, sizeof secret, "%x", (unsigned)users[i]);
+            CHECK(strstr(logs, secret) == NULL);
+            snprintf(secret, sizeof secret, "%d", users[i]);
+            CHECK(strstr(logs, secret) == NULL);
+        }
+        if (phase == 1) {
+            CHECK(strstr(logs, "0x11112222") != NULL);
+            CHECK(strstr(logs, "0x809b0081") != NULL);
+        } else if (phase == 2) {
+            CHECK(strstr(logs, "0x80920004") != NULL);
+        }
+    }
+    vpad_remove(0);
+    bind_result = 0;
+    g_open_result = 7;
+    g_init_user = saved_init;
+    g_fore_user = saved_fore;
+    memcpy(g_login, saved_login, sizeof g_login);
+    CHECK(vpad_creds_restore());
+    CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+}
+
+static void test_kernel_log_input_is_not_forwarded(void)
+{
+    static const char raw[] =
+        "user_id=7654ab09 link_key=a1b2c3d4e5f60718293a4b5c6d7e8f90 addr=11:22:33:44:55:66\n"
+        "SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x11112222][type:1][subType:22]"
+        "[capabilityBattery:0][user_id=7654ab09][key=a1b2c3d4e5f60718293a4b5c6d7e8f90]"
+        "[addr=11:22:33:44:55:66]\n";
+    for (log_via_klog = 0; log_via_klog < 2; log_via_klog++) {
+        CHECK(pipe(log_pipe) == 0);
+        adds = binds = deletes = frames = 0;
+        reset(0, 0);
+        CHECK(vpad_init());
+        CHECK(vpad_add(0));
+        vpad_poll(g_now);
+        unsigned long from = log_seq();
+        CHECK(write(log_pipe[1], raw, sizeof raw - 1) == sizeof raw - 1);
+        vpad_poll(g_now);
+        g_now += 301;
+        vpad_poll(g_now);
+        CHECK(vpad_live(0) && adds == 1 && binds == 1 && deletes == 0 && frames == 0);
+        char logs[4096];
+        CHECK(log_since(from, logs, sizeof logs) == log_seq());
+        CHECK(strstr(logs, "7654ab09") == NULL);
+        CHECK(strstr(logs, "a1b2c3d4e5f60718293a4b5c6d7e8f90") == NULL);
+        CHECK(strstr(logs, "11:22:33:44:55:66") == NULL);
+        CHECK(strstr(logs, "0x11112222") != NULL);
+        vpad_remove(0);
+        CHECK(deletes == 1);
+        CHECK(vpad_creds_restore());
+        CHECK(close(log_pipe[0]) == 0 && close(log_pipe[1]) == 0);
+    }
+    log_via_klog = 0;
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -537,8 +705,12 @@ int main(int argc, char **argv)
     test_refused_vendor_acquisitions_do_not_invent_ownership();
     test_web_stop_preempts_queued_and_pending_effects();
     test_pending_removal_preserves_unidentified_devices();
+    test_reentrant_removal_claims_device_before_delete();
+    test_user_ids_are_not_logged();
+    test_kernel_log_input_is_not_forwarded();
     test_probe_credentials();
     ph_clock_hook = NULL;
+    printf("%d vpad checks, %d failed\n", g_checks, g_fail);
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
     printf("%d expected-failing vpad cases\n", pending);
     return g_fail != 0 || (strict_mode && pending != 0);

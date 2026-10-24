@@ -6,12 +6,13 @@ include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 VERSION := $(shell sed -n 's/^\#define WHATEVERPAD_VERSION "\(.*\)"/\1/p' src/version.h)
 BUILD_REF ?= $(shell GIT_MASTER=1 git describe --always --dirty)
 WHATEVERPAD_PROBE ?= 0
+WHATEVERPAD_ATTRIB_POLICY ?= OWN_POLICY_NO_RESTORE
 WHATEVERPAD_PROBE_CREDS ?= raised
 ELF   := dist/WhateverPad-PS5-$(VERSION).elf
 BUILD := build/ps5
 BUILD_ID := build/build_id.h
 
-CFLAGS  := -std=c11 -Wall -Wextra -Werror -O2 -Isrc -Ibuild -MMD -MP -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
+CFLAGS  := -std=c11 -Wall -Wextra -Werror -O2 -Isrc -Ibuild -MMD -MP -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE) -DWHATEVERPAD_ATTRIB_POLICY=$(WHATEVERPAD_ATTRIB_POLICY)
 ifeq ($(WHATEVERPAD_PROBE),1)
 ifeq ($(filter $(WHATEVERPAD_PROBE_CREDS),raised original),)
 $(error WHATEVERPAD_PROBE_CREDS must be raised or original)

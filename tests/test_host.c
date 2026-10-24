@@ -3,6 +3,7 @@
 #include "../src/crc32.h"
 #include "../src/host.h"
 #include "../src/host_int.h"
+#include "../src/log.h"
 #include "../src/util.h"
 
 #include <stdio.h>
@@ -21,26 +22,26 @@ typedef struct {
     pad_state last;
 } seen;
 
-static void on_connect(void *ud, int slot, const pad_info *info)
+static void on_connect(void *ud, link_ref ref, const pad_info *info)
 {
     seen *s = ud;
     s->connects++;
-    s->slot = slot;
+    s->slot = ref.slot;
     s->info = *info;
 }
 
-static void on_state(void *ud, int slot, const pad_state *st)
+static void on_state(void *ud, link_ref ref, const pad_state *st)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->states++;
     s->last = *st;
 }
 
-static void on_disconnect(void *ud, int slot)
+static void on_disconnect(void *ud, link_ref ref)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->disconnects++;
 }
 
@@ -105,8 +106,9 @@ static void run(host_t *h, int ms)
 
 static host_t *open_host(sim_t *sim, seen *s)
 {
+    attrib_reset();
     host_events ev = { on_connect, on_state, on_disconnect, s, NULL };
-    return host_open(sim_hci(sim), DB, &ev);
+    return sim_open_host(sim, DB, &ev);
 }
 
 static int test_pairing_seed(int drop_every, unsigned seed, int quiet);
@@ -528,7 +530,9 @@ static void test_busy_radio_lightened(void)
     CHECK(iv == 0x0800 && win == 0x0012);       /* kept light: a connected pad lags otherwise */
     host_close(h);
     sim_get_page_scan(sim, &iv, &win);
-    CHECK(iv == 0x029C && win == 0x014E);       /* the system's value is back */
+    if (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_SINGLE_PRODUCER)
+        CHECK(iv == 0x029C && win == 0x014E);
+    else CHECK(iv == 0x0800 && win == 0x0012); /* NO_RESTORE leaves our change alone. */
     sim_free(sim);
 }
 
@@ -558,7 +562,7 @@ static void test_calls_left_to_system(void)
     CHECK((sim_event_mask(sim)[0] & 0x08) == 0);
     CHECK((sim_event_mask(sim)[0] & 0x07) == 0x07);     /* inquiry and connection complete still on */
     host_close(h);
-    CHECK(sim_event_mask(sim)[0] == 0xFF);              /* put back on close */
+    CHECK(sim_event_mask(sim)[0] == 0xF7);              /* No original mask was captured. */
     host_tune_set(NULL, "mask_conn", 0);
     sim_free(sim);
 }
@@ -648,8 +652,8 @@ static void test_pad_own_call_turned_down(void)
         long end = sim_now() + 8000;
         while (!s.connects && sim_now() < end) host_poll(h, 5);
     }
-    CHECK(s.connects == 1);
-    CHECK(sim_rejects(sim) == 1);
+    CHECK(s.connects == 0);
+    CHECK(sim_rejects(sim) == 0); /* A collision is not evidence of an inbound request. */
     host_close(h);
     sim_free(sim);
 }
@@ -686,7 +690,8 @@ static void test_fresh_link_on_no_resources(void)
         long end = sim_now() + 9000;
         while (!s.connects && sim_now() < end) host_poll(h, 5);
     }
-    CHECK(s.connects == 1);
+    CHECK(s.connects == 0 && sim_link_up(sim));
+    CHECK(sim_disconnect_requests(sim) == 0); /* No accepted profile input: no freshness. */
     host_close(h);
     sim_free(sim);
 }
@@ -761,7 +766,8 @@ static void test_forget_unplugs(void)
     CHECK(host_forget(h, addr) == 1);
     run(h, 2000);
     CHECK(sim_unplugs(sim) == 1);
-    CHECK(sim_link_up(sim) == 0);
+    CHECK(sim_link_up(sim) ==
+          (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_NO_RESTORE ? 1 : 0));
     CHECK(host_forget(h, addr) == 0);          /* no longer known */
     host_close(h);
     sim_free(sim);
@@ -800,7 +806,7 @@ static void test_inquiry_watchdog(void)
     host_t *h;
     seen s;
 
-    printf("a search whose end event is lost carries on\n");
+    printf("a lost Inquiry terminal cannot authorize another Inquiry\n");
     unlink(DB);
     memset(&pad, 0, sizeof pad);
     memset(&s, 0, sizeof s);
@@ -810,9 +816,11 @@ static void test_inquiry_watchdog(void)
     h = open_host(sim, &s);
     CHECK(h != NULL);
     if (!h) { sim_free(sim); return; }
+    sim_delay_events(sim, 0x01, 1, -1);
     host_pair(h, 60);
     run(h, 50000);
-    CHECK(sim_inquiries(sim) >= 3);         /* started again after the watchdog, not once and stuck */
+    CHECK(sim_inquiries(sim) == 1);
+    CHECK(!host_pair(h, 60));
     host_close(h);
     sim_free(sim);
 }
@@ -1028,7 +1036,7 @@ static void test_transport_lost(void)
     CHECK(!host_transport_lost(h));     /* idle but answering probes */
     sim_go_deaf(sim);
     run(h, 30000);
-    CHECK(host_transport_lost(h));
+    CHECK(!host_pair(h, 30)); /* The first missing command answer closes admission. */
     host_close(h);
     sim_free(sim);
 }
@@ -1187,7 +1195,8 @@ static void test_restore(void)
     h = open_host(sim, &s);
     CHECK(h && sim_scan(sim) == 0x02);
     host_close(h);
-    CHECK(sim_scan(sim) == 0x00);
+    CHECK(sim_scan(sim) ==
+          (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_SINGLE_PRODUCER ? 0x00 : 0x02));
 
     h = open_host(sim, &s);
     sim_set_scan(sim, 0x03);            /* the system turns on inquiry scan too */
@@ -1276,7 +1285,7 @@ static void test_dead_controller(void)
 static int without_local_identity(void *ctx, unsigned op, const void *p, int len)
 {
     if (op == OP_READ_BD_ADDR) return 0;
-    return sim_hci(ctx).ops->cmd(ctx, op, p, len);
+    return sim_model_command(ctx, op, p, len);
 }
 
 static void test_store_admission(void)
@@ -1289,15 +1298,13 @@ static void test_store_admission(void)
     FILE *f;
     char got[4];
     static const unsigned char addr[6] = {7, 8, 9, 10, 11, 12};
-    hci_t transport = sim_hci(sim);
-    hci_ops ops = *transport.ops;
     host_events ev = { on_connect, on_state, on_disconnect, &s, NULL };
 
     printf("durable admission waits for commit and a successful local identity read\n");
-    ops.cmd = without_local_identity;
-    transport.ops = &ops;
-    CHECK(host_open(transport, DB, &ev) == NULL);
+    sim_output_hooks(sim, without_local_identity, NULL);
+    CHECK(sim_open_host(sim, DB, &ev) == NULL);
     CHECK(access(DB, F_OK) != 0);
+    sim_output_hooks(sim, NULL, NULL);
     h = open_host(sim, &s);
     CHECK(h != NULL);
     if (!h) { sim_free(sim); return; }
@@ -1430,6 +1437,54 @@ static void test_discovery_regressions(void)
     }
 }
 
+static void test_diagnostics_do_not_expose_secrets(void)
+{
+    static const unsigned char address[] = {0x91,0xa2,0xb3,0xc4,0xd5,0xe6};
+    sim_pad p = {0};
+    memcpy(p.addr, address, sizeof address);
+    p.cod = 0x002508;
+    p.vid = 0x054c; p.pid = 0x05c4;
+    p.report_len = ds4_report(p.report);
+    p.eir[0] = 7; p.eir[1] = 0x1b;
+    memcpy(p.eir + 2, address, sizeof address);
+    p.eir_len = 8;
+    sim_t *sim = sim_new(&p);
+    unsigned long from = log_seq();
+    host_t *h = open_host(sim, &(seen){0});
+    CHECK(h != NULL);
+    if (h) {
+        unsigned char command[28] = {0}, event[23] = {0};
+        unsigned char reply[300];
+        int length, trace = g_tune.trace;
+        CHECK(host_pair(h, 30));
+        run(h, 1000);
+        memcpy(command, address, 6);
+        for (int i = 0; i < 16; i++) command[6 + i] = (unsigned char)(0xe0 + i);
+        host_raw_cmd(h, 0x040b, command, 22, reply, &length);
+        command[6] = 16;
+        host_raw_cmd(h, 0x040d, command, 23, reply, &length);
+        host_raw_cmd(h, 0x2019, command, 28, reply, &length);
+        CHECK(link_by_peer(h, address, 0, 0) || link_new(h, address, 0, 0));
+        memcpy(event, address, 6);
+        for (int i = 0; i < 16; i++) event[6 + i] = (unsigned char)(0xe0 + i);
+        g_tune.trace = 1;
+        sim_inject_event(sim, 0x18, event, sizeof event);
+        host_poll(h, 0);
+        g_tune.trace = trace;
+        host_close(h);
+    }
+    char captured[32768];
+    CHECK(log_since(from, captured, sizeof captured) > from);
+    static const char *const forbidden[] = {
+        "e0 e1 e2", "e1 e2 e3", "e0e1e2",
+        "91 a2 b3", "91:A2:B3", "E6:D5:C4", "e6 d5 c4",
+        "11:22:33", "66 55 44", "665544"
+    };
+    for (unsigned i = 0; i < sizeof forbidden / sizeof *forbidden; i++)
+        CHECK(strstr(captured, forbidden[i]) == NULL);
+    sim_free(sim);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 || (argc == 2 && strcmp(argv[1], "--reconnect") != 0)) {
@@ -1440,6 +1495,7 @@ int main(int argc, char **argv)
     if (argc == 2) {
         RUN_TEST(test_reconnect());
     } else {
+        RUN_TEST(test_diagnostics_do_not_expose_secrets());
         RUN_TEST(test_store_admission());
         RUN_TEST(test_discovery_regressions());
         RUN_TEST(test_sdp_parse());

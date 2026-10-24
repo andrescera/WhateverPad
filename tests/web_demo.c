@@ -34,7 +34,7 @@ int main(void)
     pad.report_len = 78;
     pad.needs_output = 1;
     sim = sim_new(&pad);
-    h = host_open(sim_hci(sim), "build/demo.db", NULL);
+    h = sim_open_host(sim, "build/demo.db", NULL);
     {
         static volatile int bt = WEB_BT_OK, retry;
         memset(&wc, 0, sizeof wc);

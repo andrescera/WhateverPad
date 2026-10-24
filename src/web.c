@@ -300,7 +300,7 @@ static void api_state(web_t *w, client *c)
             p.connected ? "true" : "false");
         first = 0;
     }
-    PUT("],\"attrib\":");
+    PUT("],\"radio_left\":%u,\"attrib\":", host_radio_left(h));
     n += attrib_json(out + n, sizeof out - n - 2);
     PUT("}");
 #undef PUT
@@ -459,6 +459,8 @@ static void handle(web_t *w, client *c)
         log_line("web: stop requested");
         if (w->cfg.stop) *w->cfg.stop = 1;
         if (w->cfg.session) session_request(w->cfg.session, SESSION_STOP, (uint64_t)now_ms());
+        if (w->cfg.host && *w->cfg.host)
+            own_release(host_ownership(*w->cfg.host), SESSION_STOP, (uint64_t)now_ms());
         respond_text(c, 200, "{\"ok\":true}");
         return;
     }

@@ -14,7 +14,8 @@
 #define PROBE_CREDS "raised"
 #endif
 #define PROBE_ID "T8-v2-" PROBE_CREDS
-/* Shared observation boundary, not an attribution/ownership receipt. */
+/* Probe-only diagnostic window. Submission remains token-checked; observing
+ * a late answer cannot change a ledger receipt, ownership or admission. */
 extern long probe_deadline_ms;
 #endif
 

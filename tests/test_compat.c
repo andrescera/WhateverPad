@@ -3,41 +3,44 @@
  * does WhateverPad find them, link them and read them? */
 #include "sim.h"
 #include "../src/host.h"
+#include "../src/host_int.h"
 #include "../src/util.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-static int g_fail;
-#define CHECK(c) do { if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
+static int g_fail, g_checks;
+#define CHECK(c) do { g_checks++; if (!(c)) { printf("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
 typedef struct {
     int connects, disconnects, states, slot;
     pad_info info;
     pad_state last;
+    link_ref ref;
 } seen;
 
-static void on_connect(void *ud, int slot, const pad_info *info)
+static void on_connect(void *ud, link_ref ref, const pad_info *info)
 {
     seen *s = ud;
     s->connects++;
-    s->slot = slot;
+    s->slot = ref.slot;
     s->info = *info;
+    s->ref = ref;
 }
 
-static void on_state(void *ud, int slot, const pad_state *st)
+static void on_state(void *ud, link_ref ref, const pad_state *st)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->states++;
     s->last = *st;
 }
 
-static void on_disconnect(void *ud, int slot)
+static void on_disconnect(void *ud, link_ref ref)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->disconnects++;
 }
 
@@ -49,10 +52,29 @@ static void run(host_t *h, int ms)
     while (sim_now() < end) host_poll(h, 5);
 }
 
+static unsigned wire_commands, wire_acl;
+static unsigned char last_pin[23];
+static int record_command(void *ctx, unsigned op, const void *p, int n)
+{
+    wire_commands++;
+    if (op == 0x040d) {
+        CHECK(n == (int)sizeof last_pin);
+        if (n == (int)sizeof last_pin) memcpy(last_pin, p, sizeof last_pin);
+    }
+    return sim_model_command(ctx, op, p, n);
+}
+
+static int record_acl(void *ctx, const unsigned char *p, int n)
+{
+    wire_acl++;
+    return sim_model_acl(ctx, p, n);
+}
+
 static host_t *open_host(sim_t *sim, seen *s)
 {
+    attrib_reset();
     host_events ev = { on_connect, on_state, on_disconnect, s, NULL };
-    return host_open(sim_hci(sim), DB, &ev);
+    return sim_open_host(sim, DB, &ev);
 }
 
 static void base_pad(sim_pad *p, uint16_t vid, uint16_t pid, uint32_t cod)
@@ -270,7 +292,7 @@ static void test_joycon(void)
     joycon_once(1);
 }
 
-/* ---- a pad that drops without a word and calls back ------------------------- */
+/* ---- missing-terminal quarantine and ordinary reconnect ------------------- */
 
 static void test_silent_drop_then_call(void)
 {
@@ -286,6 +308,7 @@ static void test_silent_drop_then_call(void)
     switch_reports(&pad);
     pad.needs_output = 1;
     sim = sim_new(&pad);
+    sim_output_hooks(sim, record_command, record_acl);
     h = open_host(sim, &s);
     CHECK(h != NULL);
     if (!h) return;
@@ -295,17 +318,65 @@ static void test_silent_drop_then_call(void)
     sim_vanish(sim);                    /* asleep, or out of range: no event reaches us */
     run(h, 1000);
     CHECK(s.disconnects == 0);          /* we still think it is there */
+    unsigned commands_before = wire_commands, acl_before = wire_acl;
     sim_power_on(sim);                  /* it wakes and calls the console */
     run(h, 12000);
     CHECK(s.disconnects == 1);          /* the dead link let go ... */
-    CHECK(s.connects == 2);             /* ... and the call taken */
-    CHECK(sim_link_up(sim));
+    /* D:411,734: a missing terminal retains identity and quarantines reuse. */
+    CHECK(s.connects == 1);             /* no replacement publication */
+    CHECK(!sim_link_up(sim));
     s.states = 0;
     run(h, 500);
-    CHECK(s.states > 0 && (s.last.buttons & 0x4000));       /* and it is read again */
+    CHECK(s.states == 0);
+    pad_output out = {0};
+    CHECK(!host_connected(h, s.slot) && !host_set_output(h, s.slot, &out));
+    CHECK(wire_commands == commands_before && wire_acl == acl_before);
+    CHECK(sim_disconnect_requests(sim) == 0);
+    own_summary summary;
+    own_snapshot(host_ownership(h), &summary);
+    CHECK(summary.runtime.reason == SESSION_AMBIGUOUS && summary.ambiguity_count > 0);
     printf("  connects %d, disconnects %d\n", s.connects, s.disconnects);
+    long closing = sim_now();
     host_close(h);
+    CHECK(sim_now() - closing <= 2000);
+    CHECK(s.connects == 1 && s.disconnects == 1 && s.states == 0);
+    CHECK(wire_commands == commands_before && wire_acl == acl_before);
+    CHECK(sim_resources(sim).closes == 1 && sim_resources(sim).uninits == 1);
     sim_free(sim);
+}
+
+static void test_terminal_then_fresh_handle_reconnect(void)
+{
+    sim_pad pad;
+    seen s = {0};
+    unlink(DB);
+    base_pad(&pad, 0x057e, 0x2009, 0x002508);
+    switch_reports(&pad);
+    pad.needs_output = 1;
+    sim_t *sim = sim_new(&pad);
+    host_t *h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_free(sim); return; }
+    CHECK(host_pair(h, 30));
+    run(h, 12000);
+    CHECK(s.connects == 1 && s.states > 0 && (s.last.buttons & PAD_CROSS));
+    link_ref first = s.ref;
+    CHECK(host_pair(h, 0));
+    sim_disconnect(sim);                /* genuine terminal, unlike the negative case */
+    run(h, 100);
+    CHECK(s.connects == 1 && s.disconnects == 1 && !host_connected(h, s.slot));
+    sim_set_handle(sim, 0x42);          /* never clear the ledger's seen-handle history */
+    sim_power_on(sim);
+    s.states = 0;
+    run(h, 12000);
+    CHECK(s.connects == 2 && s.disconnects == 1 && sim_link_up(sim));
+    CHECK(s.ref.attempt == first.attempt && s.ref.generation != first.generation);
+    CHECK(s.states > 0 && (s.last.buttons & PAD_CROSS));
+    CHECK(host_connected(h, s.slot) && sim_disconnect_requests(sim) == 0);
+    host_close(h);
+    CHECK(s.disconnects == 2 && sim_resources(sim).closes == 1);
+    sim_free(sim);
+    puts("normal reconnect: genuine terminal, fresh handle, fresh generation and input");
 }
 
 /* ---- Nintendo Wii U Pro and Wii Remote ---------------------------------------- */
@@ -426,14 +497,44 @@ static void test_pins(void)
     unlink(DB);
     memset(&s, 0, sizeof s);
     sim = wii_pad(&pad, 0x0330, 0x002508, NULL, 1, 1);  /* no name, a gamepad's class */
+    sim_free(sim);
+    /* A non-name EIR avoids the simulator's default "Pad1" name. */
+    memcpy(pad.eir, (unsigned char[]){3, 3, 0x24, 0x11}, 4);
+    pad.eir_len = 4;
+    sim = sim_new(&pad);
+    sim_output_hooks(sim, record_command, record_acl);
     h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_free(sim); return; }
     host_pair(h, 60);
     run(h, 40000);
-    CHECK(sim_pins(sim) >= 2);                       /* "0000" refused, then the address */
-    CHECK(sim_pin_ok(sim));
-    CHECK(s.connects == 1);
+    /* Owner-selected manual re-pair; A4/A8 forbid setup-time Disconnect. */
+    CHECK(sim_pins(sim) == 1);
+    CHECK(!sim_pin_ok(sim));
+    CHECK(s.connects == 0);
+    CHECK(s.states == 0 && s.disconnects == 0 && !host_connected(h, 0));
+    CHECK(sim_disconnect_requests(sim) == 0 && sim_link_up(sim));
+    CHECK(h->pin_addr_set && !memcmp(h->pin_addr, pad.addr, sizeof pad.addr));
+    CHECK(h->links[0].used && h->links[0].disconnecting && !h->links[0].announced);
+    CHECK(!h->links[0].name[0]);
+    CHECK(h->pair_until <= sim_now() && !h->repage_left && !h->pair_pending_s);
+    CHECK(last_pin[6] == 4 && !memcmp(last_pin + 7, "0000", 4));
     printf("  unnamed Wii pad: %d PIN replies, ok %d\n", sim_pins(sim), sim_pin_ok(sim));
+
+    CHECK(host_pair(h, 0));             /* hold discovery stopped during the user's power-off */
+    sim_disconnect(sim);               /* the user powers it off, not a host wire undo */
+    run(h, 100);
+    CHECK(s.connects == 0 && s.disconnects == 0);
+    sim_set_handle(sim, 0x42);
+    CHECK(host_pair(h, 60));            /* the user explicitly pairs again */
+    run(h, 15000);
+    CHECK(sim_pins(sim) == 2 && sim_pin_ok(sim));
+    CHECK(last_pin[6] == 6 && !memcmp(last_pin + 7, h->bdaddr, sizeof h->bdaddr));
+    CHECK(s.connects == 1 && s.states > 0 && sim_link_up(sim));
+    CHECK(h->pin_addr_set && !memcmp(h->pin_addr, pad.addr, sizeof pad.addr));
+    CHECK(sim_disconnect_requests(sim) == 0);
     host_close(h);
+    CHECK(s.disconnects == 1 && sim_disconnect_requests(sim) == 0);
     sim_free(sim);
 }
 
@@ -479,10 +580,12 @@ int main(void)
     test_named_clones();
     test_joycon();
     test_silent_drop_then_call();
+    test_terminal_then_fresh_handle_reconnect();
     test_wiiu_pro();
     test_wii_remote();
     test_pins();
     test_silent_pad_no_virtual();
     printf(g_fail ? "%d check(s) failed\n" : "all compatibility checks passed\n", g_fail);
+    printf("%d compatibility checks, %d failed\n", g_checks, g_fail);
     return g_fail != 0;
 }

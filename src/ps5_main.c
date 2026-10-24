@@ -93,7 +93,7 @@ static volatile sig_atomic_t g_stop;
 static volatile int g_web_stop;         /* the menu's stop button */
 static volatile int g_retry;            /* the menu's retry button */
 static volatile int g_bt_state = WEB_BT_TRYING;
-static char g_bt_reason[200];
+static char g_bt_reason[256];
 
 static host_t *g_host;                  /* NULL until Bluetooth is up */
 static web_t *g_web;
@@ -130,25 +130,30 @@ static void on_signal(int sig)
 
 /* «Configure PS»: each slot's model, to find its combination. While the
  * user picks a new one on the menu, the old one is not applied. */
-static struct { uint16_t vid, pid; long capture_until; } g_pad_id[HOST_MAX_PADS];
+static struct { uint16_t vid, pid; long capture_until; link_ref link; } g_pad_id[HOST_MAX_PADS];
 
-static void on_connect(void *ud, int slot, const pad_info *info)
+static void on_connect(void *ud, link_ref link, const pad_info *info)
 {
+    int slot = link.slot;
     (void)ud;
     if (slot >= 0 && slot < HOST_MAX_PADS) {
         g_pad_id[slot].vid = info->vid;
         g_pad_id[slot].pid = info->pid;
         g_pad_id[slot].capture_until = 0;
+        g_pad_id[slot].link = link;
     }
     if (vpad_add(slot)) notify(TR("WhateverPad PS5: %s conectado", "WhateverPad PS5: %s connected"), info->profile);
     else notify(TR("WhateverPad PS5: %s conectado, pero sin mando virtual (ver el log)", "WhateverPad PS5: %s connected, but no virtual controller (see the log)"), info->profile);
 }
 
-static void on_state(void *ud, int slot, const pad_state *st)
+static void on_state(void *ud, link_ref link, const pad_state *st)
 {
+    int slot = link.slot;
     uint32_t combo = 0;
 
     (void)ud;
+    if (slot >= HOST_MAX_PADS || g_pad_id[slot].link.attempt != link.attempt ||
+        g_pad_id[slot].link.generation != link.generation) return;
     if (slot >= 0 && slot < HOST_MAX_PADS && now_ms() >= g_pad_id[slot].capture_until)
         combo = pscombo_get(g_pad_id[slot].vid, g_pad_id[slot].pid);
     if (combo && (st->buttons & combo) == combo) {
@@ -193,9 +198,13 @@ static int web_press_ps(int slot)
     return g_vpad_ok && vpad_press_ps(slot, PS_HOLD_MS);
 }
 
-static void on_disconnect(void *ud, int slot)
+static void on_disconnect(void *ud, link_ref link)
 {
+    int slot = link.slot;
     (void)ud;
+    if (slot >= HOST_MAX_PADS || g_pad_id[slot].link.attempt != link.attempt ||
+        g_pad_id[slot].link.generation != link.generation) return;
+    memset(&g_pad_id[slot], 0, sizeof g_pad_id[slot]);
     vpad_remove(slot);
     notify(TR("WhateverPad PS5: mando %d desconectado", "WhateverPad PS5: controller %d disconnected"), slot + 1);
 }
@@ -209,6 +218,15 @@ static void on_idle(void *ud)
 {
     (void)ud;
     web_poll(g_web);
+    if (g_host && (g_stop || g_web_stop))
+        own_release(host_ownership(g_host), SESSION_STOP, (uint64_t)now_ms());
+}
+
+static void service_bt(void *ledger)
+{
+    on_idle(NULL);
+    if (g_stop || g_web_stop)
+        own_release(ledger, SESSION_STOP, (uint64_t)now_ms());
 }
 
 static void bt_begin(void)
@@ -248,8 +266,11 @@ static void bt_try(long now)
         if (vpad_creds_restore()) g_bt_plain_creds = 1;
     }
     if (hci_usb_open(&hci)) {
-        g_host = host_open(hci, DB_PATH, &ev);
-        if (g_host) {
+        host_t *candidate = host_prepare(hci, DB_PATH, &ev);
+        if (candidate && hci_usb_bind_ownership(&hci, host_ownership(candidate), service_bt,
+                                               host_ownership(candidate)) &&
+            host_start(candidate)) {
+            g_host = candidate;
             g_bt_state = WEB_BT_OK;
 #if WHATEVERPAD_PROBE
             log_line("probe acquisition opens=%d submissions=%lu mono_ms=%ld result=ready",
@@ -268,7 +289,8 @@ static void bt_try(long now)
                 notify(TR("WhateverPad PS5: Bluetooth listo. Empareja los mandos desde el menu", "WhateverPad PS5: Bluetooth ready. Pair the controllers from the menu"));
             return;
         }
-        hci.ops->close(hci.ctx);
+        if (candidate) host_close(candidate);
+        else hci.ops->close(hci.ctx);
     }
 #if WHATEVERPAD_PROBE
     log_line("probe acquisition opens=%d submissions=%lu mono_ms=%ld result=failed",
@@ -508,6 +530,7 @@ int main(void)
     signal(SIGALRM, on_stop_timeout);
     alarm(T_STOP_MAX_S);
     web_stop(g_web);
+    g_web = NULL;
     host_close(g_host);                 /* our links; removes our virtual pads */
     g_host = NULL;
 #if !WHATEVERPAD_PROBE

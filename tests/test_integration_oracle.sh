@@ -44,13 +44,22 @@ if [ "$selection" = all ] || [ "$selection" = b1-tags ]; then
         $4 == "single-producer=respected" && $5 == "schedules=1" { tags=1 }
       $1 == "PROPERTY" && $2 == "policy=SINGLE_PRODUCER-projection" &&
         $3 == "undo-needs-own-ack-barrier-and-version" &&
-        $5 == "eligible-violations=1" && $6 == "residual-violations=0" { eligible=1 }
+        $5 == "eligible-violations=0" && $6 == "residual-violations=0" { eligible=1 }
       $1 == "INTEGRATION" {
         for (i=2; i<=NF; i++) if ($i == "two-duplicate-traces=1") copies=1
       }
       END { exit !(tags && eligible && copies) }
     ' "$receipt" || { echo 'FAIL oracle-control=b1-tags' >&2; exit 1; }
-    echo 'ORACLE_REGRESSION b1-tags PASS seed=4 copies=2 eligible=1'
+    run unsafe-attribution 1 none --seed 4 --unsafe-attribution-control
+    grep -Fq 'FAIL integration seed=4' "$receipt"
+    grep -Fq '!(f.policy_bad[1] & (1u << CAUSAL_UNDO))' "$receipt"
+    echo 'ORACLE_REGRESSION b1-tags PASS seed=4 copies=2 eligible=0 unsafe-attribution-exit=1'
+fi
+
+if [ "$selection" = all ] || [ "$selection" = b1-order ]; then
+    run b1-order 1 none --seed 7 --b1-order-control
+    grep -q '^B1_ORDER_CONTROL violated=1 ' "$receipt"
+    echo 'ORACLE_REGRESSION b1-order PASS fault-exit=1'
 fi
 
 if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
@@ -60,8 +69,8 @@ if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
     grep -q '^XPASS policy=fixture property=fixture-disappears todo=0$' "$receipt"
     grep -q '^STRICT expected=2 xfail=1 xpass=1$' "$receipt"
     run strict-ledger 1 none --expected-failures
-    grep -q '^STRICT expected=21 xfail=21 xpass=0$' "$receipt"
-    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 11
+    grep -q '^STRICT expected=10 xfail=10 xpass=0$' "$receipt"
+    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 5
     awk '
       $1 == "PROPERTY" && $3 == "undelivered-retry-is-not-admitted" {
         if ($4 != "violations=0/500" || $7 != "PASS") exit 1
@@ -70,7 +79,7 @@ if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
       END { if (passed != 2) exit 1 }
     ' "$receipt"
     grep -q '^INTEGRATION .* hard=0 xpass=0 ' "$receipt"
-    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=21'
+    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=10'
 fi
 
 if [ "$selection" = all ] || [ "$selection" = reassignment ]; then
