@@ -1,7 +1,9 @@
 #include "sim.h"
+#include "../src/attrib.h"
 #include "../src/util.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -31,6 +33,10 @@ typedef struct {
 } rchan;
 
 struct sim {
+    long inquiry_end;
+    sim_origin inquiry_origin;
+    int (*command_hook)(void *, unsigned, const void *, int);
+    int (*acl_hook)(void *, const unsigned char *, int);
     unsigned stale;                 /* handle+1 of a link left by an earlier run, 0: none */
     int channel_requests, cfg_responses;
     unsigned tx_hash;
@@ -48,6 +54,8 @@ struct sim {
     unsigned schedule_order;
     int delay_code, delay_left, delay_ms, foreign_commands, consumed_requests;
     sim_lifetime life;
+    own_ledger *ledger;
+    uint64_t random_value;
     int connected, enc, has_key, got_output;
     unsigned char key[16];
     rchan sdp, ctrl, intr;
@@ -176,7 +184,7 @@ static void event(sim_t *s, unsigned char code, const unsigned char *p, int n)
 
 static void cmd_complete(sim_t *s, unsigned op, const unsigned char *ret, int n)
 {
-    unsigned char p[64];
+    unsigned char p[68];
 
     p[0] = 1;
     put16(p + 1, op);
@@ -506,7 +514,7 @@ static void on_host_sdp(sim_t *s, const unsigned char *d, int n)
 
 /* ---- hci_ops ------------------------------------------------------------- */
 
-static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
+static int model_command(void *ctx, unsigned op, const void *params, int plen)
 {
     sim_t *s = ctx;
     const unsigned char *p = params;
@@ -530,9 +538,17 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         s->foreign_commands++;
     trace_tx(s, op, p, plen);
     switch (op) {
+    case 0x1002: {      /* Read Local Supported Commands */
+        unsigned char r[65] = {0};
+        r[1 + 27] = 0x80;              /* LE Rand: octet 27, bit 7 */
+        cmd_complete(s, op, r, sizeof r);
+        break;
+    }
     case 0x2018: {
         unsigned char r[9] = {0};
-        put32(r + 1, s->origin.invocation);
+        s->random_value++;
+        put32(r + 1, (uint32_t)s->random_value);
+        put32(r + 5, (uint32_t)(s->random_value >> 32));
         cmd_complete(s, op, r, sizeof r);
         break;
     }
@@ -580,6 +596,8 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     }
     case 0x0401:        /* Inquiry */
         s->n_inquiry++;
+        s->inquiry_end = sim_now() + 1280 * (plen >= 4 ? p[3] : 8);
+        s->inquiry_origin = s->origin;
         if (s->connected && !s->enc) s->inquiry_during_setup++;
         cmd_status(s, op, 0);
         if (s->busy_radio && s->ps_win * 8 > s->ps_iv) break;     /* nothing heard */
@@ -735,7 +753,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     return 1;
 }
 
-static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
+static int model_acl_send(void *ctx, const unsigned char *pkt, int len)
 {
     sim_t *s = ctx;
     unsigned cid;
@@ -785,6 +803,55 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
         memcpy(s->last_out, d, (size_t)s->last_out_len);
     }
     return 1;
+}
+
+static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
+{
+    sim_t *s = ctx;
+    return !s->ledger && model_command(s, op, params, plen);
+}
+
+static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
+{
+    sim_t *s = ctx;
+    return !s->ledger && model_acl_send(s, pkt, len);
+}
+
+static own_submit_result op_submit(void *ctx, const hci_submission *submission)
+{
+    sim_t *s = ctx;
+    int sent;
+
+    if (!s->ledger || !s->life.acl_reads || !submission) return OWN_NOT_SENT;
+    switch (submission->kind) {
+    case HCI_SUBMIT_COMMAND: {
+        own_effect effect;
+        uint64_t ack_by;
+        const own_token *token = submission->token.command;
+        if (!token || own_commit_hci(s->ledger, token, (uint64_t)sim_now(),
+                                     &effect, &ack_by) != OWN_OK) return OWN_NOT_SENT;
+        sent = s->command_hook ? s->command_hook(s, effect.opcode, effect.params, effect.plen) :
+                                model_command(s, effect.opcode, effect.params, effect.plen);
+        own_submitted(s->ledger, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)sim_now());
+        if (sent) {
+            attrib_submit(effect.opcode, 1, sim_now());
+            attrib_deadline(effect.opcode, ack_by > LONG_MAX ? LONG_MAX : (long)ack_by);
+        }
+        return sent ? OWN_SENT : OWN_NOT_SENT;
+    }
+    case HCI_SUBMIT_ACL: {
+        own_acl_effect effect;
+        own_acl_lane *lane = submission->token.acl.lane;
+        const own_acl_token *token = submission->token.acl.token;
+        if (!lane || !token || own_acl_commit(s->ledger, lane, token, (uint64_t)sim_now(),
+                                              &effect) != OWN_OK) return OWN_NOT_SENT;
+        sent = s->acl_hook ? s->acl_hook(s, effect.packet, effect.len) :
+                            model_acl_send(s, effect.packet, effect.len);
+        own_acl_submitted(lane, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)sim_now());
+        return sent ? OWN_SENT : OWN_NOT_SENT;
+    }
+    }
+    return OWN_NOT_SENT;
 }
 
 /* The pad's own behaviour between packets. */
@@ -845,9 +912,21 @@ static int op_pump(void *ctx, int timeout_ms)
     sim_t *s = ctx;
 
     g_clock += timeout_ms > 0 ? timeout_ms : 1;
+    if (s->ledger) {
+        own_tick(s->ledger, (uint64_t)sim_now());
+        attrib_poll(sim_now());
+    }
     due_events(s);
     if (!s->life.acl_reads) return -1;
     if (s->deaf) return 0;
+    if (s->inquiry_end && g_clock >= s->inquiry_end) {
+        unsigned char status = 0;
+        sim_origin previous = s->origin;
+        s->origin = s->inquiry_origin;
+        s->inquiry_end = 0;
+        event(s, 0x01, &status, 1);
+        s->origin = previous;
+    }
     pad_step(s);
     return s->ev.count || s->acl.count;
 }
@@ -875,6 +954,7 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
         n = q_get(&s->ev, out, max);
         if (out[0] != 0x13 || !lose(s)) {
             if (out[0] == 0x04) s->consumed_requests++;
+            sim_ownership_event(s->ledger, out, n, sim_now());
             if (s->observer) s->observer(s->observer_context, SIM_DELIVERED, origin, out[0], out + 2, n - 2);
             return n;
         }
@@ -903,6 +983,8 @@ static void op_close(void *ctx)
     s->life.closes++;
     /* Queued bridge traffic is discarded, never forwarded to the system. */
     s->ev.count = s->acl.count = 0;
+    if (s->ledger) own_transport_closed(s->ledger, (uint64_t)sim_now());
+    s->ledger = NULL;
 }
 
 static int g_diag_calls;
@@ -928,7 +1010,10 @@ static void op_event_reads(void *ctx, int n)
 }
 
 static const hci_ops k_sim_ops = {
-    op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, NULL, op_event_reads, NULL, NULL, NULL, NULL,
+    .cmd = op_cmd, .acl_send = op_acl_send, .pump = op_pump,
+    .next_event = op_next_event, .next_acl = op_next_acl, .close = op_close,
+    .diag = op_diag, .yield = op_yield, .event_reads = op_event_reads,
+    .op_submit = op_submit,
 };
 
 /* ---- public ---------------------------------------------------------------- */
@@ -938,12 +1023,14 @@ sim_t *sim_new(const sim_pad *pad)
     sim_t *s = calloc(1, sizeof *s);
 
     s->pad = *pad;
+    s->ssp = 1; /* Supported baseline; OFF is an explicit unsupported-state fixture. */
     s->trace_start = sim_now();
     s->empty_left = pad->eir_empty_rounds;
     s->ps_iv = 0x0800;
     s->ev_reads = 40;
     s->ps_win = 0x0012;
     s->drop_count = pad->seed;
+    s->random_value = (uint64_t)pad->seed << 32;
     s->sdp = (rchan){ 0x01, RCID_SDP, 0, RC_CLOSED, 0, 0, 0 };
     s->ctrl = (rchan){ 0x11, RCID_CTRL, 0, RC_CLOSED, 0, 0, 0 };
     s->intr = (rchan){ 0x13, RCID_INTR, 0, RC_CLOSED, 0, 0, 0 };
@@ -961,6 +1048,42 @@ hci_t sim_hci(sim_t *s)
         s->life.event_reads = s->ev_reads = 40;
         s->life.acl_reads = 20;
         s->yield_until = 0;
+    }
+    return h;
+}
+
+int sim_is_hci(hci_t h) { return h.ops && h.ops->op_submit == op_submit; }
+
+void sim_bind_ownership(sim_t *s, own_ledger *ledger)
+{
+    s->ledger = ledger;
+}
+
+void sim_output_hooks(sim_t *s, int (*command)(void *, unsigned, const void *, int),
+                       int (*acl)(void *, const unsigned char *, int))
+{
+    s->command_hook = command;
+    s->acl_hook = acl;
+}
+
+int sim_model_command(void *s, unsigned op, const void *p, int n)
+{
+    return model_command(s, op, p, n);
+}
+
+int sim_model_acl(void *s, const unsigned char *p, int n)
+{
+    return model_acl_send(s, p, n);
+}
+
+host_t *sim_open_host(sim_t *s, const char *db, const host_events *events)
+{
+    host_t *h = host_prepare(sim_hci(s), db, events);
+    if (!h) return NULL;
+    sim_bind_ownership(s, host_ownership(h));
+    if (!host_start(h)) {
+        host_close(h);
+        return NULL;
     }
     return h;
 }
@@ -1109,7 +1232,7 @@ int sim_foreign_command(sim_t *s, unsigned op, const void *p, int n)
 {
     sim_origin before = s->origin;
     s->origin.foreign = 1;
-    int result = op_cmd(s, op, p, n);
+    int result = model_command(s, op, p, n);
     s->origin = before;
     return result;
 }

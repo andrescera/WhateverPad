@@ -165,9 +165,6 @@ typedef struct {
     int enc_sent, bonded;
     int identity_sent;              /* our identity (IRK and address) handed to the pad */
     int suspend_off;                /* HID Control Point: Exit Suspend written */
-    int create_out;                 /* our LE Create Connection awaits its status */
-    int refused;                    /* times it was refused as busy (0x0c) */
-    long retry_at;                  /* when to ask again after a cancel, 0 if not */
     long t_smp, t_enc;
 
     int gatt;                       /* G_* */
@@ -185,6 +182,12 @@ typedef struct {
 
 typedef struct {
     int used;
+    link_ref ref;
+    own_peer peer;
+    own_ref create;
+    own_ref scan_off;
+    unsigned connect_opcode;
+    unsigned char connect_params[13]; /* unsent intent; no external authority */
     unsigned char addr[6];
     int connected;          /* the ACL link is up */
     unsigned handle;
@@ -243,6 +246,18 @@ typedef struct {
 
 struct host {
     hci_t hci;
+    own_ledger *ownership;
+    own_acl_lane *output;
+    struct {
+        own_ref ref;
+        link_ref link;
+        unsigned opcode;
+    } commands[OWN_MAX];
+    own_ref inquiry, sync;
+    link_ref crypto_owner;          /* scheduling only; acquisition stays in records */
+    own_ref dhkey, p256;
+    int dispatching, submitting, sync_done, sync_ok;
+    unsigned long ambiguity_seen;
     host_events ev;
     char db_path[256];
     char map_dir[256];
@@ -278,9 +293,7 @@ struct host {
     uint8_t pin_addr[6];            /* a pad that refused "0000": its next PIN is our address */
     int pin_addr_set;
     long le_rest_until;
-    int le_scanning, le_scan_want;
-    long t_scan;
-    link_t *dhkey_owner;            /* the link a DHKey is being made for */
+    int le_scan_want;                /* desired tuple only, never restoration authority */
 
     long pair_until;
     long purge_at;                  /* when stale links were last cleared */
@@ -297,22 +310,15 @@ struct host {
     long inq_started;               /* when the inquiry in progress began, for the watchdog */
     int dead;               /* the transport is gone */
     int diag_done;          /* the transport's self-report was logged */
-    int scan_orig, scan_set; /* page scan as found, and as we set it (-1: untouched) */
-    int ps_saved;            /* page scan lightened for pairing: the system's value is below */
-    unsigned ps_orig_iv, ps_orig_win;
     long ps_check_at;        /* when to look at the page scan again while pairing */
     int ps_lightened;        /* times it was lightened in this run */
     int round_heard;         /* devices heard in the inquiry in progress */
-    int mask_set;            /* our event mask is on the controller */
-    unsigned ps_set_iv, ps_set_win; /* the light page scan we wrote */
-    long ps_restore_at;      /* putting it back failed: try again then */
     int reads_now;           /* event reads the transport keeps now */
     long full_reads_until;   /* a command was sent: all reads until its reply can come */
     int turned_down;         /* calls of the pad itself turned down in this search */
     int fresh_left;          /* links that may still be made again in this search */
     int reject_pending;      /* one of them was just turned down: is it really a call? */
     unsigned char reject_addr[6];
-    int ps_restore_tries;
     long last_rx, probe_at; /* liveness: anything heard, last probe */
     int probes;
 };
@@ -334,12 +340,19 @@ extern tune_t g_tune;
 
 const char *addr_str(const unsigned char *a);
 int  send_cmd(host_t *h, unsigned op, const void *p, int len);
+int  send_link_cmd(host_t *, link_t *, unsigned, const void *, int);
 int  hci_sync(host_t *h, unsigned op, const void *p, int plen);
 int  slot_of(host_t *h, const link_t *l);
-link_t *link_by_addr(host_t *h, const unsigned char *a);
-link_t *link_new(host_t *h, const unsigned char *addr);
+link_t *link_by_peer(host_t *, const unsigned char *, int le, unsigned type);
+int host_connection_observed(host_t *, int le, unsigned type, const unsigned char *, unsigned handle);
+link_t *link_new(host_t *h, const unsigned char *addr, int le, unsigned type);
 void link_free(host_t *h, link_t *l);
 void link_disconnect(host_t *h, link_t *l, const char *why);
+void host_flush(host_t *);
+int host_admits(const host_t *);
+void host_terminal(host_t *, own_terminal_kind, link_t *, unsigned handle, int status);
+link_t *host_command_link(host_t *, own_ref);
+int host_setting(host_t *, unsigned, const void *, int, const void *, int);
 void link_ready(host_t *h, link_t *l);
 void link_input(host_t *h, link_t *l, const unsigned char *rep, int len);
 int  l2_send(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int len);
@@ -359,6 +372,7 @@ void le_step(host_t *h, link_t *l, long now);
 void le_poll(host_t *h, long now);
 void le_shutdown(host_t *h);
 void le_on_create_status(host_t *h, int status);
+void le_dhkey_refused(host_t *);
 int  le_send_report(host_t *h, link_t *l, const unsigned char *rep, int len);
 
 #endif

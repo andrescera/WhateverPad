@@ -78,14 +78,12 @@ enum {
 #define OUR_MTU             185
 
 #define T_LE_CONNECT     8000   /* LE Create Connection to Connection Complete */
-#define LE_BUSY_TRIES       3   /* asks again after a busy refusal (0x0c) ... */
 #define T_LE_REST        5000   /* ... then the pad is left alone this long */
 #define T_SMP_STEP       4000   /* no pairing progress: start over (SMP never repeats) */
 #define T_ENC            4000   /* encryption with a stored key */
 #define T_KEYS           3000   /* the pad's keys after encryption */
 #define T_ATT_RESEND     1500
 #define ATT_TRIES           4
-#define T_SCAN_REFRESH   5000
 #define T_SETUP         30000
 
 /* ---- helpers --------------------------------------------------------------- */
@@ -187,28 +185,12 @@ void le_setup(host_t *h)
         log_line("le: %d LE buffers of %u bytes", h->lep.max, h->le_mtu);
     }
     hci_sync(h, OP_LE_SET_SCAN_PARAMS, scan, 7);
-    /* Answered by an LE event; without it, pairing falls back to legacy. */
-    send_cmd(h, OP_LE_READ_LOCAL_P256, NULL, 0);
 }
 
 /* Stops scanning if we started it. */
 void le_shutdown(host_t *h)
 {
-    static const uint8_t off[2] = { 0, 0 };
-
-    int i;
-
-    if (h->le_ok && h->le_scanning) {
-        hci_sync(h, OP_LE_SET_SCAN_ENABLE, off, 2);
-        h->le_scanning = 0;
-    }
-    /* An attempt of ours left pending would refuse the next run's (0x0c). */
-    for (i = 0; i < HOST_MAX_PADS; i++)
-        if (h->links[i].used && h->links[i].le && !h->links[i].connected &&
-            (h->links[i].le_s.create_out || h->links[i].le_s.retry_at)) {
-            hci_sync(h, OP_LE_CREATE_CONN_CANCEL, NULL, 0);
-            break;
-        }
+    (void)h; /* Shared settings and links have only ledger-derived undo. */
 }
 
 /* ---- sending -------------------------------------------------------------------- */
@@ -256,9 +238,10 @@ static void start_encryption(host_t *h, link_t *l, const uint8_t ltk_lsb[16],
     memcpy(p + 2, rand, 8);
     put16(p + 10, ediv);
     memcpy(p + 12, ltk_lsb, 16);
-    send_cmd(h, OP_LE_START_ENCRYPTION, p, 28);
-    l->le_s.enc_sent = 1;
-    l->le_s.t_enc = now_ms();
+    if (send_cmd(h, OP_LE_START_ENCRYPTION, p, 28)) {
+        l->le_s.enc_sent = 1;
+        l->le_s.t_enc = now_ms();
+    }
 }
 
 /* ---- connecting -------------------------------------------------------------- */
@@ -267,7 +250,7 @@ static void le_create(host_t *h, link_t *l);
 
 static void le_connect(host_t *h, uint8_t type, const uint8_t *addr, db_rec *bond)
 {
-    link_t *l = link_new(h, addr);
+    link_t *l = link_new(h, addr, 1, type);
 
     if (!l) return;
     l->le = 1;
@@ -291,11 +274,7 @@ static void le_connect(host_t *h, uint8_t type, const uint8_t *addr, db_rec *bon
 /* Asks the controller to connect to the pad. */
 static void le_create(host_t *h, link_t *l)
 {
-    uint8_t p[25], off[2] = { 0, 0 };
-
-    /* Some controllers will not scan and connect at once. */
-    send_cmd(h, OP_LE_SET_SCAN_ENABLE, off, 2);
-    h->le_scanning = 0;
+    uint8_t p[25];
 
     put16(p, 0x0060);                   /* scan interval */
     put16(p + 2, 0x0030);               /* scan window */
@@ -309,44 +288,27 @@ static void le_create(host_t *h, link_t *l)
     put16(p + 19, 200);                 /* supervision timeout 2 s */
     put16(p + 21, 0);
     put16(p + 23, 0);
-    send_cmd(h, OP_LE_CREATE_CONN, p, 25);
-    l->le_s.create_out = 1;
-    l->le_s.retry_at = 0;
+    if (!send_link_cmd(h, l, OP_LE_CREATE_CONN, p, 25)) {
+        return;
+    }
     l->t_create = now_ms();
 }
 
-/* The controller's answer to our LE Create Connection. A busy refusal
- * (0x0c) means another attempt is still pending in it: someone else's, or
- * one an earlier run left. Freeing the link and asking again at the next
- * advert, as before, only repeats the refusal. The pending attempt is
- * cancelled and ours is made again a little later; after a few refusals
- * the pad is left alone for a while. Answers to commands that are not ours
- * (the system's) are left alone. */
+/* A busy refusal grants no procedure and never permits a wire cancel. */
 void le_on_create_status(host_t *h, int status)
 {
-    static const long wait[LE_BUSY_TRIES] = { 300, 800, 1500 };
     link_t *l = NULL;
-    le_link *e;
     int i;
 
     for (i = 0; i < HOST_MAX_PADS; i++)
-        if (h->links[i].used && h->links[i].le && !h->links[i].connected && h->links[i].le_s.create_out)
+        if (h->links[i].used && h->links[i].le && !h->links[i].connected &&
+            h->links[i].create.serial)
             l = &h->links[i];
     if (!l) {
         if (status) log_line("le: someone else's connection attempt was refused (status %#04x)", status);
         return;
     }
-    e = &l->le_s;
-    e->create_out = 0;
     if (status == 0) return;
-    if (status == 0x0C && e->refused < LE_BUSY_TRIES) {
-        send_cmd(h, OP_LE_CREATE_CONN_CANCEL, NULL, 0);
-        e->retry_at = now_ms() + wait[e->refused];
-        e->refused++;
-        log_line("le pad %s: the controller was busy with another connection attempt: "
-                 "cancelled it, trying again in %ld ms", addr_str(l->addr), wait[e->refused - 1]);
-        return;
-    }
     if (status == 0x0C) {
         memcpy(h->le_rest_addr, l->addr, 6);
         h->le_rest_until = now_ms() + T_LE_REST;
@@ -398,8 +360,8 @@ static void on_advert(host_t *h, const uint8_t *r, int n)
     addr = r + 2;
     dlen = r[8];
     data = r + 9;
-    if (9 + dlen > n || evtype > 1) return;     /* connectable adverts only */
-    if (link_by_addr(h, addr)) return;
+    if (9 + dlen > n || evtype > 1 || type > 1) return; /* Supported wire address types only. */
+    if (link_by_peer(h, addr, 1, type)) return;
     if (now_ms() < h->le_rest_until && memcmp(addr, h->le_rest_addr, 6) == 0) return;
     for (i = 0; i < HOST_MAX_PADS; i++)         /* one connection attempt at a time */
         if (h->links[i].used && h->links[i].le && !h->links[i].connected) return;
@@ -441,13 +403,10 @@ void le_poll(host_t *h, long now)
     for (i = 0; i < HOST_MAX_PADS; i++)
         if (h->links[i].used && !h->links[i].le && !h->links[i].ready) want = 0;
 
-    /* Sent again now and then: its reply may have gone astray. */
-    if (want != h->le_scanning || (want && now - h->t_scan > T_SCAN_REFRESH)) {
+    if (want != h->le_scan_want) {
         p[0] = (uint8_t)want;
         p[1] = 0;
-        send_cmd(h, OP_LE_SET_SCAN_ENABLE, p, 2);
-        h->le_scanning = want;
-        h->t_scan = now;
+        if (send_cmd(h, OP_LE_SET_SCAN_ENABLE, p, 2)) h->le_scan_want = want;
     }
 }
 
@@ -458,19 +417,27 @@ void le_on_meta(host_t *h, const unsigned char *ev, int len)
     link_t *l;
 
     switch (ev[0]) {
+    case 0x03: /* LE Connection Update Complete */
+        for (int i = 0; len >= 10 && i < HOST_MAX_PADS; i++) {
+            l = &h->links[i];
+            if (l->used && l->le && l->connected && l->handle == le16(ev + 2)) {
+                host_terminal(h, OWN_TERM_UPDATE, l, l->handle, ev[1]);
+                break;
+            }
+        }
+        break;
     case 0x01:  /* Connection Complete */
     case 0x0A:  /* Enhanced Connection Complete */
-        if (len < 12) break;
-        l = link_by_addr(h, ev + 6);
+        if ((ev[0] == 0x01 && len != 19) || (ev[0] == 0x0a && len != 31)) break;
+        if (!ev[1] && !host_connection_observed(h, 1, ev[5], ev + 6, le16(ev + 2))) break;
+        l = link_by_peer(h, ev + 6, 1, ev[5]);
         if (!l || !l->le || l->connected) break;
-        if (ev[1] == 0x02 && l->le_s.retry_at) break;  /* the attempt we cancelled ended */
+        host_terminal(h, OWN_TERM_CONNECTION, l, le16(ev + 2), ev[1]);
         if (ev[1] != 0) {
             log_line("le pad %s: connection failed (status %#04x)", addr_str(l->addr), ev[1]);
             link_free(h, l);
             break;
         }
-        l->le_s.create_out = 0;
-        l->le_s.retry_at = 0;
         l->connected = 1;
         l->handle = le16(ev + 2) & 0x0FFF;
         l->t_conn = now_ms();
@@ -482,7 +449,13 @@ void le_on_meta(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x08:  /* Read Local P-256 Public Key Complete */
-        if (len >= 66 && ev[1] == 0) {
+        l = host_command_link(h, h->p256);
+        if (!l) { host_terminal(h, OWN_TERM_P256, NULL, 0, len >= 66 ? ev[1] : 1); break; }
+        own_state p256_state = OWN_FREE;
+        own_status(h->ownership, h->p256, &p256_state);
+        if (p256_state != OWN_ACKNOWLEDGED) break;
+        host_terminal(h, OWN_TERM_P256, l, l->handle, len >= 66 ? ev[1] : 1);
+        if (len >= 66 && ev[1] == 0 && host_admits(h)) {
             memcpy(h->le_pk, ev + 2, 64);
             h->le_pk_ok = 1;
         } else {
@@ -491,10 +464,18 @@ void le_on_meta(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x09:  /* Generate DHKey Complete */
-        l = h->dhkey_owner;
-        h->dhkey_owner = NULL;
-        if (!l || !l->used) break;
-        if (len >= 34 && ev[1] == 0) {
+        l = host_command_link(h, h->dhkey);
+        if (!l) {
+            host_terminal(h, OWN_TERM_DHKEY, NULL, 0, len >= 34 ? ev[1] : 1);
+            h->dhkey = (own_ref){0};
+            break;
+        }
+        own_state dhkey_state = OWN_FREE;
+        own_status(h->ownership, h->dhkey, &dhkey_state);
+        if (dhkey_state != OWN_ACKNOWLEDGED) break;
+        host_terminal(h, OWN_TERM_DHKEY, l, l->handle, len >= 34 ? ev[1] : 1);
+        h->dhkey = (own_ref){0};
+        if (len >= 34 && ev[1] == 0 && host_admits(h)) {
             memcpy(l->le_s.dhkey, ev + 2, 32);
             l->le_s.have_dhkey = 1;
         } else {
@@ -517,6 +498,16 @@ static void smp_fail(host_t *h, link_t *l, uint8_t reason, const char *why)
     l->le_s.smp = SMP_FAILED;
     log_line("le pad %s: pairing failed: %s", addr_str(l->addr), why);
     link_disconnect(h, l, "pairing failed");
+}
+
+void le_dhkey_refused(host_t *h)
+{
+    link_t *l = host_command_link(h, h->dhkey);
+    h->dhkey = (own_ref){0};
+    if (!l) return;
+    l->le_s.dhkey_asked = 0;
+    l->le_s.smp = SMP_FAILED;
+    link_disconnect(h, l, "DHKey request refused");
 }
 
 /* Initiator and responder as the 7-byte "type || address" SC functions use. */
@@ -656,10 +647,8 @@ static void smp_step(host_t *h, link_t *l, long now)
     }
     if (e->smp == SMP_DONE || e->smp == SMP_FAILED || e->smp == SMP_KEYS) return;
 
-    if (e->sc && e->have_pkb && !e->dhkey_asked && !h->dhkey_owner) {
-        h->dhkey_owner = l;
-        send_cmd(h, OP_LE_GENERATE_DHKEY, e->pkb, 64);
-        e->dhkey_asked = 1;
+    if (e->sc && e->have_pkb && !e->dhkey_asked && !h->dhkey.serial) {
+        e->dhkey_asked = send_link_cmd(h, l, OP_LE_GENERATE_DHKEY, e->pkb, 64);
     }
     if (e->smp == SMP_WAIT_DHKEY && e->have_dhkey) {
         /* Both nonces in, DHKey known: derive the keys and prove it. */
@@ -675,7 +664,27 @@ static void smp_step(host_t *h, link_t *l, long now)
         smp_send_rev(h, l, SMP_DHKEY_CHECK, ea, 16);
         e->smp = SMP_WAIT_CHECK;
     }
-    if (now - e->t_smp > T_SMP_STEP) smp_fail(h, l, 0x08, "timed out");
+    if (now - e->t_smp > T_SMP_STEP) {
+        int waiting_peer = e->smp == SMP_WAIT_RSP || e->smp == SMP_WAIT_PKEY ||
+                           e->smp == SMP_WAIT_CONFIRM || e->smp == SMP_WAIT_RANDOM ||
+                           e->smp == SMP_WAIT_CHECK;
+        own_state key_state = OWN_FREE;
+        if (waiting_peer && !h->dhkey.serial && now - l->t_conn < T_SETUP &&
+            own_status(h->ownership, h->p256, &key_state) == OWN_OK &&
+            key_state == OWN_CLOSED) {
+            /* End the old procedure; retry feature exchange, not HCI or radio undo. */
+            uint8_t reason = 0x08;
+            smp_send(h, l, SMP_PAIRING_FAILED, &reason, 1);
+            e->have_pkb = e->have_cb = e->have_dhkey = e->dhkey_asked = 0;
+            memset(e->pkb, 0, sizeof e->pkb);
+            memset(e->cb, 0, sizeof e->cb);
+            memset(e->na, 0, sizeof e->na);
+            memset(e->nb, 0, sizeof e->nb);
+            memset(e->dhkey, 0, sizeof e->dhkey);
+            memset(e->ltk, 0, sizeof e->ltk);
+            smp_start(h, l);
+        } else smp_fail(h, l, 0x08, "timed out");
+    }
 }
 
 static void on_smp(host_t *h, link_t *l, const uint8_t *d, int n)
@@ -1277,19 +1286,37 @@ void le_step(host_t *h, link_t *l, long now)
 {
     le_link *e = &l->le_s;
 
+    if (l->disconnecting) return;
     if (!l->connected) {
-        if (e->retry_at) {
-            if (now >= e->retry_at) le_create(h, l);
-            return;
-        }
         if (now - l->t_create > T_LE_CONNECT) {
-            send_cmd(h, OP_LE_CREATE_CONN_CANCEL, NULL, 0);
+            if (!l->create.serial) own_fail(h->ownership, (uint64_t)now, 1);
             log_line("le pad %s: did not connect", addr_str(l->addr));
             link_free(h, l);
-        }
+        } else if (!l->create.serial) le_create(h, l);
         return;
     }
-    if (l->disconnecting) return;
+    if (!e->bonded && e->smp == SMP_IDLE) {
+        if (h->crypto_owner.generation &&
+            (h->crypto_owner.attempt != l->ref.attempt ||
+             h->crypto_owner.generation != l->ref.generation ||
+             h->crypto_owner.slot != l->ref.slot)) {
+            if (own_link_current(h->ownership, h->crypto_owner)) {
+                link_t *owner = &h->links[h->crypto_owner.slot];
+                /* P256 completion does not end the pairing's use of that key. */
+                if (!owner->disconnecting && owner->le_s.smp != SMP_DONE &&
+                    owner->le_s.smp != SMP_FAILED) return;
+            }
+        }
+        h->crypto_owner = l->ref;
+        link_t *key_link = host_command_link(h, h->p256);
+        if (key_link != l) {
+            h->le_pk_ok = 0;
+            if (!send_link_cmd(h, l, OP_LE_READ_LOCAL_P256, NULL, 0)) return;
+        }
+        own_state state = OWN_FREE;
+        own_result result = own_status(h->ownership, h->p256, &state);
+        if (state != OWN_CLOSED || (result != OWN_OK && result != OWN_REFUSED)) return;
+    }
     if (!l->ready && now - l->t_conn > T_SETUP) {
         link_disconnect(h, l, "setup did not finish");
         return;

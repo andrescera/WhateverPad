@@ -5,7 +5,7 @@
 #ifndef PH_SIM_H
 #define PH_SIM_H
 
-#include "../src/hci.h"
+#include "../src/host.h"
 #include "sim_lifetime.h"
 
 #include <stdint.h>
@@ -71,6 +71,14 @@ typedef struct {
 sim_t *sim_new(const sim_pad *pad);
 void   sim_free(sim_t *s);
 hci_t  sim_hci(sim_t *s);
+int sim_is_hci(hci_t);
+/* Fault callbacks stand in for the actual controller call, after token commit. */
+void sim_output_hooks(sim_t *, int (*)(void *, unsigned, const void *, int),
+                       int (*)(void *, const unsigned char *, int));
+int sim_model_command(void *, unsigned, const void *, int);
+int sim_model_acl(void *, const unsigned char *, int);
+void   sim_bind_ownership(sim_t *s, own_ledger *ledger);
+host_t *sim_open_host(sim_t *s, const char *db, const host_events *events);
 
 /* Virtual clock, advanced by each pump. */
 long   sim_now(void);

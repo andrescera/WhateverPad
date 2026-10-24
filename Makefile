@@ -7,11 +7,12 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 WHATEVERPAD_PROBE ?= 0
+WHATEVERPAD_ATTRIB_POLICY ?= OWN_POLICY_NO_RESTORE
 
 OWN_CORE := src/ownership.c src/session.c
 CORE   := src/util.c src/log.c src/attrib.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
 WEB    := src/web.c src/web_page.c
-HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE) -DWHATEVERPAD_ATTRIB_POLICY=$(WHATEVERPAD_ATTRIB_POLICY)
 
 BUILD := build
 
@@ -56,6 +57,26 @@ $(BUILD)/test_crypto: src/smp_crypto.c tests/test_crypto.c | $(BUILD)
 $(BUILD)/test_le: $(CORE) tests/sim_le.c tests/test_le.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_host_transactions: $(CORE) tests/sim.c tests/sim_le.c tests/test_host_transactions.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_runtime_link_callbacks: tests/test_runtime_link_callbacks.c src/ps5_main.c src/host.h | $(BUILD)
+	cc $(HOST_CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $<
+
+$(BUILD)/test_settings_ack_interleavings: $(CORE) tests/sim.c tests/test_settings_ack_interleavings.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_le_crypto_owner: $(CORE) tests/test_le_crypto_owner.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_connection_namespace: $(CORE) tests/test_connection_namespace.c tests/test_le_crypto_owner.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(CORE) tests/test_connection_namespace.c
+
+$(BUILD)/test_controller_fingerprints: $(CORE) tests/sim.c tests/test_controller_fingerprints.c tests/test_host.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(CORE) tests/sim.c tests/test_controller_fingerprints.c
+
+test: $(BUILD)/test_host_transactions $(BUILD)/test_runtime_link_callbacks $(BUILD)/test_settings_ack_interleavings $(BUILD)/test_le_crypto_owner $(BUILD)/test_connection_namespace $(BUILD)/test_controller_fingerprints
+
 $(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DBOND_STORE_TEST -o $@ $^
 
@@ -96,6 +117,9 @@ $(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/ownership.h s
 $(BUILD)/test_hci_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c $(OWN_CORE) tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 
+$(BUILD)/test_usb_handle_reassignment: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c $(OWN_CORE) tests/test_usb_handle_reassignment.c tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
+
 $(BUILD)/test_attrib: $(CORE) $(USB_STANDIN) src/usb_desc.c src/evstream.c tests/sim.c tests/test_attrib.c tests/test_hci_usb.c src/attrib.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
 
@@ -118,6 +142,12 @@ test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(B
 	./$(BUILD)/test_profiles
 	./$(BUILD)/test_host
 	./$(BUILD)/test_le
+	./$(BUILD)/test_host_transactions
+	./$(BUILD)/test_runtime_link_callbacks
+	./$(BUILD)/test_settings_ack_interleavings
+	./$(BUILD)/test_le_crypto_owner
+	./$(BUILD)/test_connection_namespace
+	./$(BUILD)/test_controller_fingerprints
 	./$(BUILD)/test_compat
 	./$(BUILD)/test_web
 	./$(BUILD)/test_launcher

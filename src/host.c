@@ -3,7 +3,6 @@
 #include "log.h"
 #include "util.h"
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,38 +58,237 @@ static void reads_for(host_t *h, int n)
     h->reads_now = n;
 }
 
-int send_cmd(host_t *h, unsigned op, const void *p, int len)
+static void pump(host_t *, int);
+
+_Static_assert(WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_NO_RESTORE ||
+               WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_SINGLE_PRODUCER,
+               "unsupported attribution policy");
+
+static unsigned long ambiguities(void)
 {
-    int sent;
-#if WHATEVERPAD_PROBE
-    /* Also covers LE and raw/developer callers of the common submit path. */
-    if (op == 0x0402 || op == 0x0408 || op == 0x200e || op == 0x0c03) return 0;
-#endif
+    const attrib_counts *c = attrib_get();
+    unsigned long n = c->overflow + c->timeout + c->untracked;
+    for (unsigned i = ATTRIB_DUPLICATE; i < ATTRIB_CLASS_COUNT; i++) n += c->classes[i];
+    return n;
+}
+
+static void attribution_check(host_t *h)
+{
+    unsigned long seen = ambiguities();
+    if (seen != h->ambiguity_seen) {
+        h->ambiguity_seen = seen;
+        own_detector_trip(h->ownership, (uint64_t)now_ms());
+    }
+}
+
+static int same_link(link_ref a, link_ref b)
+{
+    return a.attempt == b.attempt && a.generation == b.generation && a.slot == b.slot;
+}
+
+static int same_ref(own_ref a, own_ref b)
+{
+    return a.attempt == b.attempt && a.serial == b.serial;
+}
+
+int host_admits(const host_t *h)
+{
+    own_summary s;
+    if (!h || h->dead) return 0;
+    own_snapshot(h->ownership, &s);
+    return !s.transport_closed && !s.runtime.cleanup_pending &&
+           s.runtime.reason == SESSION_NONE &&
+           (s.runtime.state == SESSION_STARTING || s.runtime.state == SESSION_ACTIVE);
+}
+
+void host_flush(host_t *h)
+{
+    own_token token;
+    if (h->submitting || h->dead) return;
+    if (own_next_hci(h->ownership, (uint64_t)now_ms(), &token) != OWN_OK) return;
     if (h->reads_now < HOST_EV_READS) {
         h->full_reads_until = now_ms() + 2000;
         reads_for(h, HOST_EV_READS);
     }
-    if (g_tune.trace) {
-        unsigned char c[64];
-        int k = len < (int)sizeof c ? len : (int)sizeof c;
-        if (k) memcpy(c, p, (size_t)k);   /* empty commands pass NULL: copying zero bytes from it is still UB */
-        if (op == OP_LINK_KEY_REPLY && k >= 22) memset(c + 6, 0, 16);   /* never a key in the log */
-        log_hex("trace cmd", op, c, len);
+    h->submitting = 1;
+    hci_submission submission = {.kind = HCI_SUBMIT_COMMAND, .token.command = &token};
+    own_submit_result result = h->hci.ops->op_submit(h->hci.ctx, &submission);
+    h->submitting = 0;
+    if (result != OWN_SENT) {
+        /* A backend refusal cannot be converted into another wire attempt. */
+        own_fail(h->ownership, (uint64_t)now_ms(), 0);
+        log_line("command submission unconfirmed; normal admission closed");
     }
-    sent = h->hci.ops->cmd(h->hci.ctx, op, p, len);
-    attrib_submit(op, sent, now_ms());
-    return sent;
+}
+
+static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int len,
+                           const void *original, int original_len, own_ref *out)
+{
+    if (!host_admits(h) || !h->hci.ops->op_submit || op > 0xffff ||
+        len < 0 || len > 255 || (len && !p)) return 0;
+    own_command c = {.opcode = (uint16_t)op, .plen = (uint8_t)len,
+                     .ack_by = (uint64_t)now_ms() + 2000,
+                     .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
+    if (len) memcpy(c.params, p, (size_t)len);
+    if (original && original_len == len) {
+        c.original_known = 1;
+        c.original_len = (uint8_t)original_len;
+        memcpy(c.original, original, (size_t)original_len);
+    }
+    if (l) { c.link = l->ref; c.peer = l->peer; }
+    unsigned slot;
+    for (slot = 0; slot < OWN_MAX; slot++) {
+        if (h->commands[slot].ref.serial) {
+            own_state state;
+            own_status(h->ownership, h->commands[slot].ref, &state);
+            int retained = same_ref(h->commands[slot].ref, h->sync) ||
+                           same_ref(h->commands[slot].ref, h->p256);
+            for (unsigned i = 0; i < HOST_MAX_PADS; i++)
+                retained |= h->links[i].used && !h->links[i].create.serial &&
+                            same_ref(h->commands[slot].ref, h->links[i].scan_off);
+            if (state == OWN_CLOSED &&
+                !retained &&
+                own_reclaim(h->ownership, h->commands[slot].ref) == OWN_OK)
+                memset(&h->commands[slot], 0, sizeof h->commands[slot]);
+        }
+        if (!h->commands[slot].ref.serial) break;
+    }
+    if (slot == OWN_MAX) return 0;
+    own_result prepared = own_prepare(h->ownership, &c, out);
+    if (prepared == OWN_UNCHANGED) return 2;
+    if (prepared != OWN_OK) return 0;
+    h->commands[slot].ref = *out;
+    h->commands[slot].link = c.link;
+    h->commands[slot].opcode = op;
+    if (op == OP_INQUIRY) h->inquiry = *out;
+    if (l && (op == OP_CREATE_CONNECTION || op == OP_ACCEPT_CONNECTION || op == 0x200d))
+        l->create = *out;
+    if (op == 0x2025) h->p256 = *out;
+    if (op == 0x2026) h->dhkey = *out;
+    if (!h->dispatching) host_flush(h);
+    return host_admits(h);
+}
+
+int send_link_cmd(host_t *h, link_t *l, unsigned op, const void *p, int len)
+{
+    own_ref ref;
+    if ((op == OP_CREATE_CONNECTION || op == OP_ACCEPT_CONNECTION || op == 0x200d) && h->le_ok) {
+        if (!l) return 0;
+        if (l->scan_off.serial) {
+            own_state state = OWN_FREE;
+            own_result result = own_status(h->ownership, l->scan_off, &state);
+            if (result != OWN_OK) {
+                own_fail(h->ownership, (uint64_t)now_ms(), 0);
+                return 0;
+            }
+            if (state != OWN_ACKNOWLEDGED) return 0;
+        } else {
+            static const unsigned char off[2] = {0, 0};
+            int prepared = command_prepare(h, NULL, 0x200c, off, 2, NULL, 0, &ref);
+            if (!prepared) return 0;
+            h->le_scan_want = 0;
+            if (prepared == 1) { l->scan_off = ref; return 0; }
+        }
+    }
+    int prepared = command_prepare(h, l, op, p, len, NULL, 0, &ref);
+    if (prepared && l &&
+        (op == OP_CREATE_CONNECTION || op == OP_ACCEPT_CONNECTION || op == 0x200d))
+        l->scan_off = (own_ref){0};
+    return prepared;
+}
+
+int send_cmd(host_t *h, unsigned op, const void *p, int len)
+{
+    link_t *l = NULL;
+    const unsigned char *bytes = p;
+    switch (op) {
+    case OP_CREATE_CONNECTION: case OP_ACCEPT_CONNECTION: case OP_REJECT_CONNECTION:
+    case OP_LINK_KEY_REPLY: case OP_LINK_KEY_NEG_REPLY: case OP_PIN_CODE_REPLY:
+    case OP_IO_CAP_REPLY: case OP_USER_CONFIRM_REPLY:
+        if (len < 6) return 0;
+        l = link_by_peer(h, bytes, 0, 0);
+        if (!l) return 0;
+        break;
+    case 0x200d:
+        if (len != 25) return 0;
+        l = link_by_peer(h, bytes + 6, 1, bytes[5]);
+        if (!l || !l->le) return 0;
+        break;
+    case OP_AUTH_REQUESTED: case OP_SET_ENCRYPTION: case 0x2013: case 0x2019:
+        if (len < 2) return 0;
+        for (int i = 0; i < HOST_MAX_PADS; i++)
+            if (h->links[i].used && h->links[i].connected &&
+                h->links[i].handle == le16(bytes)) l = &h->links[i];
+        if (!l) return 0;
+        break;
+    default: break; /* The engine's descriptor table is the final default-deny. */
+    }
+    return send_link_cmd(h, l, op, p, len);
+}
+
+void host_terminal(host_t *h, own_terminal_kind kind, link_t *l, unsigned handle, int status)
+{
+    own_terminal_event event = {.kind = kind, .handle = (uint16_t)handle,
+                                .status = (uint8_t)status};
+    if (l) event.peer = l->peer;
+    for (unsigned i = 0; i < OWN_MAX; i++) {
+        unsigned op = h->commands[i].opcode;
+        if (!h->commands[i].ref.serial ||
+            (l && !same_link(l->ref, h->commands[i].link))) continue;
+        if ((kind == OWN_TERM_CONNECTION && (op == 0x0405 || op == 0x0409 || op == 0x200d)) ||
+            (kind == OWN_TERM_INQUIRY && op == OP_INQUIRY) ||
+            (kind == OWN_TERM_AUTH && op == OP_AUTH_REQUESTED) ||
+            (kind == OWN_TERM_ENCRYPTION && (op == OP_SET_ENCRYPTION || op == 0x2019)) ||
+            (kind == OWN_TERM_UPDATE && op == 0x2013) ||
+            (kind == OWN_TERM_P256 && op == 0x2025) ||
+            (kind == OWN_TERM_DHKEY && op == 0x2026))
+            own_terminal(h->ownership, h->commands[i].ref, &event, (uint64_t)now_ms());
+    }
+}
+
+link_t *host_command_link(host_t *h, own_ref ref)
+{
+    for (unsigned i = 0; i < OWN_MAX; i++) {
+        link_ref link = h->commands[i].link;
+        if (h->commands[i].ref.serial != ref.serial ||
+            h->commands[i].ref.attempt != ref.attempt || !link.generation ||
+            link.slot >= HOST_MAX_PADS) continue;
+        link_t *l = &h->links[link.slot];
+        if (l->used && same_link(l->ref, link) && own_link_current(h->ownership, link)) return l;
+    }
+    return NULL;
 }
 
 int slot_of(host_t *h, const link_t *l) { return (int)(l - h->links); }
 
-link_t *link_by_addr(host_t *h, const unsigned char *a)
+link_t *link_by_peer(host_t *h, const unsigned char *a, int le, unsigned type)
 {
     int i;
 
     for (i = 0; i < HOST_MAX_PADS; i++)
-        if (h->links[i].used && memcmp(h->links[i].addr, a, 6) == 0) return &h->links[i];
+        if (h->links[i].used && h->links[i].peer.le == le &&
+            h->links[i].peer.address_type == type &&
+            memcmp(h->links[i].peer.wire, a, 6) == 0) return &h->links[i];
     return NULL;
+}
+
+int host_connection_observed(host_t *h, int le, unsigned type,
+                             const unsigned char *address, unsigned handle)
+{
+    if (handle >= 0x0f00) {
+        own_detector_trip(h->ownership, (uint64_t)now_ms());
+        return 0;
+    }
+    for (unsigned i = 0; i < HOST_MAX_PADS; i++) {
+        link_t *l = &h->links[i];
+        if (l->used && l->connected && l->handle == handle &&
+            (l->peer.le != le || l->peer.address_type != type ||
+             memcmp(l->peer.wire, address, 6))) {
+            own_detector_trip(h->ownership, (uint64_t)now_ms());
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static link_t *link_by_handle(host_t *h, unsigned handle)
@@ -111,22 +309,27 @@ static void chan_init(chan *c, unsigned psm, unsigned scid)
     c->scid = scid;
 }
 
-link_t *link_new(host_t *h, const unsigned char *addr)
+link_t *link_new(host_t *h, const unsigned char *addr, int le, unsigned type)
 {
-    int i;
-
-    for (i = 0; i < HOST_MAX_PADS; i++) {
-        link_t *l = &h->links[i];
-        if (l->used) continue;
+    own_peer peer = {.le = (uint8_t)le, .address_type = (uint8_t)type};
+    link_ref ref;
+    memcpy(peer.adapter, h->bdaddr, 6);
+    memcpy(peer.identity, addr, 6);
+    memcpy(peer.wire, addr, 6);
+    if (own_reserve_link(h->ownership, &peer, &ref) == OWN_OK) {
+        link_t *l = &h->links[ref.slot];
         memset(l, 0, sizeof *l);
+        l->ref = ref;
+        l->peer = peer;
         l->used = 1;
+        l->le = le;
         memcpy(l->addr, addr, 6);
         l->t_create = now_ms();
         chan_init(&l->sdp, PSM_SDP, CID_SDP);
         chan_init(&l->ctrl, PSM_HID_CTRL, CID_CTRL);
         chan_init(&l->intr, PSM_HID_INTR, CID_INTR);
         pad_state_reset(&l->st);
-        l->out = k_player_colours[i];
+        l->out = k_player_colours[ref.slot];
         return l;
     }
     return NULL;
@@ -134,14 +337,18 @@ link_t *link_new(host_t *h, const unsigned char *addr)
 
 void link_free(host_t *h, link_t *l)
 {
-    if (l->announced && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, slot_of(h, l));
-    memset(l, 0, sizeof *l);
+    link_ref ref = l->ref;
+    int announced = l->announced;
+    l->announced = 0;
+    l->disconnecting = 1;
+    if (announced && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, ref);
+    if (!same_link(l->ref, ref)) return;
+    if (!own_link_current(h->ownership, ref) ||
+        own_detach_link(h->ownership, ref) == OWN_OK) memset(l, 0, sizeof *l);
 }
 
 void link_disconnect(host_t *h, link_t *l, const char *why)
 {
-    unsigned char p[3];
-
     if (!l->connected) {
         log_line("pad %s: dropped (%s)", addr_str(l->addr), why);
         link_free(h, l);
@@ -149,10 +356,16 @@ void link_disconnect(host_t *h, link_t *l, const char *why)
     }
     if (l->disconnecting) return;
     log_line("pad %s: disconnecting (%s)", addr_str(l->addr), why);
-    put16(p, l->handle);
-    p[2] = 0x13;                        /* remote user terminated */
-    send_cmd(h, OP_DISCONNECT, p, 3);
     l->disconnecting = 1;
+    own_token token;
+    own_result undo = own_request_undo(h->ownership, l->create, (uint64_t)now_ms(), &token);
+    if (undo == OWN_OK) {
+        hci_submission submission = {.kind = HCI_SUBMIT_COMMAND, .token.command = &token};
+        h->hci.ops->op_submit(h->hci.ctx, &submission);
+    } else {
+        log_line("pad: radio link left connected; turn this controller off");
+        link_free(h, l);
+    }
 }
 
 /* ---- paired-pad store ----------------------------------------------------- */
@@ -261,7 +474,12 @@ int l2_send(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int len)
     put16(pkt + 4, (unsigned)len);
     put16(pkt + 6, cid);
     memcpy(pkt + 8, d, (size_t)len);
-    if (!h->hci.ops->acl_send(h->hci.ctx, pkt, 8 + len)) return 0;
+    own_acl_token token;
+    if (own_acl_prepare(h->output, l->ref, pkt, (size_t)(8 + len),
+                        (uint64_t)now_ms(), &token) != OWN_OK) return 0;
+    hci_submission submission = {.kind = HCI_SUBMIT_ACL,
+        .token.acl = {.lane = h->output, .token = &token}};
+    if (h->hci.ops->op_submit(h->hci.ctx, &submission) != OWN_SENT) return 0;
 
     pool->credits--;
     if (pool->count == INFLIGHT_MAX) {
@@ -904,9 +1122,13 @@ void link_input(host_t *h, link_t *l, const unsigned char *rep, int len)
         return;
     }
     if (r == PARSE_FULL) l->full = 1;
+    if (r == PARSE_NONE || own_input(h->ownership, l->ref, (uint16_t)l->handle,
+                                   (uint64_t)now_ms()) != OWN_OK) return;
+    link_ref ref = l->ref;
     if (r != PARSE_NONE && l->ready && !l->announced) announce(h, l, rep[0], len);
-    if (r != PARSE_NONE && l->ready && h->ev.on_state)
-        h->ev.on_state(h->ev.ud, slot_of(h, l), &l->st);
+    if (host_admits(h) && own_link_current(h->ownership, ref) &&
+        same_link(l->ref, ref) && l->ready && !l->disconnecting && h->ev.on_state)
+        h->ev.on_state(h->ev.ud, ref, &l->st);
 }
 
 void link_ready(host_t *h, link_t *l)
@@ -943,7 +1165,7 @@ static void announce(host_t *h, link_t *l, int report_id, int len)
     info.profile = l->prof->name;
     memcpy(info.addr, l->addr, 6);
     log_line("pad %s: first input (report %#04x, %d bytes): virtual DualSense created", addr_str(l->addr), report_id, len);
-    if (h->ev.on_connect) h->ev.on_connect(h->ev.ud, slot_of(h, l), &info);
+    if (h->ev.on_connect) h->ev.on_connect(h->ev.ud, l->ref, &info);
 }
 
 /* Which reports a pad sends, for the log when it does not wake up. */
@@ -1047,7 +1269,7 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     pb = (int)(hdr >> 12) & 3;
     dlen = (int)le16(pkt + 2);
     l = link_by_handle(h, hdr);
-    if (!l || 4 + dlen > len) return;   /* not ours, or cut short */
+    if (!l || l->disconnecting || 4 + dlen > len) return;
 
     if (pb == 1) {                      /* continuation */
         if (!l->rx_need || l->rx_len + dlen > (int)sizeof l->rx) {
@@ -1089,13 +1311,13 @@ static void pair_with(host_t *h, const unsigned char *rec)
     unsigned char p[13];
     link_t *l;
 
-    if (h->discovery_blocked || is_banned(h, rec) || link_by_addr(h, rec) ||
+    if (h->discovery_blocked || is_banned(h, rec) || link_by_peer(h, rec, 0, 0) ||
         (h->collision_blocked && memcmp(h->collision_addr, rec, 6) == 0)) return;
     if (db_find(h, rec)) {
         log_line("pad %s: in pairing mode again, forgetting its old key", addr_str(rec));
         db_forget(h, rec, 0, 0);
     }
-    l = link_new(h, rec);
+    l = link_new(h, rec, 0, 0);
     if (!l) {
         log_line("pairing: no free slot");
         return;
@@ -1104,7 +1326,6 @@ static void pair_with(host_t *h, const unsigned char *rec)
     l->cod = (uint32_t)rec[8] | (uint32_t)rec[9] << 8 | (uint32_t)rec[10] << 16;
     memcpy(h->last_call, rec, sizeof h->last_call);
     if (!h->in_repage) h->repage_left = REPAGE_TRIES;      /* a new call gets its extra tries */
-    if (h->inquiring) send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
     h->inquiring = 0;
 
     memcpy(p, rec, 6);
@@ -1113,6 +1334,8 @@ static void pair_with(host_t *h, const unsigned char *rec)
     p[9] = 0;
     put16(p + 10, le16(rec + 11) | 0x8000);   /* clock offset, valid */
     p[12] = 1;                          /* allow role switch */
+    l->connect_opcode = OP_CREATE_CONNECTION;
+    memcpy(l->connect_params, p, sizeof p);
     send_cmd(h, OP_CREATE_CONNECTION, p, 13);
     {
         char hex[3 * 14 + 1];
@@ -1323,7 +1546,7 @@ static void on_found(host_t *h, const unsigned char *rec, const unsigned char *e
              now_ms() - h->search_started);
     pair_with(h, rec);
     {
-        link_t *nl = link_by_addr(h, rec);
+        link_t *nl = link_by_peer(h, rec, 0, 0);
         if (nl) eir_name(eir, eir_len, nl->name, (int)sizeof nl->name);
     }
 }
@@ -1402,8 +1625,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     link_t *l;
     int i;
 
-    attrib_observe(ev, len, now_ms());
     if (len < 2) return;
+    if (!host_admits(h) && ev[0] != 0x0e && ev[0] != 0x0f &&
+        ev[0] != 0x01 && ev[0] != 0x03 && ev[0] != 0x05 &&
+        !(ev[0] == 0x3e && len >= 3 && (ev[2] == 1 || ev[2] == 0x0a))) return;
     if (g_tune.trace && ev[0] != 0x13) {
         unsigned char c[64];
         int k = len < (int)sizeof c ? len : (int)sizeof c;
@@ -1427,6 +1652,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x01:  /* Inquiry Complete */
         if (len != 3) break;            /* a damaged event: not an end of inquiry */
         log_line("inquiry: finished (status %#04x)", ev[2]);
+        host_terminal(h, OWN_TERM_INQUIRY, NULL, 0, ev[2]);
         /* Something is always in range (at home, a TV at least): a whole
          * round with nothing heard means the radio is busy elsewhere. The
          * page scan is looked at again at once instead of in a few seconds. */
@@ -1467,7 +1693,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (len < 12 || ev[11] != 1) break;
         {
             db_rec *r = db_find(h, ev + 2);
-            if (!r && !link_by_addr(h, ev + 2)) {
+            if (!r && !link_by_peer(h, ev + 2, 0, 0)) {
                 /* Somebody that is not a paired pad is paging this controller:
                  * usually a DualSense reconnecting to the console, which uses
                  * this controller for that. It is the system's to answer, so it
@@ -1500,7 +1726,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                 break;
             }
             if (!r || r->le) break;                                 /* not ours */
-            l = link_by_addr(h, ev + 2);
+            l = link_by_peer(h, ev + 2, 0, 0);
             if (l) {
                 /* The controller lets no one call over a link it still has:
                  * a paired pad calling while its link is open here means that
@@ -1509,26 +1735,31 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                  * one is let go and the call taken; it would otherwise wait
                  * unanswered and the pad stay dead until switched off. */
                 if (!l->connected || !l->ready || l->disconnecting) break;   /* still being set up: not this */
-                log_line("pad %s: calling again while its old link was still open here: that link is gone, taking the call",
-                         addr_str(ev + 2));
+                log_line("pad: a new request arrived without the old link's terminal; radio link left connected, turn this controller off");
+                own_detector_trip(h->ownership, (uint64_t)now_ms());
                 link_free(h, l);
+                break;
             }
         }
-        l = link_new(h, ev + 2);
+        l = link_new(h, ev + 2, 0, 0);
         memcpy(p, ev + 2, 6);
         if (!l) {
-            p[6] = 0x0D;                /* limited resources */
-            send_cmd(h, OP_REJECT_CONNECTION, p, 7);
+            log_line("incoming owned peer: no free ledger slot; request left unanswered");
             break;
         }
         l->cod = (uint32_t)ev[8] | (uint32_t)ev[9] << 8 | (uint32_t)ev[10] << 16;
         p[6] = 0x00;                    /* become central, as a host does */
+        l->connect_opcode = OP_ACCEPT_CONNECTION;
+        memcpy(l->connect_params, p, 7);
         send_cmd(h, OP_ACCEPT_CONNECTION, p, 7);
         log_line("pad %s: reconnecting", addr_str(ev + 2));
         break;
 
     case 0x03:  /* Connection Complete: status, handle, addr, type, enc */
-        if (len < 13 || !(l = link_by_addr(h, ev + 5)) || l->connected) break;
+        if (len != 13 || ev[11] != 1) break;
+        if (!ev[2] && !host_connection_observed(h, 0, 0, ev + 5, le16(ev + 3))) break;
+        if (!(l = link_by_peer(h, ev + 5, 0, 0)) || l->connected) break;
+        host_terminal(h, OWN_TERM_CONNECTION, l, le16(ev + 3), ev[2]);
         if (ev[2] != 0) {
             log_line("pad %s: connection failed (status %#04x)", addr_str(l->addr), ev[2]);
             /* A pad found in this search that did not answer the page is not
@@ -1554,13 +1785,16 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x05:  /* Disconnection Complete: status, handle, reason */
-        if (len < 6 || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        if (len < 6 || ev[2] || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        own_disconnected(h->ownership, l->ref, (uint16_t)l->handle, (uint64_t)now_ms());
+        l->connected = 0;
         log_line("pad %s: disconnected (reason %#04x)", addr_str(l->addr), ev[5]);
         link_free(h, l);
         break;
 
     case 0x06:  /* Authentication Complete: status, handle */
         if (len < 5 || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        host_terminal(h, OWN_TERM_AUTH, l, l->handle, ev[2]);
         l->ssp_stage = 0;
         if (ev[2] == 0) {
             l->auth_ok = 1;
@@ -1580,6 +1814,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
 
     case 0x08:  /* Encryption Change: status, handle, enabled */
         if (len < 6 || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        host_terminal(h, OWN_TERM_ENCRYPTION, l, l->handle, ev[2]);
         if (l->le) {
             le_on_encryption(h, l, ev[2], ev[5]);
             break;
@@ -1601,12 +1836,26 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
 
     case 0x0E:  /* Command Complete: credits, opcode, return parameters */
         if (len < 6) break;
-        h->cc_op = le16(ev + 3);
-        h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
-        memcpy(h->cc, ev, (size_t)h->cc_len);
+        for (unsigned j = 0; j < OWN_MAX; j++) {
+            if (!h->sync.serial || h->commands[j].ref.serial != h->sync.serial ||
+                h->commands[j].ref.attempt != h->sync.attempt ||
+                h->commands[j].opcode != le16(ev + 3) || h->sync_done) continue;
+            own_state state = OWN_FREE;
+            own_result result = own_status(h->ownership, h->sync, &state);
+            h->cc_op = le16(ev + 3);
+            h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
+            memcpy(h->cc, ev, (size_t)h->cc_len);
+            h->sync_done = 1;
+            h->sync_ok = !ev[5] && result == OWN_OK &&
+                         (state == OWN_ACKNOWLEDGED || state == OWN_CLOSED);
+        }
         break;
 
     case 0x0F:  /* Command Status: status, credits, opcode */
+        if (len >= 6 && ev[2] && le16(ev + 4) == 0x2026) {
+            le_dhkey_refused(h);
+            break;
+        }
         if (len >= 6 && le16(ev + 4) == OP_INQUIRY) {
             log_line("inquiry: controller answered status %#04x", ev[2]);
             if (ev[2] == 0x0C) {
@@ -1615,7 +1864,6 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                  * instead of asking again at once. */
                 h->inquiring = 1;
                 h->inq_started = now_ms();
-                send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
             } else if (ev[2] != 0) {
                 h->inquiring = 0;
             }
@@ -1626,33 +1874,14 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         }
         if (len < 6 || ev[2] == 0) break;
         if (le16(ev + 4) == OP_CREATE_CONNECTION && ev[2] == 0x0B) report_existing_link(h);
-        if (le16(ev + 4) == OP_CREATE_CONNECTION || le16(ev + 4) == 0x200D) {
+        if (le16(ev + 4) == OP_CREATE_CONNECTION || le16(ev + 4) == OP_ACCEPT_CONNECTION ||
+            le16(ev + 4) == 0x200D) {
             int want_le = le16(ev + 4) == 0x200D;
             for (i = 0; i < HOST_MAX_PADS; i++) {
                 l = &h->links[i];
                 if (l->used && !l->connected && l->le == want_le &&
-                    (l->pairing || want_le)) {
-                    if (!want_le && ev[2] == 0x0b && h->turned_down < TURNDOWN_TRIES) {
-                        /* Usually the pad itself is calling the console: it
-                         * thinks it is still linked from an earlier session,
-                         * and its call stays pending for the connection accept
-                         * timeout (29 s), blocking ours. It is turned down
-                         * and called at once. If no call was pending, the
-                         * reply to the rejection says so, and it is a real
-                         * link: then it is left alone, as before. */
-                        unsigned char r[7];
-                        long hold = now_ms() + T_TURNDOWN_WAIT + T_CONN_TIMEOUT + 5000;
-                        memcpy(r, l->addr, 6);
-                        r[6] = 0x0D;            /* limited resources: it may call again later */
-                        send_cmd(h, OP_REJECT_CONNECTION, r, 7);
-                        memcpy(h->reject_addr, l->addr, 6);
-                        h->reject_pending = 1;
-                        h->turned_down++;
-                        h->repage_at = now_ms() + T_TURNDOWN_WAIT;
-                        if (h->pair_until < hold) h->pair_until = hold;
-                        log_line("pad %s: its own call to the console was pending (it thinks it is still linked): "
-                                 "turned down, calling it again", addr_str(l->addr));
-                    } else if (!want_le && ev[2] == 0x0b) {
+                    (l->pairing || want_le || le16(ev + 4) == OP_ACCEPT_CONNECTION)) {
+                    if (!want_le && ev[2] == 0x0b) {
                         memcpy(h->collision_addr, l->addr, 6);
                         h->collision_blocked = 1;
                     }
@@ -1689,7 +1918,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x16:  /* PIN Code Request: legacy pairing */
-        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
+        if (len < 8 || !(l = link_by_peer(h, ev + 2, 0, 0))) break;
         memset(p, 0, sizeof p);
         memcpy(p, ev + 2, 6);
         if (pin_is_address(h, l)) {
@@ -1708,7 +1937,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x17:  /* Link Key Request */
-        if (len < 8 || !link_by_addr(h, ev + 2)) break;
+        if (len < 8 || !link_by_peer(h, ev + 2, 0, 0)) break;
         {
             db_rec *r = db_find(h, ev + 2);
             if (r) {
@@ -1717,14 +1946,14 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                 send_cmd(h, OP_LINK_KEY_REPLY, p, 22);
             } else {
                 send_cmd(h, OP_LINK_KEY_NEG_REPLY, ev + 2, 6);
-                l = link_by_addr(h, ev + 2);
+                l = link_by_peer(h, ev + 2, 0, 0);
                 if (l) { l->ssp_stage = 1; l->t_ssp = now_ms(); }
             }
         }
         break;
 
     case 0x18:  /* Link Key Notification: addr, key, type */
-        if (len < 25 || !(l = link_by_addr(h, ev + 2))) break;
+        if (len < 25 || !(l = link_by_peer(h, ev + 2, 0, 0))) break;
         {
             db_rec *r = db_put(h, ev + 2, 0, 0);
             if (!r) break;
@@ -1737,14 +1966,14 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x31:  /* IO Capability Request */
-        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
+        if (len < 8 || !(l = link_by_peer(h, ev + 2, 0, 0))) break;
         send_io_cap_reply(h, ev + 2);
         l->ssp_stage = 2;
         l->t_ssp = now_ms();
         break;
 
     case 0x33:  /* User Confirmation Request */
-        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
+        if (len < 8 || !(l = link_by_peer(h, ev + 2, 0, 0))) break;
         send_cmd(h, OP_USER_CONFIRM_REPLY, ev + 2, 6);
         l->ssp_stage = 3;
         break;
@@ -1767,11 +1996,17 @@ static void link_step(host_t *h, link_t *l, long now)
         le_step(h, l, now);
         return;
     }
+    if (l->disconnecting) return;
     if (!l->connected) {
-        if (now - l->t_create > T_CONN_TIMEOUT) link_disconnect(h, l, "no connection");
+        if (now - l->t_create > T_CONN_TIMEOUT) {
+            if (!l->create.serial) own_fail(h->ownership, (uint64_t)now, 1);
+            link_disconnect(h, l, "no connection");
+        } else if (!l->create.serial && l->connect_opcode) {
+            send_link_cmd(h, l, l->connect_opcode, l->connect_params,
+                          l->connect_opcode == OP_ACCEPT_CONNECTION ? 7 : 13);
+        }
         return;
     }
-    if (l->disconnecting) return;
     /* A pairing event lost on the way (taken by the system's driver, which
      * reads the same pipe) would leave the pairing waiting for the whole
      * setup time. The answer to the step that did not come is given anyway:
@@ -1797,8 +2032,7 @@ static void link_step(host_t *h, link_t *l, long now)
     if (!l->auth_ok) {
         if (!l->auth_sent && now - l->t_conn >= (l->pairing ? 0 : T_SELF_AUTH)) {
             put16(p, l->handle);
-            send_cmd(h, OP_AUTH_REQUESTED, p, 2);
-            l->auth_sent = 1;
+            l->auth_sent = send_cmd(h, OP_AUTH_REQUESTED, p, 2);
         }
         return;
     }
@@ -1806,8 +2040,7 @@ static void link_step(host_t *h, link_t *l, long now)
         if (!l->enc_sent && now - l->t_auth_ok >= (l->pairing ? 0 : T_SELF_ENCRYPT)) {
             put16(p, l->handle);
             p[2] = 1;
-            send_cmd(h, OP_SET_ENCRYPTION, p, 3);
-            l->enc_sent = 1;
+            l->enc_sent = send_cmd(h, OP_SET_ENCRYPTION, p, 3);
         }
         return;
     }
@@ -1872,16 +2105,26 @@ static void pump(host_t *h, int timeout_ms)
     int n;
 
     if (h->hci.ops->pump(h->hci.ctx, timeout_ms) < 0) h->dead = 1;
+    own_tick(h->ownership, (uint64_t)now_ms());
     attrib_poll(now_ms());
+    attribution_check(h);
     if (h->ev.idle) h->ev.idle(h->ev.ud);
     while ((n = h->hci.ops->next_event(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
+        attribution_check(h);
+        h->dispatching++;
         on_event(h, buf, n);
+        h->dispatching--;
     }
     while ((n = h->hci.ops->next_acl(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
-        on_acl(h, buf, n);
+        if (host_admits(h)) {
+            h->dispatching++;
+            on_acl(h, buf, n);
+            h->dispatching--;
+        }
     }
+    host_flush(h);
 }
 
 static void start_inquiry(host_t *h)
@@ -1935,16 +2178,11 @@ static void page_scan_for_pairing(host_t *h)
     win = le16(h->cc + 8);
     if (win * 8 <= iv) return;          /* light already: the radio is free enough */
     if (iv == g_tune.ps_iv && win == g_tune.ps_win) return;
-    if (!h->ps_saved) {
-        h->ps_saved = 1;
-        h->ps_orig_iv = iv;
-        h->ps_orig_win = win;
-    }
-    if (!hci_sync(h, OP_WRITE_PAGE_SCAN_ACT, light, 4)) return;
-    h->ps_restore_tries = 0;
-    h->ps_restore_at = 0;
-    h->ps_set_iv = g_tune.ps_iv;
-    h->ps_set_win = g_tune.ps_win;
+    unsigned char original[4];
+    put16(original, iv);
+    put16(original + 2, win);
+    own_readback(h->ownership, OP_WRITE_PAGE_SCAN_ACT, original, sizeof original);
+    if (!host_setting(h, OP_WRITE_PAGE_SCAN_ACT, light, 4, original, 4)) return;
     h->ps_lightened++;
     if (h->ps_lightened <= 5 || (h->ps_lightened & (h->ps_lightened - 1)) == 0)
         log_line("radio: the system listens for calls %u slots of every %u; lightened to %u of %u while pairing (%d)",
@@ -1954,35 +2192,15 @@ static void page_scan_for_pairing(host_t *h)
 /* Puts back the system's page scan, unless the system changed it meanwhile. */
 static void page_scan_restore(host_t *h)
 {
-    unsigned char p[4];
-
-    if (!h->ps_saved || now_ms() < h->ps_restore_at) return;
-    /* Kept as pending until done: a reply lost on the way is tried again. */
-    if (!hci_sync(h, OP_READ_PAGE_SCAN_ACT, NULL, 0) || h->cc_len < 10) {
-        if (++h->ps_restore_tries >= 5) {
-            log_line("radio: the system's page scan could not be read back; left as is");
-            h->ps_saved = 0;
+    for (unsigned i = 0; i < OWN_MAX; i++) {
+        own_token token;
+        if (h->commands[i].opcode == OP_WRITE_PAGE_SCAN_ACT &&
+            own_request_undo(h->ownership, h->commands[i].ref,
+                             (uint64_t)now_ms(), &token) == OWN_OK) {
+            hci_submission submission = {.kind = HCI_SUBMIT_COMMAND, .token.command = &token};
+            h->hci.ops->op_submit(h->hci.ctx, &submission);
+            return;
         }
-        h->ps_restore_at = now_ms() + T_PS_CHECK;
-        return;
-    }
-    if (le16(h->cc + 6) != h->ps_set_iv || le16(h->cc + 8) != h->ps_set_win) {
-        log_line("radio: page scan changed by the system meanwhile, left as is");
-        h->ps_saved = 0;
-        return;
-    }
-    p[0] = (unsigned char)h->ps_orig_iv;
-    p[1] = (unsigned char)(h->ps_orig_iv >> 8);
-    p[2] = (unsigned char)h->ps_orig_win;
-    p[3] = (unsigned char)(h->ps_orig_win >> 8);
-    if (hci_sync(h, OP_WRITE_PAGE_SCAN_ACT, p, 4)) {
-        log_line("radio: the system's page scan put back (%u of %u)", h->ps_orig_win, h->ps_orig_iv);
-        h->ps_saved = 0;
-    } else if (++h->ps_restore_tries >= 5) {
-        log_line("radio: the system's page scan could not be put back; left light");
-        h->ps_saved = 0;
-    } else {
-        h->ps_restore_at = now_ms() + T_PS_CHECK;
     }
 }
 
@@ -2027,6 +2245,7 @@ void host_poll(host_t *h, int timeout_ms)
     if (!h) return;                     /* no Bluetooth: nothing to do */
 
     pump(h, timeout_ms);
+    if (!host_admits(h)) return;
 #if WHATEVERPAD_PROBE
     reads_for(h, HOST_EV_READS);
     return; /* Observation only: no idle watchdog retransmits or protocol retries. */
@@ -2047,7 +2266,7 @@ void host_poll(host_t *h, int timeout_ms)
             }
         } else {
             h->ps_check_at = 0;
-            if (h->ps_saved) page_scan_restore(h);
+            page_scan_restore(h);
         }
         now = now_ms();
     }
@@ -2080,13 +2299,6 @@ void host_poll(host_t *h, int timeout_ms)
     }
 
     /* Keep searching through the pairing window, one pad at a time. */
-    /* The end-of-inquiry event can be lost on the way (another reader of the
-     * chip's events takes a piece of it): an inquiry lasts about 10 s, so one
-     * that has gone on for 14 s is over, and the search must carry on. */
-    if (h->inquiring && now - h->inq_started > (long)g_tune.inq_len * 1280 + 4000) {
-        send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
-        h->inquiring = 0;
-    }
     if (h->defer_at && now >= h->pair_until) {
         log_line("inquiry: pending candidate expired with the search window");
         h->defer_at = 0;
@@ -2124,7 +2336,6 @@ void host_poll(host_t *h, int timeout_ms)
     }
     if (now < h->pair_until && !h->inquiring && !linking && !h->repage_at) start_inquiry(h);
     if (now >= h->pair_until && h->inquiring) {
-        send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
         h->inquiring = 0;
     }
 }
@@ -2132,6 +2343,7 @@ void host_poll(host_t *h, int timeout_ms)
 int host_pair(host_t *h, int seconds)
 {
     long now = now_ms();
+    if (!host_admits(h)) return 0;
 
 #if WHATEVERPAD_PROBE
     (void)h;
@@ -2185,14 +2397,15 @@ int host_set_output(host_t *h, int slot, const pad_output *out)
 
     if (slot < 0 || slot >= HOST_MAX_PADS) return 0;
     l = &h->links[slot];
-    if (!l->used || !l->ready) return 0;
+    if (!l->used || !l->ready || l->disconnecting || !host_admits(h)) return 0;
     l->out = *out;
     return send_output(h, l);
 }
 
 int host_connected(const host_t *h, int slot)
 {
-    return slot >= 0 && slot < HOST_MAX_PADS && h->links[slot].used && h->links[slot].ready;
+    return slot >= 0 && slot < HOST_MAX_PADS && h->links[slot].used &&
+           h->links[slot].ready && !h->links[slot].disconnecting;
 }
 
 int host_paired_count(const host_t *h) { return h->committed.count; }
@@ -2304,28 +2517,37 @@ int host_forget_all(host_t *h)
 
 /* ---- controller setup ----------------------------------------------------- */
 
-/* Sends a command and waits for its Command Complete. The reply can go to
- * the system's driver, so the command is sent again; those used here are
- * safe to repeat. */
-int hci_sync(host_t *h, unsigned op, const void *p, int plen)
+static int command_wait(host_t *h, own_ref ref)
 {
-    int attempt;
-
-    for (attempt = 1; attempt <= (WHATEVERPAD_PROBE ? 1 : 3); attempt++) {
-        long deadline = now_ms() + (attempt == 3 ? 3000 : 1000);
-
-        h->cc_op = 0;
-        if (!send_cmd(h, op, p, plen)) return 0;
-        attrib_deadline(op, deadline);
-        while (h->cc_op != op && now_ms() < deadline) pump(h, 20);
-        if (h->cc_op == op) return h->cc_len > 5 && h->cc[5] == 0;
-    }
-    log_line("command %#06x: no reply", op);
-    if (!h->diag_done && h->hci.ops->diag) {
+    long deadline = now_ms() + 2000;
+    h->sync = ref;
+    h->sync_done = h->sync_ok = 0;
+    h->cc_op = 0;
+    while (!h->sync_done && host_admits(h) && now_ms() < deadline) pump(h, 20);
+    own_tick(h->ownership, (uint64_t)now_ms());
+    int ok = h->sync_done && h->sync_ok && host_admits(h);
+    if (!h->sync_done && !h->diag_done && h->hci.ops->diag) {
         h->diag_done = 1;
         h->hci.ops->diag(h->hci.ctx);
     }
-    return 0;
+    h->sync = (own_ref){0};
+    return ok;
+}
+
+int host_setting(host_t *h, unsigned op, const void *p, int len,
+                 const void *original, int original_len)
+{
+    own_ref ref;
+    if (h->sync.serial) return 0;
+    int prepared = command_prepare(h, NULL, op, p, len, original, original_len, &ref);
+    if (prepared == 2) return 1;
+    if (!prepared) return 0;
+    return command_wait(h, ref);
+}
+
+int hci_sync(host_t *h, unsigned op, const void *p, int plen)
+{
+    return host_setting(h, op, p, plen, NULL, 0);
 }
 
 /* Diagnostics only: reads a setting of the controller (a read command, which
@@ -2403,11 +2625,14 @@ static int setup(host_t *h)
      * the logs show the call waiting for WhateverPad's reads at the end of every
      * pause, 15 times in a row). */
     unsigned char mask[8] = { 0xF7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F };
-    static const unsigned char one[1] = { 1 };
     unsigned char scan[1];
 
-    h->scan_orig = h->scan_set = -1;
     h->reads_now = HOST_EV_READS;
+    /* No setting or link can obtain a barrier before this capability check. */
+    if (!hci_sync(h, 0x1002, NULL, 0) || h->cc_len < 70 || !(h->cc[6 + 27] & 0x80)) {
+        log_line("controller: LE Rand unavailable; ownership barriers unsupported");
+        return 0;
+    }
     if (!hci_sync(h, OP_READ_BUFFER_SIZE, NULL, 0) || h->cc_len < 13) return 0;
     h->acl_mtu = le16(h->cc + 6);
     h->br.credits = h->br.max = (int)le16(h->cc + 9);
@@ -2415,20 +2640,18 @@ static int setup(host_t *h)
 
     if (!g_tune.mask_conn) mask[0] = 0xFF;
     if (!hci_sync(h, OP_SET_EVENT_MASK, mask, 8)) return 0;
-    h->mask_set = 1;
     if (g_tune.mask_conn)
         log_line("controller: calls to the console left to the system (event mask without Connection Request)");
     if (!hci_sync(h, OP_READ_SSP_MODE, NULL, 0) || h->cc_len < 7 || h->cc[6] != 1) {
-        if (!hci_sync(h, OP_WRITE_SSP_MODE, one, 1)) return 0;
-        log_line("controller: Simple Pairing turned on");
+        log_line("controller: Simple Pairing is not enabled; irreversible change refused");
+        return 0;
     }
     if (!hci_sync(h, OP_READ_SCAN_ENABLE, NULL, 0) || h->cc_len < 7) return 0;
-    h->scan_orig = h->cc[6];
-    if (!(h->scan_orig & 0x02)) {
-        scan[0] = (unsigned char)(h->scan_orig | 0x02);
-        if (!hci_sync(h, OP_WRITE_SCAN_ENABLE, scan, 1)) return 0;
-        h->scan_set = scan[0];
-        log_line("controller: page scan turned on (was %#x)", h->scan_orig);
+    unsigned char original = h->cc[6];
+    if (!(original & 0x02)) {
+        scan[0] = (unsigned char)(original | 0x02);
+        if (!host_setting(h, OP_WRITE_SCAN_ENABLE, scan, 1, &original, 1)) return 0;
+        log_line("controller: page scan turned on (was %#x)", original);
     }
 
     if (!hci_sync(h, OP_READ_BD_ADDR, NULL, 0) || h->cc_len < 12) {
@@ -2442,36 +2665,23 @@ static int setup(host_t *h)
     return 1;
 }
 
-/* Puts back what setup() changed and nobody has changed since. */
-static void restore(host_t *h)
-{
-    /* The mask every earlier version left, with Connection Request. */
-    static const unsigned char mask_all[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F };
-    unsigned char scan[1];
-
-    if (!yielding(h, now_ms())) {
-        page_scan_restore(h);
-        if (h->mask_set && hci_sync(h, OP_SET_EVENT_MASK, mask_all, 8)) h->mask_set = 0;
-    }
-    le_shutdown(h);
-    if (h->scan_set < 0) return;
-    if (hci_sync(h, OP_READ_SCAN_ENABLE, NULL, 0) && h->cc_len >= 7 && h->cc[6] == h->scan_set) {
-        scan[0] = (unsigned char)h->scan_orig;
-        hci_sync(h, OP_WRITE_SCAN_ENABLE, scan, 1);
-        log_line("controller: page scan put back to %#x", h->scan_orig);
-    } else {
-        log_line("controller: page scan changed by someone else, left as is");
-    }
-}
-
-host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
+host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev)
 {
     host_t *h = calloc(1, sizeof *h);
 
     if (!h) return NULL;
+    h->ownership = own_new(WHATEVERPAD_ATTRIB_POLICY, 1);
+    if (!h->ownership) { free(h); return NULL; }
+    h->output = own_acl_new(h->ownership);
+    if (!h->output) { own_free(h->ownership); free(h); return NULL; }
     h->hci = hci;
+    h->ambiguity_seen = ambiguities();
+    if (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_NO_RESTORE)
+        log_line("NO_RESTORE: changed radio settings stay as written; turn bridged controllers off to drop their radio links");
     if (ev) h->ev = *ev;
-    if (strlen(db_path) >= sizeof h->db_path) { free(h); return NULL; }
+    if (strlen(db_path) >= sizeof h->db_path) {
+        own_acl_free(h->output); own_free(h->ownership); free(h); return NULL;
+    }
     snprintf(h->db_path, sizeof h->db_path, "%s", db_path);
     {
         const char *slash = strrchr(db_path, '/');
@@ -2485,24 +2695,30 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
     }
     ban_load(h);
     h->last_rx = now_ms();
-    if (!setup(h)) {
-        free(h);
-        return NULL;
-    }
+    return h;
+}
+
+own_ledger *host_ownership(host_t *h) { return h ? h->ownership : NULL; }
+
+int host_start(host_t *h)
+{
+    if (!h || !h->hci.ops->op_submit || !setup(h)) return 0;
     memcpy(h->store.adapter.addr, h->bdaddr, 6);
-    if (hci.ops->chip_vendor) h->store.adapter.vid = (uint16_t)hci.ops->chip_vendor(hci.ctx);
-    if (hci.ops->chip_product) h->store.adapter.pid = (uint16_t)hci.ops->chip_product(hci.ctx);
+    if (h->hci.ops->chip_vendor) h->store.adapter.vid = (uint16_t)h->hci.ops->chip_vendor(h->hci.ctx);
+    if (h->hci.ops->chip_product) h->store.adapter.pid = (uint16_t)h->hci.ops->chip_product(h->hci.ctx);
     h->store_error = bond_store_load(h->db_path, &h->store.adapter, &h->store);
     if (h->store_error == BOND_MISSING) h->store_error = BOND_COMMITTED;
     if (h->store_error != BOND_COMMITTED)
         log_line("store: load failed, preserved: %s", bond_store_result_name(h->store_error));
     h->committed = h->store;
     log_line("store: %d paired pad(s)", h->store.count);
-    /* An earlier run that was cut off may have left a search going on the
-     * chip, which then refuses ours ("command disallowed") for a while. Ending
-     * a search that is not running is harmless. */
-    send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
-    return h;
+    long deadline = now_ms() + 2000;
+    while (host_admits(h)) {
+        if (own_activate(h->ownership)) return 1;
+        if (now_ms() >= deadline) break;
+        pump(h, 20);
+    }
+    return 0;
 }
 
 void host_close(host_t *h)
@@ -2511,6 +2727,7 @@ void host_close(host_t *h)
     long deadline;
 
     if (!h) return;
+    own_release(h->ownership, SESSION_STOP, (uint64_t)now_ms());
 #if WHATEVERPAD_PROBE
     h->dead = 1; /* NO_RESTORE: local cleanup only, never guessed radio undo. */
 #endif
@@ -2526,9 +2743,13 @@ void host_close(host_t *h)
         if (!any || now_ms() >= deadline) break;
         pump(h, 50);
     }
-    if (!h->dead && h->inquiring) send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);    /* leave no search running */
-    if (!h->dead) restore(h);
+    if (!h->dead) host_flush(h); /* Only the ledger can select a derived undo. */
     if (h->hci.ops->close) h->hci.ops->close(h->hci.ctx);
+    own_transport_closed(h->ownership, (uint64_t)now_ms());
+    for (i = 0; i < HOST_MAX_PADS; i++)
+        if (h->links[i].used) link_free(h, &h->links[i]);
+    own_acl_free(h->output);
+    own_free(h->ownership);
     free(h);
 }
 
@@ -2554,7 +2775,6 @@ int host_tune_set(host_t *h, const char *name, long v)
             return 0;
         }
         g_tune.mask_conn = (int)v;
-        if (h) h->mask_set = 1;
     } else if (strcmp(name, "inq_len") == 0 && v >= 1 && v <= 0x30) {
         g_tune.inq_len = (int)v;
     } else if (strcmp(name, "idle_reads") == 0 && v >= 0 && v <= HOST_EV_READS) {
@@ -2582,16 +2802,12 @@ int host_tune_json(char *out, int n)
 
 int host_raw_cmd(host_t *h, unsigned op, const unsigned char *p, int plen, unsigned char *reply, int *rlen)
 {
-    long deadline = now_ms() + 2000;
-
     *rlen = 0;
-    if (!h || h->dead || op == 0x0C03 || plen < 0 || plen > 255) return 0;     /* never a Reset */
+    if (!host_admits(h) || plen < 0 || plen > 255 || (plen && !p)) return 0;
     log_hex("dialog: command", op, p, plen);
     h->cc_op = 0;
-    if (!send_cmd(h, op, p, plen)) return 0;
-    attrib_deadline(op, deadline);
-    while (h->cc_op != op && now_ms() < deadline) pump(h, 20);
-    if (h->cc_op != op || h->cc_len < 6) {
+    hci_sync(h, op, p, plen);
+    if (!host_admits(h) || h->cc_op != op || h->cc_len < 6) {
         log_line("dialog: command %04x: no Command Complete (see the log for a Command Status)", op);
         return 0;
     }

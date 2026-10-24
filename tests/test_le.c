@@ -17,26 +17,26 @@ typedef struct {
     pad_state last;
 } seen;
 
-static void on_connect(void *ud, int slot, const pad_info *info)
+static void on_connect(void *ud, link_ref ref, const pad_info *info)
 {
     seen *s = ud;
     s->connects++;
-    s->slot = slot;
+    s->slot = ref.slot;
     s->info = *info;
 }
 
-static void on_state(void *ud, int slot, const pad_state *st)
+static void on_state(void *ud, link_ref ref, const pad_state *st)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->states++;
     s->last = *st;
 }
 
-static void on_disconnect(void *ud, int slot)
+static void on_disconnect(void *ud, link_ref ref)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->disconnects++;
 }
 
@@ -50,8 +50,9 @@ static void run(host_t *h, int ms)
 
 static host_t *open_host(sim_le_t *sim, seen *s)
 {
+    attrib_reset();
     host_events ev = { on_connect, on_state, on_disconnect, s, NULL };
-    return host_open(sim_le_hci(sim), DB, &ev);
+    return sim_le_open_host(sim, DB, &ev);
 }
 
 /* An Xbox Series controller: report 1 is 16 bytes after its id. A is
@@ -280,12 +281,14 @@ static void busy_once(int busy, long ms, int max_creates)
     h = open_host(sim, &s);
     CHECK(h != NULL);
     if (!h) return;
+    sim_le_busy_for(sim, 600);
     host_pair(h, 30);
     run(h, ms);
     CHECK(sim_le_error(sim) == NULL);
     CHECK(s.connects == 1);
     CHECK(s.states > 0 && (s.last.buttons & 0x4000));
-    CHECK(sim_le_cancels(sim) >= busy);
+    CHECK(sim_le_cancels(sim) == 0);
+    CHECK(sim_le_foreign_finishes(sim) == 1);
     CHECK(sim_le_creates(sim) <= max_creates);      /* no flood of attempts */
     printf("  busy %d: %d tries, %d cancels\n", busy, sim_le_creates(sim), sim_le_cancels(sim));
     host_close(h);
@@ -294,10 +297,63 @@ static void busy_once(int busy, long ms, int max_creates)
 
 static void test_busy_controller(void)
 {
-    printf("LE Create Connection refused (0x0c): cancelled, tried again, connected\n");
+    printf("LE Create Connection refused (0x0c): foreign work finishes without cancellation\n");
     busy_once(1, 8000, 3);
     busy_once(3, 10000, 5);
     busy_once(5, 20000, 8);                         /* gives up, rests, then connects */
+}
+
+static unsigned reused_handle;
+static int reused_terminal, reused_fence, reused_encryptions, reused_disconnects;
+static void observe_handle_reuse(void *ctx, enum sim_observation kind, sim_origin origin,
+                                 unsigned code, const unsigned char *p, int n)
+{
+    (void)ctx; (void)origin;
+    if (kind == SIM_COMMAND) {
+        reused_encryptions += code == 0x2019;
+        reused_disconnects += code == 0x0406;
+    }
+    if (kind != SIM_DELIVERED) return;
+    if (code == 0x3e && n == 19 && p[0] == 1 && !p[1] &&
+        le16(p + 2) == reused_handle) reused_terminal++;
+    if (code == 0x0e && n == 12 && le16(p + 1) == 0x2018 && reused_terminal)
+        reused_fence++;
+}
+
+static void test_reused_handle_quarantines_connection(void)
+{
+    sim_le_pad pad;
+    seen s = {0};
+    unlink(DB);
+    xbox_pad(&pad, 1, 0);
+    sim_le_t *sim = sim_le_new(&pad);
+    host_t *h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_le_free(sim); return; }
+    CHECK(host_pair(h, 30));
+    long end = sim_le_now() + 8000;
+    while (!s.states && sim_le_now() < end) host_poll(h, 5);
+    CHECK(s.connects == 1 && s.states > 0);
+    reused_handle = sim_le_handle(sim);
+    int states = s.states;
+    sim_le_power_off(sim);
+    end = sim_le_now() + 1000;
+    while (!s.disconnects && sim_le_now() < end) host_poll(h, 5);
+    CHECK(s.disconnects == 1);
+    reused_terminal = reused_fence = reused_encryptions = reused_disconnects = 0;
+    sim_le_observe(sim, observe_handle_reuse, NULL);
+    sim_le_set_next_handle(sim, reused_handle);
+    sim_le_power_on(sim);
+    end = sim_le_now() + 8000;
+    while (!reused_fence && sim_le_now() < end) host_poll(h, 5);
+    CHECK(reused_terminal == 1 && reused_fence == 1);
+    CHECK(sim_le_handle(sim) == reused_handle && sim_le_creates(sim) == 2);
+    CHECK(s.connects == 1 && s.states == states);
+    CHECK(reused_encryptions == 0 && reused_disconnects == 0 && sim_le_cancels(sim) == 0);
+    CHECK(!host_pair(h, 30));
+    host_close(h);
+    CHECK(reused_disconnects == 0 && sim_le_resources(sim).closes == 1);
+    sim_le_free(sim);
 }
 
 /* A pad no profile knows, with legacy pairing only and a 23-byte ATT MTU,
@@ -467,7 +523,7 @@ static void test_key_completeness(void)
         h = open_host(sim, &s);
         CHECK(h != NULL);
         if (!h) { sim_le_free(sim); return; }
-        l = link_new(h, pad.addr);
+        l = link_new(h, pad.addr, 1, 0);
         CHECK(l != NULL);
         if (!l) { host_close(h); sim_le_free(sim); return; }
         l->le = 1;
@@ -512,6 +568,7 @@ int main(void)
     test_xbox_identity();
     test_identity_only_if_asked();
     test_busy_controller();
+    test_reused_handle_quarantines_connection();
     test_generic_legacy();
     test_garbage();
     test_stress();
