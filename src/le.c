@@ -438,6 +438,7 @@ void le_on_meta(host_t *h, const unsigned char *ev, int len)
             link_free(h, l);
             break;
         }
+        if (!own_link_current(h->ownership, l->ref)) break;
         l->connected = 1;
         l->handle = le16(ev + 2) & 0x0FFF;
         l->t_conn = now_ms();
