@@ -63,8 +63,8 @@ if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
     grep -q '^XPASS policy=fixture property=fixture-disappears todo=0$' "$receipt"
     grep -q '^STRICT expected=2 xfail=1 xpass=1$' "$receipt"
     run strict-ledger 1 none --expected-failures
-    grep -q '^STRICT expected=21 xfail=21 xpass=0$' "$receipt"
-    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 11
+    grep -q '^STRICT expected=19 xfail=19 xpass=0$' "$receipt"
+    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 10
     awk '
       $1 == "PROPERTY" && $3 == "undelivered-retry-is-not-admitted" {
         if ($4 != "violations=0/500" || $7 != "PASS") exit 1
@@ -73,7 +73,7 @@ if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
       END { if (passed != 2) exit 1 }
     ' "$receipt"
     grep -q '^INTEGRATION .* hard=0 xpass=0 ' "$receipt"
-    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=21'
+    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=19'
 fi
 
 if [ "$selection" = all ] || [ "$selection" = reassignment ]; then

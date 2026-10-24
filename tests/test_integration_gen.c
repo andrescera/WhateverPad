@@ -34,7 +34,7 @@ static const struct { const char *name; int todo; } properties[] = {
     {"no-cancel-or-reset", 0}, {"no-normal-effect-after-release", 13},
     {"one-unanswered-command-no-resubmission", 13},
     {"no-restore-policy-no-undo", 13}, {"undo-needs-own-ack-barrier-and-version", 14},
-    {"disconnect-needs-fresh-owned-input", 14}, {"status-is-not-link-completion", 14},
+    {"disconnect-needs-fresh-owned-input", 0}, {"status-is-not-link-completion", 14},
     {"callback-per-generation-once", 14}, {"no-vpad-work-after-release", 15},
     {"one-ten-second-cleanup-budget", 15}, {"native-request-releases-transport", 15},
     {"undelivered-retry-is-not-admitted", 0}, {"uncertain-link-reported-left-connected", 15},
