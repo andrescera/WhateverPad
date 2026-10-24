@@ -408,15 +408,38 @@ static void test_usb_secrets(void)
     h.ops->pump(h.ctx, 0);
     CHECK(h.ops->cmd(h.ctx, 0x2019, secret, sizeof secret));
     h.ops->diag(h.ctx);
-#if WHATEVERPAD_PROBE
     log_since(from, logs, sizeof logs);
     CHECK(strstr(logs, (const char *)secret) == NULL);
     CHECK(strstr(logs, "5a 51 5f 53 45 43 52 45 54 5f 37 33") == NULL);
-#else
-    (void)from;
-#endif
     closed_once(h);
-    puts("ATTRIB USB diagnostics: sentinel checked in probe log buffer");
+    puts("ATTRIB USB diagnostics: sentinel checked in captured log buffer");
+}
+
+static void test_usb_timeout_secrets(void)
+{
+    unsigned char ev[25] = {0x18, 23, 0x91, 0xa2, 0xb3, 0xc4, 0xd5, 0xe6};
+    unsigned long from;
+    reset();
+    attrib_reset();
+    hci_t transport = start();
+    host_t *h = host_prepare(transport, "build/attrib-absent.db", NULL);
+    CHECK(h != NULL);
+    CHECK(hci_usb_bind_ownership(&transport, host_ownership(h), NULL, NULL));
+    memcpy(ev + 8, secret, sizeof secret);
+    from = log_seq();
+    completion(0, ev, sizeof ev);
+    /* The USB transfer completes, but no HCI answer arrives: command_wait calls diag. */
+    CHECK(!hci_sync(h, 0x1002, NULL, 0));
+    CHECK(usb.commands == 1 && usb.last_opcode == 0x1002);
+    CHECK(attrib_get()->timeout == 1 && attrib_get()->unanswered == 1);
+    CHECK(log_since(from, logs, sizeof logs) == log_seq());
+    CHECK(strstr(logs, "diag:") != NULL);
+    CHECK(strstr(logs, (const char *)secret) == NULL);
+    CHECK(strstr(logs, "5a 51 5f 53") == NULL);
+    CHECK(strstr(logs, "91 a2 b3 c4") == NULL);
+    host_close(h);
+    CHECK(usb.closes == 1 && !usb.fd_open && !usb.initialized);
+    puts("ATTRIB USB timeout: real command timeout diagnostics contain no sentinel bytes");
 }
 
 static void test_receipt_provenance(void)
@@ -467,6 +490,7 @@ int main(void)
     test_usb_overflow();
     test_host_profile();
     test_probe_missing_answer();
+    test_usb_timeout_secrets();
     test_usb_secrets();
     test_receipt_provenance();
     test_credit_event_forms();
