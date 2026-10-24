@@ -620,18 +620,57 @@ static world initial(own_policy policy, enum scenario s)
     return w;
 }
 
-static size_t key_of(const world *w, uint8_t out[KEY_MAX])
+/* Lossless storage: six frequent bytes, zero runs, and an escape for every
+ * other byte. The original length disambiguates final-byte padding. */
+static size_t pack_key(const uint8_t *key, size_t n, uint8_t out[2 * KEY_MAX])
 {
-    size_t n = own_canonical(w->l, out, KEY_MAX);
+    size_t used = 2;
+    out[0] = (uint8_t)n; out[1] = (uint8_t)(n >> 8);
+    uint32_t pending = 0;
+    unsigned bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned run = 1, code, width = 3;
+        if (!key[i])
+            while (run < 255 && i + run < n && !key[i + run]) run++;
+        if (run >= 4) {
+            code = (6u << 8) | run;
+            width = 11;
+            i += run - 1;
+        } else {
+            switch (key[i]) {
+            case 0: code = 0; break;
+            case 1: code = 1; break;
+            case 2: code = 2; break;
+            case 16: code = 3; break;
+            case 128: code = 4; break;
+            case 129: code = 5; break;
+            default: code = (7u << 8) | key[i]; width = 11; break;
+            }
+        }
+        pending = (pending << width) | code;
+        bits += width;
+        while (bits >= 8) {
+            bits -= 8;
+            out[used++] = (uint8_t)(pending >> bits);
+        }
+    }
+    if (bits) out[used++] = (uint8_t)(pending << (8 - bits));
+    return used;
+}
+
+static size_t key_of(const world *w, uint8_t out[2 * KEY_MAX])
+{
+    uint8_t key[KEY_MAX];
+    size_t n = own_canonical(w->l, key, KEY_MAX);
     if (n + 10*O_COUNT + sizeof w->held > KEY_MAX) {
         fputs("canonical key exceeds bound\n", stderr); exit(2);
     }
     for (unsigned i = 0; i < O_COUNT; i++) {
         uint64_t v = w->o[i];
-        do { out[n++] = (uint8_t)(v & 127) | (v > 127 ? 128 : 0); v >>= 7; } while (v);
+        do { key[n++] = (uint8_t)(v & 127) | (v > 127 ? 128 : 0); v >>= 7; } while (v);
     }
-    if (w->o[HELD]) { memcpy(out+n, &w->held, sizeof w->held); n += sizeof w->held; }
-    return n;
+    if (w->o[HELD]) { memcpy(key+n, &w->held, sizeof w->held); n += sizeof w->held; }
+    return pack_key(key, n, out);
 }
 
 /* These are the same oracle-only early returns in apply(), before any production
@@ -688,7 +727,7 @@ static void rehash(search *q)
 }
 static void insert(search *q, const world *w, const node *parent, unsigned action)
 {
-    uint8_t key[KEY_MAX];
+    uint8_t key[2 * KEY_MAX];
     size_t n = key_of(w, key);
     uint64_t hash = hash_key(key, n);
     if (!q->slot_capacity || q->count * 2 >= q->slot_capacity) rehash(q);
@@ -757,7 +796,7 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
         for (unsigned k = 0; k < current.depth; k++) {
             if (!apply(&base, s, (enum action)current.path[k], &error) || error) exit(2);
         }
-        uint8_t replay_key[KEY_MAX];
+        uint8_t replay_key[2 * KEY_MAX];
         size_t replay_len = key_of(&base, replay_key);
         if (replay_len != current.len || memcmp(replay_key, current.key, replay_len)) {
             fputs("nondeterministic replay\n", stderr); exit(2);

@@ -257,8 +257,12 @@ test-ownership-case: $(BUILD)/test_ownership_explore
 sanitize-ownership-case:
 	@$(MAKE) --no-print-directory test-ownership-case BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
-test-explorer-results: $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+test-explorer-results: $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode $(BUILD)/test_explorer_key_storage
+	./$(BUILD)/test_explorer_key_storage
 	sh tests/test_explorer_results.sh $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+
+$(BUILD)/test_explorer_key_storage: $(OWN_CORE) tests/test_explorer_key_storage.c tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -O2 -o $@ $(OWN_CORE) tests/test_explorer_key_storage.c
 
 $(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
