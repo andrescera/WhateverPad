@@ -23,6 +23,10 @@ enum sim_observation { SIM_COMMAND, SIM_GENERATED, SIM_DELIVERED };
 typedef void (*sim_observer)(void *, enum sim_observation, sim_origin,
                              unsigned, const unsigned char *, int);
 
+/* A genuinely retired Classic link can reconnect on a fresh wire handle. */
+struct sim;
+void sim_set_handle(struct sim *, unsigned);
+
 /* Match hci_usb.c:event_done after delivery faults, without oracle provenance. */
 static inline void sim_ownership_event(own_ledger *ledger, const unsigned char *ev,
                                        int len, long now)
