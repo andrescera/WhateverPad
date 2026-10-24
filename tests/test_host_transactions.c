@@ -366,7 +366,8 @@ static int pair(fixture *f)
     return f->connects == 1 && f->states > 0;
 }
 
-/* owned_close: 1 fresh owned link, 0 none, -1 an owned link with stale input. */
+/* owned_close: 1 fresh link with drain, 2 fresh link without clock progress,
+ * 0 none, -1 an owned link with stale input. */
 static void finish(fixture *f, int owned_close)
 {
     unsigned before = f->ncommands, disconnects = count(f, DISCONNECT);
@@ -395,8 +396,8 @@ static void finish(fixture *f, int owned_close)
                 CHECK(f->has_handle && c->len == 3 && le16(c->params) == f->handle);
         }
         CHECK(restores <= 1);
-        CHECK(count(f, DISCONNECT) == disconnects + (owned_close == 1));
-        if (owned_close == 1) CHECK(restores == 1);
+        CHECK(count(f, DISCONNECT) == disconnects + (owned_close > 0));
+        if (owned_close > 0) CHECK(restores == (unsigned)(owned_close == 1));
     }
     sim_lifetime life = f->le ? sim_le_resources(f->le) : sim_resources(f->classic);
     CHECK(life.closes == 1 && life.uninits == 1);
@@ -658,7 +659,7 @@ typedef struct {
     hci_ops ops;
     uint64_t deadline;
     unsigned pumps, blocked, closes;
-    int armed;
+    int armed, no_progress, pump_result;
 } close_probe;
 
 static close_probe *closing;
@@ -673,6 +674,15 @@ static int cutoff_pump(void *ctx, int timeout_ms)
     own_snapshot(ledger, &s);
     CHECK(s.runtime.deadline == p->deadline);
     CHECK(own_link_retained(ledger, p->f->current));
+    if (p->no_progress) {
+        if (p->pumps > 1) {
+            CHECK(p->pumps == 1);
+            printf("host transactions: %u checks, %u failures (nonprogressing pump)\n",
+                   checks, failures);
+            exit(1);
+        }
+        return p->pump_result;
+    }
     if (!own_drain_allowed(ledger, (uint64_t)sim_now(), 0)) {
         /* Model the USB cutoff return without advancing time; fail finitely
          * if host_close repeats it instead of reaching finalization. */
@@ -746,6 +756,50 @@ static void close_at_cutoff(int crossing)
     closing = NULL;
 }
 
+static void close_without_progress(int pump_result, int known_dead)
+{
+    fixture f;
+    test_name = known_dead ? "close skips a known-dead transport before its deadline" :
+                pump_result < 0 ? "close stops when the pump dies without advancing time" :
+                                 "close stops when an empty pump cannot advance time";
+    begin(&f, 0);
+    close_probe p = {.f = &f, .base = f.transport.ops, .ops = *f.transport.ops,
+                     .no_progress = 1, .pump_result = pump_result};
+    p.ops.pump = cutoff_pump;
+    p.ops.close = cutoff_close;
+    closing = &p;
+    f.transport.ops = &p.ops;
+    if (!start(&f) || !pair(&f)) {
+        finish(&f, 0);
+        closing = NULL;
+        return;
+    }
+    forget_during_query(&f);
+    CHECK(f.forget_result == 1 && f.disconnects == 1);
+    own_ledger *ledger = host_ownership(f.host);
+    CHECK(own_link_retained(ledger, f.current));
+    long before = sim_now();
+    CHECK(own_release(ledger, SESSION_STOP, (uint64_t)before));
+    own_summary s;
+    own_snapshot(ledger, &s);
+    p.deadline = s.runtime.deadline;
+    CHECK(s.runtime.state == SESSION_QUIESCING && s.runtime.reason == SESSION_STOP &&
+          s.runtime.cleanup_pending);
+    CHECK(p.deadline - SESSION_RESERVE_MS > (uint64_t)before + 2000);
+    p.armed = 1;
+    if (known_dead) {
+        host_poll(f.host, 0);
+        CHECK(host_transport_lost(f.host));
+        p.pumps = 0;
+    }
+    finish(&f, pump_result < 0 ? 0 : 2);
+    CHECK(p.closes == 1 && p.blocked == 0);
+    CHECK(p.pumps == (unsigned)!known_dead);
+    CHECK(sim_now() == before);
+    CHECK(f.disconnects == 1 && same_link(f.disconnected, f.first));
+    closing = NULL;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2) {
@@ -753,6 +807,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[1], "--close-cutoff-crossing")) close_at_cutoff(1);
         else if (!strcmp(argv[1], "--busy-forget")) forget_while_command_busy();
         else if (!strcmp(argv[1], "--retiring-paired")) positive(0);
+        else if (!strcmp(argv[1], "--close-known-dead")) close_without_progress(-1, 1);
+        else if (!strcmp(argv[1], "--close-dead-pump")) close_without_progress(-1, 0);
+        else if (!strcmp(argv[1], "--close-stalled-pump")) close_without_progress(0, 0);
         else return 2;
         goto report;
     }
@@ -773,6 +830,9 @@ int main(int argc, char **argv)
     forget_while_command_busy();
     close_at_cutoff(0);
     close_at_cutoff(1);
+    close_without_progress(-1, 1);
+    close_without_progress(-1, 0);
+    close_without_progress(0, 0);
     if (single_producer()) stale_input_close();
 report:
     printf("host transactions: %u checks, %u failures (%s)\n", checks, failures,

@@ -2746,9 +2746,10 @@ void host_close(host_t *h)
         int any = 0;
         for (i = 0; i < HOST_MAX_PADS; i++) any |= h->links[i].used;
         now = now_ms();
-        if (!any || now >= deadline ||
+        if (h->dead || !any || now >= deadline ||
             !own_drain_allowed(h->ownership, (uint64_t)now, 0)) break;
         pump(h, deadline - now < 50 ? (int)(deadline - now) : 50);
+        if (now_ms() <= now) break; /* No progress: finalize instead of retrying the drain. */
     }
     if (!h->dead) host_flush(h); /* Only the ledger can select a derived undo. */
     if (h->hci.ops->close) h->hci.ops->close(h->hci.ctx);
