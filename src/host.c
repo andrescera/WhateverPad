@@ -13,6 +13,7 @@ static const pad_output k_player_colours[HOST_MAX_PADS] = {
     { 0, 0, 0x00, 0x40, 0x00, 3 },      /* green */
     { 0, 0, 0x20, 0x00, 0x20, 4 },      /* pink */
 };
+static unsigned closed_radio_left;
 
 
 /* ---- helpers -------------------------------------------------------------- */
@@ -23,7 +24,7 @@ const char *addr_str(const unsigned char *a)
     static int which;
     char *s = buf[which++ & 3];
 
-    snprintf(s, 18, "%02X:%02X:%02X:%02X:%02X:%02X", a[5], a[4], a[3], a[2], a[1], a[0]);
+    snprintf(s, 18, "**:**:**:**:%02X:%02X", a[1], a[0]);
     return s;
 }
 
@@ -34,18 +35,9 @@ tune_t g_tune = { 1, PS_PAIR_INTERVAL, PS_PAIR_WINDOW, 0, 8, 0, HOST_EV_READS, 1
 
 static void log_hex(const char *what, unsigned op, const unsigned char *p, int len)
 {
-#if WHATEVERPAD_PROBE
     (void)p;
+    /* Raw commands/events can contain keys, PINs and addresses. */
     log_line("%s %04x: len %d", what, op, len);
-#else
-    char hex[3 * 48 + 1];
-    int k;
-
-    for (k = 0; k < len && k < 48; k++) snprintf(hex + 3 * k, 4, "%02x ", p[k]);
-    hex[3 * k] = 0;
-    if (op) log_line("%s %04x: %s(len %d)", what, op, hex, len);
-    else log_line("%s: %s(len %d)", what, hex, len);
-#endif
 }
 
 /* With fewer event reads kept while idle (dialog mode), a command opens them
@@ -936,7 +928,7 @@ static void sdp_finish(host_t *h, link_t *l, int ok)
             log_line("pad %s: no Device ID record, treating it as generic", addr_str(l->addr));
         }
         if (!vid && !pid && ids_from_name(l->name, &vid, &pid))
-            log_line("pad %s: it says it is a \"%s\": read as %04x:%04x", addr_str(l->addr), l->name, vid, pid);
+            log_line("pad %s: announced model read as %04x:%04x", addr_str(l->addr), vid, pid);
         l->vid = vid;
         l->pid = pid;
         l->ids_known = 1;
@@ -1337,13 +1329,8 @@ static void pair_with(host_t *h, const unsigned char *rec)
     l->connect_opcode = OP_CREATE_CONNECTION;
     memcpy(l->connect_params, p, sizeof p);
     send_cmd(h, OP_CREATE_CONNECTION, p, 13);
-    {
-        char hex[3 * 14 + 1];
-        int k;
-        for (k = 0; k < 14; k++) snprintf(hex + 3 * k, 4, "%02x ", rec[k]);
-        log_line("pad %s: call data: page-scan mode %u, clock offset %04x, answer %s", addr_str(rec),
-                 (unsigned)rec[6], (unsigned)le16(rec + 11), hex);
-    }
+    log_line("pad %s: call data: page-scan mode %u, clock offset %04x", addr_str(rec),
+             (unsigned)rec[6], (unsigned)le16(rec + 11));
     log_line("pad %s: connecting to pair", addr_str(rec));
 }
 
@@ -1400,17 +1387,9 @@ static void log_eir(host_t *h, const unsigned char *rec, const unsigned char *ei
 
     if (now_ms() >= h->pair_until || !profile_class_is_gamepad(cod)) return;
     for (i = 0; i + 1 < n && eir[i] > 0 && i + 1 + eir[i] <= n; i += 1 + eir[i]) {
-        int type = eir[i + 1], dlen = eir[i] - 1, k;
-        const unsigned char *d = eir + i + 2;
+        int type = eir[i + 1], dlen = eir[i] - 1;
         if (pos > (int)sizeof out - 40) break;
-        if (type == 0x08 || type == 0x09) {
-            pos += snprintf(out + pos, sizeof out - (size_t)pos, " name=\"%.*s\"", dlen > 40 ? 40 : dlen, (const char *)d);
-        } else {
-            pos += snprintf(out + pos, sizeof out - (size_t)pos, " %02x:", type);
-            for (k = 0; k < dlen && k < 12 && pos < (int)sizeof out - 4; k++)
-                pos += snprintf(out + pos, sizeof out - (size_t)pos, "%02x", d[k]);
-            if (dlen > 12 && pos < (int)sizeof out - 4) pos += snprintf(out + pos, sizeof out - (size_t)pos, "..");
-        }
+        pos += snprintf(out + pos, sizeof out - (size_t)pos, " %02x:len=%d", type, dlen);
     }
     log_line("inquiry: %s class %06x eir%s", addr_str(rec), (unsigned)cod, pos ? out : " (empty)");
 }
@@ -1566,10 +1545,6 @@ static void report_existing_link(host_t *h)
 static void trace_linking(host_t *h, const unsigned char *ev, int len)
 {
     static int budget = 300;
-#if !WHATEVERPAD_PROBE
-    char hex[3 * 12 + 1];
-    int k;
-#endif
     int i, linking = 0;
 
     if (budget <= 0) return;
@@ -1582,12 +1557,7 @@ static void trace_linking(host_t *h, const unsigned char *ev, int len)
         if (h->links[i].used && !h->links[i].ready) linking = 1;   /* pairing or reconnecting */
     if (!linking) return;
     budget--;
-#if WHATEVERPAD_PROBE
     log_line("link event: type %02x, len %d", ev[0], len);
-#else
-    for (k = 0; k < len && k < 12; k++) snprintf(hex + 3 * k, 4, "%02x ", ev[k]);
-    log_line("link event: %s(len %d)", hex, len);
-#endif
 }
 
 /* Validate only discovery events. A plausible header is not proof of
@@ -1630,11 +1600,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         ev[0] != 0x01 && ev[0] != 0x03 && ev[0] != 0x05 &&
         !(ev[0] == 0x3e && len >= 3 && (ev[2] == 1 || ev[2] == 0x0a))) return;
     if (g_tune.trace && ev[0] != 0x13) {
-        unsigned char c[64];
-        int k = len < (int)sizeof c ? len : (int)sizeof c;
-        memcpy(c, ev, (size_t)k);
-        if (ev[0] == 0x18 && k >= 24) memset(c + 8, 0, 16);            /* never a key in the log */
-        log_hex("trace ev", 0, c, len);
+        log_hex("trace ev", ev[0], ev, len);
     }
     if ((ev[0] == 0x02 || ev[0] == 0x22 || ev[0] == 0x2f) && !inquiry_valid(ev, len)) {
         h->bad_inquiry++;
@@ -1723,6 +1689,11 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                         h->hci.ops->yield(h->hci.ctx, T_YIELD);
                     }
                 }
+                for (i = 0; i < HOST_MAX_PADS; i++)
+                    if (h->links[i].used) {
+                        own_release(h->ownership, SESSION_NATIVE, (uint64_t)now_ms());
+                        break;
+                    }
                 break;
             }
             if (!r || r->le) break;                                 /* not ours */
@@ -2558,24 +2529,12 @@ int hci_sync(host_t *h, unsigned op, const void *p, int plen)
  * Bluetooth off and on in the settings. */
 static void chip_read(host_t *h, const char *name, unsigned op, const void *p, int plen)
 {
-#if !WHATEVERPAD_PROBE
-    char hex[3 * 40 + 1];
-    int i, n;
-#endif
-
     hci_sync(h, op, p, plen);
     if (h->cc_op != op || h->cc_len < 6) {
         log_line("chip: %s: no reply", name);
         return;
     }
-#if WHATEVERPAD_PROBE
     log_line("chip: %s: status %#04x, len %d", name, h->cc[5], h->cc_len - 6);
-#else
-    n = h->cc_len - 6;
-    for (i = 0; i < n && i < 40; i++) snprintf(hex + 3 * i, 4, "%02x ", h->cc[6 + i]);
-    hex[3 * (i < 40 ? i : 40)] = 0;
-    log_line("chip: %s: status %#04x%s %s", name, h->cc[5], n > 40 ? " (first 40 bytes)" : "", hex);
-#endif
 }
 
 static void chip_report(host_t *h)
@@ -2672,6 +2631,7 @@ host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev)
     host_t *h = calloc(1, sizeof *h);
 
     if (!h) return NULL;
+    closed_radio_left = 0;
     h->ownership = own_new(WHATEVERPAD_ATTRIB_POLICY, 1);
     if (!h->ownership) { free(h); return NULL; }
     h->output = own_acl_new(h->ownership);
@@ -2701,6 +2661,14 @@ host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev)
 }
 
 own_ledger *host_ownership(host_t *h) { return h ? h->ownership : NULL; }
+
+unsigned host_radio_left(const host_t *h)
+{
+    own_summary summary;
+    if (!h) return closed_radio_left;
+    own_snapshot(h->ownership, &summary);
+    return summary.radio_left;
+}
 
 int host_start(host_t *h)
 {
@@ -2756,6 +2724,8 @@ void host_close(host_t *h)
     own_transport_closed(h->ownership, (uint64_t)now_ms());
     for (i = 0; i < HOST_MAX_PADS; i++)
         if (h->links[i].used) link_free(h, &h->links[i]);
+    own_snapshot(h->ownership, &summary);
+    closed_radio_left = summary.radio_left;
     own_acl_free(h->output);
     own_free(h->ownership);
     free(h);

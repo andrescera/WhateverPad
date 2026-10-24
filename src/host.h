@@ -44,6 +44,8 @@ host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev);
 own_ledger *host_ownership(host_t *);
 int     host_start(host_t *);
 void    host_close(host_t *h);
+/* Remaining observed radio links, including the last closed host's result. */
+unsigned host_radio_left(const host_t *h);
 
 void host_poll(host_t *h, int timeout_ms);
 

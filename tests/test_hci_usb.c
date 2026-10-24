@@ -1441,6 +1441,53 @@ static void test_failed_classic_attempt_does_not_end_an_existing_link(void)
     CHECK(violations == 0);
 }
 
+static void test_peer_replies_require_an_acknowledged_leased_owner(void)
+{
+    static const struct { unsigned op, plen; } replies[] = {
+        {0x040a, 7}, {0x040b, 22}, {0x040c, 6},
+        {0x040d, 23}, {0x042b, 9}, {0x042c, 6}
+    };
+    for (unsigned policy = 0; policy < 2; policy++)
+        for (unsigned stage = 0; stage < 4; stage++)
+            for (unsigned i = 0; i < sizeof replies / sizeof *replies; i++) {
+                reset(); attrib_reset();
+                hci_t h = start();
+                own_ledger *l = bound(&h, (own_policy)policy);
+                own_peer peer = {.wire = {1,2,3,4,5,6}, .identity = {1,2,3,4,5,6}};
+                own_command c = {.opcode = 0x0405, .plen = 13,
+                    .peer = peer, .ack_by = 3000, .terminal_by = 5000};
+                own_ref parent, reply;
+                own_token token;
+                CHECK(own_reserve_link(l, &peer, &c.link) == OWN_OK);
+                memcpy(c.params, peer.wire, 6);
+                if (stage) {
+                    CHECK(own_prepare(l, &c, &parent) == OWN_OK);
+                    CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+                    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+                }
+                if (stage >= 2) {
+                    acknowledge(h, 0x0405, 1, 0);
+                    own_observe_connection(l, 0, 0, peer.wire, 0x41, 0, (uint64_t)clock_ms);
+                }
+                if (stage == 3) fence(h, l, 1);
+                c.opcode = (uint16_t)replies[i].op;
+                c.plen = (uint8_t)replies[i].plen;
+                int before = usb.commands;
+                own_result prepared = own_prepare(l, &c, &reply);
+                int allowed = stage == 3 && c.opcode != 0x040a;
+                own_submit_result sent = OWN_NOT_SENT;
+                if (prepared == OWN_OK &&
+                    own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK)
+                    sent = hci_usb_submit(&h, &token);
+                printf("PEER_REPLY policy=%u stage=%u opcode=%04x prepared=%d sent=%d commands=%d\n",
+                    policy, stage, c.opcode, prepared, sent, usb.commands - before);
+                CHECK(prepared == (allowed ? OWN_OK : OWN_NO_PROOF));
+                CHECK(sent == (allowed ? OWN_SENT : OWN_NOT_SENT));
+                CHECK(usb.commands == before + allowed);
+                closed_once(h); own_free(l);
+            }
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -1449,9 +1496,14 @@ int main(int argc, char **argv)
     int receipt_classifier = argc == 2 && !strcmp(argv[1], "--receipt-classifier");
     int credit_nop = argc == 2 && !strcmp(argv[1], "--credit-nop");
     int event_sweep = argc == 2 && !strcmp(argv[1], "--event-sweep");
+    int peer_reply = argc == 2 && !strcmp(argv[1], "--peer-reply");
     strict_mode = argc == 2 && !strcmp(argv[1], "--expected-failures");
     if (argc > 2 || (argc == 2 && !strict_mode && !acl_boundary &&
-                    !queued_connection && !receipt_classifier && !credit_nop && !event_sweep)) return 2;
+                    !queued_connection && !receipt_classifier && !credit_nop && !event_sweep && !peer_reply)) return 2;
+    if (peer_reply) {
+        test_peer_replies_require_an_acknowledged_leased_owner();
+        goto done;
+    }
     if (event_sweep) {
         test_unassociated_events_do_not_answer_commands();
         test_failed_le_event_ignored_fields_cannot_revoke_a_link();
@@ -1512,6 +1564,7 @@ int main(int argc, char **argv)
     test_unassociated_events_do_not_answer_commands();
     test_failed_le_event_ignored_fields_cannot_revoke_a_link();
     test_failed_classic_attempt_does_not_end_an_existing_link();
+    test_peer_replies_require_an_acknowledged_leased_owner();
 done:
     ph_clock_hook = NULL;
     printf("%d USB lifetime checks, %d failed; %d expected-failing cases\n", checks, failures, pending);

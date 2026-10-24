@@ -134,7 +134,9 @@ static void wipe(void *storage, size_t n)
 
 static int same_link(link_ref a, link_ref b)
 {
-    return a.attempt == b.attempt && a.generation == b.generation && a.slot == b.slot;
+    return a.attempt == b.attempt &&
+           (mutation("drop_link_generation") || a.generation == b.generation) &&
+           a.slot == b.slot;
 }
 
 static int same_peer(const own_peer *a, const own_peer *b)
@@ -337,6 +339,12 @@ static own_result target_valid(own_ledger *l, const own_command *c, const descri
     if (d->class == REPLY &&
         (!same_peer(&p->peer, &c->peer) || memcmp(c->params, p->peer.wire, 6) ||
          (c->opcode == 0x040a && p->state != RESERVED))) return OWN_NO_PROOF;
+    if (d->class == REPLY && !mutation("reply_without_owned_peer")) {
+        own_record *owner = record(l, p->owner);
+        if (!owner || owner->state != OWN_ACKNOWLEDGED || !owner->lease ||
+            !p->has_handle || (p->state != UP && p->state != READY))
+            return OWN_NO_PROOF;
+    }
     if (c->opcode == 0x0411 || c->opcode == 0x0413 || c->opcode == 0x2013 ||
         c->opcode == 0x2019 || c->opcode == 0x2026) {
         own_record *owner = record(l, p->owner);

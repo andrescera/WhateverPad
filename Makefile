@@ -212,7 +212,7 @@ ifeq ($(OWN_EXPLORE),1)
 OWN_TESTS += $(BUILD)/test_ownership_explore
 endif
 
-.PHONY: test-ownership check-mutations check-ownership sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
+.PHONY: test-ownership check-mutations check-ownership check-peer-reply-mutation check-link-generation-mutation sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
 test: test-ownership
 test-ownership: $(OWN_TESTS)
 	./$(BUILD)/test_ownership
@@ -248,7 +248,24 @@ $(BUILD)/test_session_policy: src/session.c tests/test_session_policy.c src/sess
 check-ownership:
 	sh tools/check-ownership.sh
 
-check-mutations: test-ownership
+$(BUILD)/mutation-reply_without_owned_peer: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c $(OWN_CORE) tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DOWN_MUTATION=reply_without_owned_peer -o $@ $(filter %.c %.o,$^)
+
+check-peer-reply-mutation: $(BUILD)/mutation-reply_without_owned_peer
+	@set -eu; status=0; $< --peer-reply > $(BUILD)/mutation-reply_without_owned_peer.log 2>&1 || status=$$?; \
+	  test "$$status" -eq 1; grep -q '^FAIL ' $(BUILD)/mutation-reply_without_owned_peer.log; \
+	  printf 'reply_without_owned_peer killed (exit %s)\n' "$$status"
+
+$(BUILD)/mutation-drop_link_generation: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c | $(BUILD)
+	cc $(filter-out -DWHATEVERPAD_ATTRIB_POLICY=%,$(HOST_CFLAGS)) -DWHATEVERPAD_ATTRIB_POLICY=OWN_POLICY_SINGLE_PRODUCER -DOWN_MUTATION=drop_link_generation -o $@ $^
+
+check-link-generation-mutation: $(BUILD)/mutation-drop_link_generation
+	@set -eu; status=0; $< --handle-reuse > $(BUILD)/mutation-drop_link_generation.log 2>&1 || status=$$?; \
+	  test "$$status" -eq 1; grep -Fq 'FAIL ' $(BUILD)/mutation-drop_link_generation.log; \
+	  grep -Fq '!own_link_current(host_ownership(h), other_generation)' $(BUILD)/mutation-drop_link_generation.log; \
+	  printf 'drop_link_generation killed in lost-terminal handle reuse (exit %s)\n' "$$status"
+
+check-mutations: test-ownership check-peer-reply-mutation check-link-generation-mutation
 	@set -eu; for id in ack_by_opcode ownership_on_sent resend_missing_ack deadline_is_teardown rearm_undo_duplicate readback_is_lease claims_after_callback deadline_only_idle expired_retry failed_http_deadline retry_without_cleanup; do \
 	  case $$id in \
 	    ack_by_opcode) test=test_ownership_explore;; \
@@ -275,6 +292,10 @@ test-integration-oracle: $(BUILD)/test_integration_gen $(BUILD)/test_integration
 	sh tests/test_integration_oracle.sh ./$(BUILD)/test_integration_gen ./$(BUILD)/test_integration_oracle
 test-integration: $(BUILD)/test_integration_gen test-integration-oracle
 	./$(BUILD)/test_integration_gen
+	$(MAKE) BUILD=$(BUILD)/single-producer WHATEVERPAD_ATTRIB_POLICY=OWN_POLICY_SINGLE_PRODUCER HOST_CFLAGS="$(filter-out -DWHATEVERPAD_ATTRIB_POLICY=%,$(HOST_CFLAGS)) -DWHATEVERPAD_ATTRIB_POLICY=OWN_POLICY_SINGLE_PRODUCER" $(BUILD)/single-producer/test_integration_gen
+	./$(BUILD)/single-producer/test_integration_gen
+	./$(BUILD)/test_integration_gen --seed 7
+	./$(BUILD)/single-producer/test_integration_gen --seed 7
 check-integration: $(BUILD)/test_integration_gen
 	./$(BUILD)/test_integration_gen --full
 check-integration-mutations: $(BUILD)/test_integration_gen test-integration-oracle

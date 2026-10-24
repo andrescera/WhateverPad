@@ -123,7 +123,7 @@ static int g_pending = -1;
 static long g_t_add, g_t_match;
 static int g_matches;
 static uint64_t g_match_dev;
-static int g_log_fd = -1, g_log_is_dev;
+static int g_log_fd = -1;
 static char g_line[LINE_MAX_LEN];
 static size_t g_line_len;
 
@@ -152,8 +152,7 @@ void notify(const char *fmt, ...)
  * server re-serves it to any number of clients on TCP 3232. So:
  *   - the server is used when there is one;
  *   - /dev/klog only when there is none, held just for the seconds of one
- *     identification, and every line read is copied into WhateverPad PS5's log so
- *     nothing taken from it is lost;
+ *     identification; raw lines are never forwarded because they can contain secrets;
  *   - if neither answers with the expected lines, nothing is bound. */
 
 static int log_source_open(void)
@@ -168,14 +167,12 @@ static int log_source_open(void)
         sin.sin_addr.s_addr = inet_addr("127.0.0.1");
         if (connect(fd, (struct sockaddr *)&sin, sizeof sin) == 0) {
             fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-            g_log_is_dev = 0;
             return fd;
         }
         close(fd);
     }
     fd = open("/dev/klog", O_RDONLY | O_NONBLOCK);
     if (fd >= 0) {
-        g_log_is_dev = 1;
         return fd;
     }
     log_line("vpad: no kernel log (no server on 3232, /dev/klog errno %d)", errno);
@@ -238,7 +235,6 @@ static void log_source_read(void)
             }
             g_line[g_line_len] = '\0';
             g_line_len = 0;
-            if (g_log_is_dev) log_line("klog: %s", g_line);  /* kept, not lost */
             dev = virtual_device_in(g_line);
             if (!dev || g_pending < 0) continue;
             if (g_matches == 0) {
@@ -312,9 +308,7 @@ static int32_t main_user(void)
     seen[5] = fore;
     if (memcmp(seen, logged, sizeof seen) != 0) {                /* log it when it changes */
         memcpy(logged, seen, sizeof seen);
-        log_line("users: initial %#x, foreground %#x, signed in %#x %#x %#x %#x%s%s", (unsigned)init,
-                 (unsigned)fore, (unsigned)login[0], (unsigned)login[1], (unsigned)login[2],
-                 (unsigned)login[3], want[0] ? ", bind_user=" : "", want);
+        log_line("users: signed-in selection changed");
     }
     return vpad_choose_user(login, init, fore, want);
 }
@@ -415,7 +409,7 @@ int vpad_init(void)
     if ((r = scePadSetProcessPrivilege(1)) != 0)
         log_line("vpad: scePadSetProcessPrivilege answered %#x, carrying on", (unsigned)r);
     g_user = main_user();
-    log_line("vpad: main user %#x", (unsigned)g_user);
+    log_line("vpad: main user %s", g_user == -1 ? "unavailable" : "selected");
     g_ready = 1;
     return 1;
 }
@@ -498,8 +492,8 @@ static void finish_identification(long now)
         return;
     }
     r = g_bind(v->dev, g_user);
-    log_line("slot %d: device %#llx bound to user %#x: %#x", slot, (unsigned long long)v->dev,
-             (unsigned)g_user, (unsigned)r);
+    log_line("slot %d: device %#llx bound to user: %#x", slot, (unsigned long long)v->dev,
+             (unsigned)r);
     if (r != 0) {
         scePadVirtualDeviceDeleteDevice(v->handle);     /* ours, identified */
         v->st = VP_FAILED;
@@ -616,14 +610,16 @@ static void ps_tick(long now)
 void vpad_remove(int slot)
 {
     vslot *v;
+    int32_t handle;
 
     if (slot < 0 || slot >= HOST_MAX_PADS) return;
     v = &g_slot[slot];
     switch (v->st) {
     case VP_READY:
-        scePadVirtualDeviceDeleteDevice(v->handle);
+        handle = v->handle;
+        memset(v, 0, sizeof *v);       /* claim removal before a vendor callback can reenter */
+        scePadVirtualDeviceDeleteDevice(handle);
         log_line("slot %d: virtual DualSense removed", slot);
-        memset(v, 0, sizeof *v);
         break;
     case VP_PENDING:
         v->remove_when_found = 1;       /* finish_identification deletes it */
@@ -657,7 +653,7 @@ static int32_t physical_handle(void)
         g_phys_retry_at = now_ms() + 5000;
         h = scePadOpen(g_user, 0, 0, NULL);
         if (h != g_open_logged) {                   /* only when the answer changes */
-            log_line("vpad: scePadOpen of the user's pad (user %#x): %#x", (unsigned)g_user, (unsigned)h);
+            log_line("vpad: scePadOpen of the user's pad: %#x", (unsigned)h);
             g_open_logged = h;
         }
         if (h >= 0) g_phys_ours = 1;

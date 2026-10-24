@@ -3,6 +3,7 @@
 #include "../src/crc32.h"
 #include "../src/host.h"
 #include "../src/host_int.h"
+#include "../src/log.h"
 #include "../src/util.h"
 
 #include <stdio.h>
@@ -1436,6 +1437,54 @@ static void test_discovery_regressions(void)
     }
 }
 
+static void test_diagnostics_do_not_expose_secrets(void)
+{
+    static const unsigned char address[] = {0x91,0xa2,0xb3,0xc4,0xd5,0xe6};
+    sim_pad p = {0};
+    memcpy(p.addr, address, sizeof address);
+    p.cod = 0x002508;
+    p.vid = 0x054c; p.pid = 0x05c4;
+    p.report_len = ds4_report(p.report);
+    p.eir[0] = 7; p.eir[1] = 0x1b;
+    memcpy(p.eir + 2, address, sizeof address);
+    p.eir_len = 8;
+    sim_t *sim = sim_new(&p);
+    unsigned long from = log_seq();
+    host_t *h = open_host(sim, &(seen){0});
+    CHECK(h != NULL);
+    if (h) {
+        unsigned char command[28] = {0}, event[23] = {0};
+        unsigned char reply[300];
+        int length, trace = g_tune.trace;
+        CHECK(host_pair(h, 30));
+        run(h, 1000);
+        memcpy(command, address, 6);
+        for (int i = 0; i < 16; i++) command[6 + i] = (unsigned char)(0xe0 + i);
+        host_raw_cmd(h, 0x040b, command, 22, reply, &length);
+        command[6] = 16;
+        host_raw_cmd(h, 0x040d, command, 23, reply, &length);
+        host_raw_cmd(h, 0x2019, command, 28, reply, &length);
+        CHECK(link_by_peer(h, address, 0, 0) || link_new(h, address, 0, 0));
+        memcpy(event, address, 6);
+        for (int i = 0; i < 16; i++) event[6 + i] = (unsigned char)(0xe0 + i);
+        g_tune.trace = 1;
+        sim_inject_event(sim, 0x18, event, sizeof event);
+        host_poll(h, 0);
+        g_tune.trace = trace;
+        host_close(h);
+    }
+    char captured[32768];
+    CHECK(log_since(from, captured, sizeof captured) > from);
+    static const char *const forbidden[] = {
+        "e0 e1 e2", "e1 e2 e3", "e0e1e2",
+        "91 a2 b3", "91:A2:B3", "E6:D5:C4", "e6 d5 c4",
+        "11:22:33", "66 55 44", "665544"
+    };
+    for (unsigned i = 0; i < sizeof forbidden / sizeof *forbidden; i++)
+        CHECK(strstr(captured, forbidden[i]) == NULL);
+    sim_free(sim);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 || (argc == 2 && strcmp(argv[1], "--reconnect") != 0)) {
@@ -1446,6 +1495,7 @@ int main(int argc, char **argv)
     if (argc == 2) {
         RUN_TEST(test_reconnect());
     } else {
+        RUN_TEST(test_diagnostics_do_not_expose_secrets());
         RUN_TEST(test_store_admission());
         RUN_TEST(test_discovery_regressions());
         RUN_TEST(test_sdp_parse());

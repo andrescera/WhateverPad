@@ -1092,6 +1092,12 @@ static void test_reused_handle_without_terminal_never_disconnects(void)
                     host_poll(h, 5);
                 CHECK(observed.connects == 1 && observed.states == inputs);
                 CHECK(quarantine_connections == 2 && quarantine_handles[0] == quarantine_handles[1]);
+                link_ref current = h->links[0].ref;
+                CHECK(own_link_retained(host_ownership(h), current));
+                link_ref other_generation = current;
+                other_generation.generation++;
+                CHECK(!own_link_current(host_ownership(h), other_generation));
+                CHECK(!own_link_retained(host_ownership(h), other_generation));
             }
             CHECK(quarantine_terminals == 0 && sim_disconnect_requests(sim) == 0);
             host_close(h);
@@ -1139,9 +1145,14 @@ int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
     int strict = argc == 2 && strcmp(argv[1], "--expected-failures") == 0;
-    if (argc > 2 || (argc == 2 && !strict)) return 2;
+    int handle_reuse = argc == 2 && strcmp(argv[1], "--handle-reuse") == 0;
+    if (argc > 2 || (argc == 2 && !strict && !handle_reuse)) return 2;
     strict_mode = strict;
     if (!mkdtemp(directory)) { perror("mkdtemp"); return 1; }
+    if (handle_reuse) {
+        test_reused_handle_without_terminal_never_disconnects();
+        goto done;
+    }
     test_consume_once_and_distinct_peers();
     test_classic_terminal_order();
     test_expected_current_native_request_does_not_release(0);
@@ -1166,6 +1177,7 @@ int main(int argc, char **argv)
     test_old_setting_ack_never_authorizes_replacement();
     test_reused_handle_without_terminal_never_disconnects();
     test_retained_completion_reply();
+done:
     clear_db();
     CHECK(rmdir(directory) == 0);
     ph_clock_hook = NULL;

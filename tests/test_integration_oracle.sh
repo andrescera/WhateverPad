@@ -56,6 +56,12 @@ if [ "$selection" = all ] || [ "$selection" = b1-tags ]; then
     echo 'ORACLE_REGRESSION b1-tags PASS seed=4 copies=2 eligible=0 unsafe-attribution-exit=1'
 fi
 
+if [ "$selection" = all ] || [ "$selection" = b1-order ]; then
+    run b1-order 1 none --seed 7 --b1-order-control
+    grep -q '^B1_ORDER_CONTROL violated=1 ' "$receipt"
+    echo 'ORACLE_REGRESSION b1-order PASS fault-exit=1'
+fi
+
 if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
     run strict-fixture-complete 1 none --strict-fixture complete
     grep -q '^STRICT expected=2 xfail=2 xpass=0$' "$receipt"
@@ -63,8 +69,8 @@ if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
     grep -q '^XPASS policy=fixture property=fixture-disappears todo=0$' "$receipt"
     grep -q '^STRICT expected=2 xfail=1 xpass=1$' "$receipt"
     run strict-ledger 1 none --expected-failures
-    grep -q '^STRICT expected=19 xfail=19 xpass=0$' "$receipt"
-    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 10
+    grep -q '^STRICT expected=10 xfail=10 xpass=0$' "$receipt"
+    test "$(grep -c '^SHRUNK ' "$receipt")" -eq 5
     awk '
       $1 == "PROPERTY" && $3 == "undelivered-retry-is-not-admitted" {
         if ($4 != "violations=0/500" || $7 != "PASS") exit 1
@@ -73,7 +79,7 @@ if [ "$selection" = all ] || [ "$selection" = strict-xpass ]; then
       END { if (passed != 2) exit 1 }
     ' "$receipt"
     grep -q '^INTEGRATION .* hard=0 xpass=0 ' "$receipt"
-    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=19'
+    echo 'ORACLE_REGRESSION strict-xpass PASS fixture-exit=2 baseline-exit=1 expected=10'
 fi
 
 if [ "$selection" = all ] || [ "$selection" = reassignment ]; then
