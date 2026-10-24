@@ -25,7 +25,7 @@ static struct {
     struct { int index, len; unsigned char data[HCI_PKT_MAX]; } done[128];
     int head, count, missing_completion;
     unsigned long fail_request;
-    int fail_index, stop_failures, virtual_waits;
+    int fail_index, stop_failures, virtual_waits, wait_budget;
     struct { const char *name; int index; } trace[2048];
     int ntrace;
     int empty_stream, empty_completions;
@@ -69,6 +69,7 @@ static void reset(void)
     memset(&usb, 0, sizeof usb);
     memset(&test_usb_receipts, 0, sizeof test_usb_receipts);
     usb.fail_index = -1;
+    usb.wait_budget = 2000;
     clock_ms = 1000;
     ph_clock_hook = clock_now;
 }
@@ -99,7 +100,7 @@ int test_usb_close(int fd)
 /* Every call is an advance of virtual time, never a wall-clock sleep. */
 int test_usb_usleep(useconds_t us)
 {
-    assert(++usb.virtual_waits <= 2000);
+    assert(++usb.virtual_waits <= usb.wait_budget);
     clock_ms += us / 1000 ? us / 1000 : 1;
     return 0;
 }

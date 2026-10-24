@@ -1,5 +1,6 @@
 #include "host_int.h"
 #include "attrib.h"
+#include "probe.h"
 #include "log.h"
 #include "util.h"
 
@@ -106,6 +107,10 @@ void host_flush(host_t *h)
     hci_submission submission = {.kind = HCI_SUBMIT_COMMAND, .token.command = &token};
     own_submit_result result = h->hci.ops->op_submit(h->hci.ctx, &submission);
     h->submitting = 0;
+#if WHATEVERPAD_PROBE
+    log_line("probe command_result attempts=%u submitted=%lu sent=%d mono_ms=%ld",
+             h->probe_commands, attrib_get()->submitted, result == OWN_SENT, now_ms());
+#endif
     if (result != OWN_SENT) {
         /* A backend refusal cannot be converted into another wire attempt. */
         own_fail(h->ownership, (uint64_t)now_ms(), 0);
@@ -118,9 +123,16 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
 {
     if (!host_admits(h) || !h->hci.ops->op_submit || op > 0xffff ||
         len < 0 || len > 255 || (len && !p)) return 0;
+#if WHATEVERPAD_PROBE
+    if (op != OP_READ_BUFFER_SIZE || h->probe_commands) return 0;
+    probe_deadline_ms = now_ms() + 1000;
+#endif
     own_command c = {.opcode = (uint16_t)op, .plen = (uint8_t)len,
                      .ack_by = (uint64_t)now_ms() + 2000,
                      .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
+#if WHATEVERPAD_PROBE
+    c.ack_by = (uint64_t)probe_deadline_ms;
+#endif
     if (len) memcpy(c.params, p, (size_t)len);
     if (original && original_len == len) {
         c.original_known = 1;
@@ -149,6 +161,11 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
     own_result prepared = own_prepare(h->ownership, &c, out);
     if (prepared == OWN_UNCHANGED) return 2;
     if (prepared != OWN_OK) return 0;
+#if WHATEVERPAD_PROBE
+    h->probe_commands++;
+    log_line("probe submission opcode=0x%04x attempts=%u mono_ms=%ld deadline_ms=%ld",
+             op, h->probe_commands, now_ms(), probe_deadline_ms);
+#endif
     h->commands[slot].ref = *out;
     h->commands[slot].link = c.link;
     h->commands[slot].opcode = op;
@@ -2092,7 +2109,7 @@ static void pump(host_t *h, int timeout_ms)
     }
     while ((n = h->hci.ops->next_acl(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
-        if (host_admits(h)) {
+        if (!WHATEVERPAD_PROBE && host_admits(h)) {
             h->dispatching++;
             on_acl(h, buf, n);
             h->dispatching--;
@@ -2493,13 +2510,29 @@ int host_forget_all(host_t *h)
 static int command_wait(host_t *h, own_ref ref)
 {
     long deadline = now_ms() + 2000;
+#if WHATEVERPAD_PROBE
+    deadline = probe_deadline_ms;
+#endif
     h->sync = ref;
     h->sync_done = h->sync_ok = 0;
     h->cc_op = 0;
     while (!h->sync_done && host_admits(h) && now_ms() < deadline) pump(h, 20);
     own_tick(h->ownership, (uint64_t)now_ms());
     int ok = h->sync_done && h->sync_ok && host_admits(h);
-    if (!h->sync_done && !h->diag_done && h->hci.ops->diag) {
+#if WHATEVERPAD_PROBE
+    if (!ok && now_ms() >= deadline) {
+        long tail_end = deadline + PROBE_TAIL_MS;
+        log_line("probe deadline mono_ms=%ld deadline_ms=%ld tail_end_ms=%ld submitted=%lu",
+                 now_ms(), deadline, tail_end, attrib_get()->submitted);
+        /* Observation cannot reopen admission or turn a quarantined ACK into success. */
+        while (!h->dead && now_ms() < tail_end)
+            pump(h, (int)(tail_end - now_ms() < 20 ? tail_end - now_ms() : 20));
+        log_line("probe tail_complete mono_ms=%ld submitted=%lu late=%lu",
+                 now_ms(), attrib_get()->submitted, attrib_get()->classes[ATTRIB_LATE]);
+    }
+#endif
+    if ((!h->sync_done || (WHATEVERPAD_PROBE && !ok)) &&
+        !h->diag_done && h->hci.ops->diag) {
         h->diag_done = 1;
         h->hci.ops->diag(h->hci.ctx);
     }
@@ -2590,7 +2623,8 @@ static int setup(host_t *h)
 
     h->reads_now = HOST_EV_READS;
     /* No setting or link can obtain a barrier before this capability check. */
-    if (!hci_sync(h, 0x1002, NULL, 0) || h->cc_len < 70 || !(h->cc[6 + 27] & 0x80)) {
+    if (!WHATEVERPAD_PROBE &&
+        (!hci_sync(h, 0x1002, NULL, 0) || h->cc_len < 70 || !(h->cc[6 + 27] & 0x80))) {
         log_line("controller: LE Rand unavailable; ownership barriers unsupported");
         return 0;
     }
@@ -2598,6 +2632,7 @@ static int setup(host_t *h)
     h->acl_mtu = le16(h->cc + 6);
     h->br.credits = h->br.max = (int)le16(h->cc + 9);
     log_line("controller: %d ACL buffers of %u bytes", h->br.max, h->acl_mtu);
+    if (WHATEVERPAD_PROBE) return 1; /* T8-v2: one query, then metadata only. */
 
     if (!g_tune.mask_conn) mask[0] = 0xFF;
     if (!hci_sync(h, OP_SET_EVENT_MASK, mask, 8)) return 0;
@@ -2637,6 +2672,9 @@ host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev)
     h->output = own_acl_new(h->ownership);
     if (!h->output) { own_free(h->ownership); free(h); return NULL; }
     h->hci = hci;
+#if WHATEVERPAD_PROBE
+    probe_deadline_ms = 0;
+#endif
     h->ambiguity_seen = ambiguities();
     if (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_NO_RESTORE)
         log_line("NO_RESTORE: changed radio settings stay as written; turn bridged controllers off to drop their radio links");
@@ -2673,6 +2711,7 @@ unsigned host_radio_left(const host_t *h)
 int host_start(host_t *h)
 {
     if (!h || !h->hci.ops->op_submit || !setup(h)) return 0;
+    if (WHATEVERPAD_PROBE) return own_activate(h->ownership); /* No store/IRK work. */
     memcpy(h->store.adapter.addr, h->bdaddr, 6);
     if (h->hci.ops->chip_vendor) h->store.adapter.vid = (uint16_t)h->hci.ops->chip_vendor(h->hci.ctx);
     if (h->hci.ops->chip_product) h->store.adapter.pid = (uint16_t)h->hci.ops->chip_product(h->hci.ctx);

@@ -35,6 +35,7 @@
 #include "hci_usb.h"
 #include "host.h"
 #include "attrib.h"
+#include "probe.h"
 #include "lock.h"
 #include "log.h"
 #include "netinfo.h"
@@ -234,7 +235,20 @@ static void bt_begin(void)
     g_bt_next = 0;
     g_bt_reason[0] = '\0';
     g_bt_state = WEB_BT_TRYING;
+#if WHATEVERPAD_PROBE
+    {
+        int ok = WHATEVERPAD_PROBE_ORIGINAL ? vpad_creds_restore() : vpad_creds_raise();
+        const char *mode = vpad_creds_mode();
+        log_line("probe credential requested=%s actual=%s checked=%d mono_ms=%ld",
+                 PROBE_CREDS, mode, ok, now_ms());
+        if (!ok || strcmp(mode, PROBE_CREDS)) {
+            g_bt_state = WEB_BT_FAILED;
+            snprintf(g_bt_reason, sizeof g_bt_reason, "Probe credentials not verified; USB not opened.");
+        }
+    }
+#else
     if (g_vpad_ok) vpad_creds_raise();
+#endif
 }
 
 /* One try. The controller may answer only to a process that does not carry
@@ -258,6 +272,12 @@ static void bt_try(long now)
             host_start(candidate)) {
             g_host = candidate;
             g_bt_state = WEB_BT_OK;
+#if WHATEVERPAD_PROBE
+            log_line("probe acquisition opens=%d submissions=%lu mono_ms=%ld result=ready",
+                     attempt, attrib_get()->submitted, now_ms());
+            notify("WhateverPad probe: one query answered; passive observation, Pair disabled.");
+            return;
+#endif
             log_line("Bluetooth ready after %d tr%s%s", attempt, attempt == 1 ? "y" : "ies",
                      g_bt_plain_creds ? ", answering only with the original credentials" : "");
             if (hci.ops->missing_reads && hci.ops->missing_reads(hci.ctx) > 0)
@@ -272,15 +292,26 @@ static void bt_try(long now)
         if (candidate) host_close(candidate);
         else hci.ops->close(hci.ctx);
     }
+#if WHATEVERPAD_PROBE
+    log_line("probe acquisition opens=%d submissions=%lu mono_ms=%ld result=failed",
+             attempt, attrib_get()->submitted, now_ms());
+#else
     log_line("Bluetooth not ready (try %d of %d)", attempt, OPEN_TRIES);
+#endif
     if (attempt >= (WHATEVERPAD_PROBE ? 1 : OPEN_TRIES)) {
         g_bt_state = WEB_BT_FAILED;
+#if WHATEVERPAD_PROBE
+        snprintf(g_bt_reason, sizeof g_bt_reason,
+                 "Probe acquisition failed: %d open, %lu submitted command(s), %s credentials. No retry or radio rollback.",
+                 attempt, attrib_get()->submitted, PROBE_CREDS);
+#else
         snprintf(g_bt_reason, sizeof g_bt_reason,
                  "El chip Bluetooth no responde (%d intentos, con y sin credenciales elevadas). "
                  "Detalle en el log, lineas 'diag'.%s", attempt,
                  hci_usb_chip_vendor() == 0x1286
                      ? " Este chip (Marvell/NXP) puede quedarse colgado tras un reinicio: apaga la consola del todo y vuelve a encenderla."
                      : "");
+#endif
         log_line("Bluetooth unavailable: %s", g_bt_reason);
         notify(TR("WhateverPad PS5: el Bluetooth no responde.\nSigo activo: abre el menu para ver el motivo", "WhateverPad PS5: Bluetooth does not answer.\nStill running: open the menu to see why"));
         return;
@@ -323,6 +354,9 @@ int main(void)
     char ip[16], url[64];
     const char *why = "stop requested";
     long last_power = 0, last_net = 0;
+#if WHATEVERPAD_PROBE
+    int probe_released = 0;
+#endif
 
     mkdir(STATE_DIR, 0755);
     log_open(LOG_PATH);
@@ -346,6 +380,8 @@ int main(void)
     log_line("session: pads are paired for this run only");
 #else
     log_line("probe: observation profile; bond file preserved, Pair disabled, no radio rollback");
+    log_line("probe profile=%s rules_version=%d creds=%s build=%s tail_ms=%d mono_ms=%ld",
+             PROBE_ID, ATTRIB_RULES_VERSION, PROBE_CREDS, WHATEVERPAD_BUILD_ID, PROBE_TAIL_MS, now_ms());
 #endif
     syscall(SYS_thr_set_name, -1, "whateverpad");    /* how others find us */
     signal(SIGTERM, on_signal);
@@ -359,6 +395,9 @@ int main(void)
     wc.host = &g_host;
     wc.stop = &g_web_stop;
     wc.retry = &g_retry;
+#if WHATEVERPAD_PROBE
+    wc.retry = NULL; /* Each credential variant requires a fresh launch. */
+#endif
     wc.bt_state = &g_bt_state;
     wc.bt_reason = g_bt_reason;
     wc.log_path = LOG_PATH;
@@ -384,12 +423,14 @@ int main(void)
     /* The entry in the media row that opens the menu in the browser. Done
      * before the credentials are raised for the pads, as Payload Manager does
      * it with its own; /data/whateverpad/no_icon skips it, remove_icon undoes it. */
+#if !WHATEVERPAD_PROBE
     if (access(RM_ICON_FLAG, F_OK) == 0) {
         apps_remove_launcher();
         unlink(RM_ICON_FLAG);
     } else if (access(NO_ICON_FLAG, F_OK) != 0) {
         apps_install_launcher();
     }
+#endif
 
     /* Without virtual pads there is nothing to connect controllers to:
      * Bluetooth is not touched at all, and the menu says why. */
@@ -410,6 +451,18 @@ int main(void)
         else usleep(4000);
         now = now_ms();
         web_poll(g_web);
+#if WHATEVERPAD_PROBE
+        if (g_bt_state == WEB_BT_FAILED) {
+            if (!probe_released) {
+                int ok = vpad_creds_restore();
+                log_line("probe release credentials_checked=%d actual=%s mono_ms=%ld",
+                         ok, vpad_creds_mode(), now_ms());
+                g_vpad_ok = 0;
+                probe_released = 1;
+            }
+            g_retry = 0;
+        }
+#endif
         if (g_vpad_ok) vpad_poll(now);
 
         /* The page follows the network, as Payload Manager's does: every 5 s the
@@ -436,6 +489,13 @@ int main(void)
                     log_line("web: could not serve the page again; will try in 5 s");
             }
         }
+
+#if WHATEVERPAD_PROBE
+        if (g_bt_state == WEB_BT_FAILED) {
+            check_flags(now);
+            continue; /* Only web serving and Stop remain, never pad/radio work. */
+        }
+#endif
 
         /* Rest mode on its way: leave cleanly before it, not after. */
         if (now - last_power >= 200) {

@@ -1,5 +1,6 @@
 #include "evstream.h"
 #include "attrib.h"
+#include "probe.h"
 #include "hci_usb.h"
 #include "log.h"
 #include "usb_desc.h"
@@ -92,11 +93,47 @@ typedef struct {
     int dd_ok;
     unsigned reads_done, reads_empty, status_hist[48];
     unsigned events_seen, acl_seen;
+#if WHATEVERPAD_PROBE
+    unsigned probe_opens, probe_empty_completes;
+    unsigned probe_event_completes[2], probe_acl_completes[2];
+#endif
     int sample_len[12], n_sample, last_cmd_len;
     int first_idx, first_len, first_frames;
 } usb_ctx;
 
 static usb_ctx g_ctx;
+
+#if WHATEVERPAD_PROBE
+/* Observe lifecycle ioctls without changing the command/token submission seam. */
+static int probe_ioctl(int fd, unsigned long request, void *arg)
+{
+    int r = ioctl(fd, request, arg), saved_errno = errno;
+    const char *op = NULL;
+    int index = -1, late = probe_deadline_ms && now_ms() >= probe_deadline_ms;
+
+    if (request == USB_FS_START) { op = "start"; index = ((struct usb_fs_start *)arg)->ep_index; }
+    if (request == USB_FS_STOP) { op = "stop"; index = ((struct usb_fs_stop *)arg)->ep_index; }
+    if (request == USB_FS_UNINIT) op = "uninit";
+    if (request == USB_FS_INIT) op = "init";
+    if (request == USB_FS_COMPLETE) {
+        op = "complete";
+        if (r == 0) {
+            index = ((struct usb_fs_complete *)arg)->ep_index;
+            if (index < N_EVENT_RD) g_ctx.probe_event_completes[late]++;
+            else if (index < X_ACL_OUT) g_ctx.probe_acl_completes[late]++;
+        } else if (saved_errno == EAGAIN && g_ctx.probe_empty_completes++) {
+            op = NULL; /* Aggregate ordinary empty polls; never flood away the receipt. */
+        }
+    }
+    if (op)
+        log_line("probe usb op=%s transfer=%d rc=%d errno=%d phase=%s mono_ms=%ld",
+                 op, index, r, r < 0 ? saved_errno : 0, late ? "late" : "before", now_ms());
+    errno = saved_errno;
+    return r;
+}
+#undef ioctl
+#define ioctl(fd, request, arg) probe_ioctl(fd, request, arg)
+#endif
 
 static void service(usb_ctx *c)
 {
@@ -377,7 +414,20 @@ static void keep_reads_pending(usb_ctx *c)
 {
     int i;
 
-    if (!accepts(c)) return;
+    if (!accepts(c)) {
+#if WHATEVERPAD_PROBE
+        own_summary s;
+        if (!c->ledger || c->fd < 0 || c->dead || !probe_deadline_ms ||
+            now_ms() < probe_deadline_ms ||
+            now_ms() > probe_deadline_ms + PROBE_TAIL_MS) return;
+        own_snapshot(c->ledger, &s);
+        /* Read-only tail after ambiguity; command commit still rejects every
+         * token, and backend receipts never regain sequenced provenance. */
+        if (s.runtime.reason != SESSION_AMBIGUOUS) return;
+#else
+        return;
+#endif
+    }
     if (now_ms() >= c->yield_until) topup_reads(c);
     for (i = 0; i < c->n_event && i < c->ev_want && now_ms() >= c->yield_until; i++)
         if (!c->busy[i]) xfer_start(c, i, c->ev_len);
@@ -671,7 +721,18 @@ static void op_close(void *ctx)
         memset(&un, 0, sizeof un);
         ioctl(c->fd, USB_FS_UNINIT, &un);
     }
+#if WHATEVERPAD_PROBE
+    {
+        int r = close(c->fd), saved_errno = errno;
+        log_line("probe close rc=%d errno=%d mono_ms=%ld node_opens=%u event_before=%u event_late=%u acl_before=%u acl_late=%u empty_completes=%u",
+                 r, r < 0 ? saved_errno : 0, now_ms(), c->probe_opens,
+                 c->probe_event_completes[0], c->probe_event_completes[1],
+                 c->probe_acl_completes[0], c->probe_acl_completes[1], c->probe_empty_completes);
+        errno = saved_errno;
+    }
+#else
     close(c->fd);
+#endif
     c->fd = -1;
     if (c->ledger) own_transport_closed(c->ledger, (uint64_t)now_ms());
     c->ledger = NULL;
@@ -805,6 +866,15 @@ static int open_node(usb_ctx *c, const char *path, int log_failure)
 {
     snprintf(c->node, sizeof c->node, "%s", path);
     c->fd = open(path, O_RDWR);
+#if WHATEVERPAD_PROBE
+    {
+        int saved_errno = errno;
+        log_line("probe open node=%s attempts=%u rc=%d errno=%d mono_ms=%ld",
+                 path, ++c->probe_opens, c->fd >= 0 ? 0 : -1,
+                 c->fd < 0 ? saved_errno : 0, now_ms());
+        errno = saved_errno;
+    }
+#endif
     if (c->fd < 0) {
         if (log_failure) log_line("usb: open %s: errno %d", path, errno);
         return 0;
@@ -865,6 +935,10 @@ int hci_usb_open(hci_t *out)
         if (!open_node(c, k_nodes[0], 1)) return 0;
         default_endpoints(c);
     }
+#if WHATEVERPAD_PROBE
+    log_line("probe selection function=%d interface=%d events=0x%02x acl_in=0x%02x acl_out=0x%02x",
+             c->n_functions ? 0 : -1, c->iface, c->ep_events, c->ep_acl_in, c->ep_acl_out);
+#endif
     if (c->dd_ok) log_chip(c);
     evstream_init(&c->es);
 

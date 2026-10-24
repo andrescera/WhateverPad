@@ -1,4 +1,5 @@
 #include "attrib.h"
+#include "probe.h"
 #include "log.h"
 #include "util.h"
 
@@ -268,6 +269,17 @@ enum attrib_class attrib_observe_receipt(const unsigned char *e, int len, long n
     }
     op = le16(e + (ev == 0x0e ? 3 : 4));
     if (!op && (ev == 0x0e || e[2] == 0)) return attrib_observe(e, len, now);
+#if WHATEVERPAD_PROBE
+    if (op == 0x1005 && probe_deadline_ms && now >= probe_deadline_ms &&
+        now <= probe_deadline_ms + PROBE_TAIL_MS) {
+        /* Probe-only diagnostics: NONE still reaches own_receive unchanged, so
+         * a late observation cannot grant authority or reopen admission. */
+        enum attrib_class kind = attrib_observe(e, len, now);
+        if (kind == ATTRIB_LATE)
+            log_line("probe arrival class=late event=0x%02x mono_ms=%ld", ev, now);
+        return kind;
+    }
+#endif
     attrib_poll(now);
     return record(ATTRIB_UNMATCHED, ev, op, e[ev == 0x0e ? 5 : 2],
                   e[ev == 0x0e ? 2 : 3], now);

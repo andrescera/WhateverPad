@@ -308,7 +308,11 @@ static int32_t main_user(void)
     seen[5] = fore;
     if (memcmp(seen, logged, sizeof seen) != 0) {                /* log it when it changes */
         memcpy(logged, seen, sizeof seen);
+#if WHATEVERPAD_PROBE
+        log_line("probe users changed=1");
+#else
         log_line("users: signed-in selection changed");
+#endif
     }
     return vpad_choose_user(login, init, fore, want);
 }
@@ -321,15 +325,41 @@ static uint8_t g_orig_caps[16];
 static int g_have_orig;
 static int g_raised;
 
+#if WHATEVERPAD_PROBE
+const char *vpad_creds_mode(void)
+{
+    uint8_t caps[16], raised[16];
+    uint64_t authid = kernel_get_ucred_authid(getpid());
+
+    if (kernel_get_ucred_caps(getpid(), caps) != 0) return "unknown";
+    if (g_have_orig && authid == g_orig_authid && !memcmp(caps, g_orig_caps, 16)) return "original";
+    memset(raised, 0xff, sizeof raised);
+    if (authid == 0x3800000000010003ull && !memcmp(caps, raised, 16)) return "raised";
+    return "unknown";
+}
+#endif
+
 /* Sets credentials and reads them back. Returns 0 if they did not stick. */
 static int set_creds(uint64_t authid, const uint8_t caps[16])
 {
     pid_t me = getpid();
     uint8_t now_caps[16];
 
+#if WHATEVERPAD_PROBE
+    int a = kernel_set_ucred_authid(me, authid);
+    int c = kernel_set_ucred_caps(me, caps);
+    int same_authid = kernel_get_ucred_authid(me) == authid;
+    int read_caps = kernel_get_ucred_caps(me, now_caps);
+    int ok = a == 0 && c == 0 && same_authid && read_caps == 0 && !memcmp(now_caps, caps, 16);
+    log_line("probe credential_change target=%s authid_rc=%d caps_rc=%d authid_match=%d caps_read_rc=%d checked=%d actual=%s mono_ms=%ld",
+             authid == g_orig_authid ? "original" : "raised", a, c, same_authid, read_caps, ok,
+             vpad_creds_mode(), now_ms());
+    return ok;
+#else
     return kernel_set_ucred_authid(me, authid) == 0 && kernel_set_ucred_caps(me, caps) == 0 &&
            kernel_get_ucred_authid(me) == authid && kernel_get_ucred_caps(me, now_caps) == 0 &&
            memcmp(now_caps, caps, 16) == 0;
+#endif
 }
 
 static int elevate(void)
@@ -360,6 +390,13 @@ static int elevate(void)
 
 int vpad_creds_restore(void)
 {
+#if WHATEVERPAD_PROBE
+    int ok = g_have_orig && set_creds(g_orig_authid, g_orig_caps);
+    if (ok) g_raised = 0;
+    log_line("probe credential_restore saved=%d checked=%d actual=%s mono_ms=%ld",
+             g_have_orig, ok, vpad_creds_mode(), now_ms());
+    return ok;
+#else
     if (!g_have_orig || !g_raised) return 1;
     if (!set_creds(g_orig_authid, g_orig_caps)) {
         log_line("vpad: could not put the original credentials back");
@@ -368,11 +405,16 @@ int vpad_creds_restore(void)
     g_raised = 0;
     log_line("vpad: original credentials restored");
     return 1;
+#endif
 }
 
 int vpad_creds_raise(void)
 {
+#if WHATEVERPAD_PROBE
+    return elevate(); /* Verify the actual credentials, not a cached flag. */
+#else
     return g_raised || elevate();
+#endif
 }
 
 int vpad_init(void)
@@ -409,7 +451,11 @@ int vpad_init(void)
     if ((r = scePadSetProcessPrivilege(1)) != 0)
         log_line("vpad: scePadSetProcessPrivilege answered %#x, carrying on", (unsigned)r);
     g_user = main_user();
+#if WHATEVERPAD_PROBE
+    log_line("probe vpad initialized=1");
+#else
     log_line("vpad: main user %s", g_user == -1 ? "unavailable" : "selected");
+#endif
     g_ready = 1;
     return 1;
 }

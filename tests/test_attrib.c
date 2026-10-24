@@ -5,6 +5,7 @@
 #undef test_usb_ioctl
 #undef main
 #include "../src/attrib.h"
+#include "../src/probe.h"
 #include "../src/host_int.h"
 #include "../src/log.h"
 #include "sim.h"
@@ -196,7 +197,7 @@ static int recording_cmd(void *ctx, unsigned op, const void *p, int n)
     return sim_model_command(ctx, op, p, n);
 }
 
-#if WHATEVERPAD_PROBE
+#if !WHATEVERPAD_PROBE
 static const unsigned probe_startup[] = {
     0x1002, 0x1005, 0x0c01, 0x2018, 0x0c55, 0x0c19, 0x0c1a, 0x2018,
     0x1009, 0x2001, 0x2018, 0x2002, 0x200b, 0x2018
@@ -257,6 +258,46 @@ static void observe_probe(void *ud, enum sim_observation kind, sim_origin origin
         t->required_parent = 0;
     }
 }
+
+static void test_ordinary_startup(void)
+{
+    sim_pad pad = { .mode = SIM_RECONNECT };
+    sim_t *s = sim_new(&pad);
+    probe_trace trace = {.startup = 1};
+    unsigned i;
+    unsigned char mask[8] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f};
+    unsigned char original = 0, scan = 2;
+    attrib_reset();
+    memset(commands, 0, sizeof commands);
+    ncommands = 0;
+    sim_output_hooks(s, recording_cmd, NULL);
+    sim_observe(s, observe_probe, &trace);
+    host_t *h = host_prepare(sim_hci(s), "build/attrib-absent.db", NULL);
+    CHECK(h != NULL);
+    sim_bind_ownership(s, host_ownership(h));
+    /* Exercise the original fourteen real setup effects without chip_report's
+     * extra read-only diagnostics; barriers still come solely from the ledger. */
+    CHECK(hci_sync(h, 0x1002, NULL, 0));
+    CHECK(hci_sync(h, 0x1005, NULL, 0));
+    CHECK(hci_sync(h, 0x0c01, mask, sizeof mask));
+    CHECK(hci_sync(h, 0x0c55, NULL, 0));
+    CHECK(hci_sync(h, 0x0c19, NULL, 0));
+    CHECK(host_setting(h, 0x0c1a, &scan, 1, &original, 1));
+    CHECK(hci_sync(h, 0x1009, NULL, 0));
+    le_setup(h);
+    host_poll(h, 0);
+    trace.startup = 0;
+    CHECK(trace.count == sizeof probe_startup / sizeof probe_startup[0] && ncommands == trace.count);
+    CHECK(!trace.pending && !trace.required_parent && trace.barriers == 4);
+    CHECK(attrib_get()->submitted == trace.count && !attrib_get()->unanswered && !attrib_get()->timeout);
+    for (i = 1; i <= trace.count; i++)
+        CHECK(trace.invocation[i].generated == 1 && trace.invocation[i].answered == 1);
+    host_close(h);
+    CHECK(trace.count == sizeof probe_startup / sizeof probe_startup[0] && !trace.pending);
+    CHECK(sim_resources(s).closes == 1);
+    sim_free(s);
+    puts("ORDINARY startup: 14 once-only invocations, 4 fresh required barriers");
+}
 #endif
 
 static void test_host_profile(void)
@@ -270,8 +311,6 @@ static void test_host_profile(void)
     unsigned i;
 #if WHATEVERPAD_PROBE
     int consumed;
-    probe_trace trace = {.startup = 1};
-    sim_observe(s, observe_probe, &trace);
 #endif
     static const unsigned char peer[6] = {1, 2, 0xaa, 0xbb, 0xcc, 0xdd};
     static const unsigned char linking_peer[6] = {9, 8, 7, 6, 5, 4};
@@ -290,12 +329,7 @@ static void test_host_profile(void)
     CHECK(h != NULL);
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
 #if WHATEVERPAD_PROBE
-    trace.startup = 0;
-    CHECK(trace.count == sizeof probe_startup / sizeof probe_startup[0] && ncommands == trace.count);
-    CHECK(!trace.pending && !trace.required_parent && trace.barriers == 4);
-    CHECK(attrib_get()->submitted == trace.count && !attrib_get()->unanswered && !attrib_get()->timeout);
-    for (i = 1; i <= trace.count; i++)
-        CHECK(trace.invocation[i].generated == 1 && trace.invocation[i].answered == 1);
+    CHECK(ncommands == 1 && commands[0x1005] == 1);
 #endif
     /* Exercise both trace sinks, even with an outstanding, unready link. */
     from = log_seq();
@@ -338,12 +372,11 @@ static void test_host_profile(void)
     CHECK(sim_foreign_commands(s) == 0 && sim_rejects(s) == 0);
     host_close(h);
     CHECK(ncommands == i); /* no guessed restores, readbacks, or Disconnect */
-    CHECK(trace.count == sizeof probe_startup / sizeof probe_startup[0] && !trace.pending);
     CHECK(!commands[0x0402] && !commands[0x0408] && !commands[0x200e] && !commands[0x0c03]);
     log_since(from, logs, sizeof logs);
     CHECK(strstr(logs, (const char *)secret) == NULL);
     CHECK(strstr(logs, "5a 51 5f 53 45 43 52 45 54 5f 37 33") == NULL);
-    puts("PROBE start/idle/Stop: 14 once-only invocations, 4 fresh required barriers, no idle/Stop submission");
+    puts("PROBE start/idle/Stop: one buffer query, no idle/Stop submission");
 #else
     (void)i;
     (void)from;
@@ -363,9 +396,9 @@ static void test_host_profile(void)
     sim_free(s);
 }
 
-static void test_probe_missing_answer(void)
+static void test_ordinary_missing_answer(void)
 {
-#if WHATEVERPAD_PROBE
+#if !WHATEVERPAD_PROBE
     sim_pad pad = {0};
     sim_t *s = sim_new(&pad);
     hci_t transport = sim_hci(s);
@@ -395,6 +428,63 @@ static void test_probe_missing_answer(void)
 #endif
 }
 
+static void test_probe_missing_answer(void)
+{
+#if WHATEVERPAD_PROBE
+    sim_pad pad = {0};
+    sim_t *s = sim_new(&pad);
+    attrib_reset();
+    memset(commands, 0, sizeof commands);
+    ncommands = 0;
+    sim_go_deaf(s);
+    sim_output_hooks(s, recording_cmd, NULL);
+    CHECK(sim_open_host(s, "build/attrib-absent.db", NULL) == NULL);
+    CHECK(ncommands == 1 && commands[0x1005] == 1);
+    CHECK(commands[0x1002] == 0 && attrib_get()->submitted == 1);
+    CHECK(attrib_get()->timeout == 1 && attrib_get()->unanswered == 1);
+    CHECK(sim_resources(s).closes == 1);
+    sim_free(s);
+#endif
+}
+
+static void test_probe_passive_tail(void)
+{
+#if WHATEVERPAD_PROBE
+    static const int arrivals[] = {1000, 1500, 6000, 6001, -1};
+    for (unsigned i = 0; i < sizeof arrivals / sizeof arrivals[0]; i++) {
+        sim_pad pad = {0};
+        sim_t *s = sim_new(&pad);
+        long begin = sim_now();
+        unsigned long from = log_seq();
+        attrib_reset();
+        memset(commands, 0, sizeof commands);
+        ncommands = 0;
+        sim_delay_events(s, 0x0e, 1, arrivals[i]);
+        sim_output_hooks(s, recording_cmd, NULL);
+        host_t *h = host_prepare(sim_hci(s), "build/attrib-absent.db", NULL);
+        CHECK(h != NULL);
+        sim_bind_ownership(s, host_ownership(h));
+        CHECK(!host_start(h));
+        CHECK(ncommands == 1 && commands[0x1005] == 1);
+        CHECK(attrib_get()->submitted == 1 && attrib_get()->timeout == 1);
+        CHECK(sim_now() - begin == 1000 + PROBE_TAIL_MS);
+        CHECK(attrib_get()->classes[ATTRIB_LATE] == (unsigned)(arrivals[i] >= 0 && arrivals[i] <= 6000));
+        CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0);
+        CHECK(attrib_get()->classes[ATTRIB_UNMATCHED] == 0);
+        CHECK(!host_admits(h) && !own_activate(host_ownership(h)));
+        CHECK(!hci_sync(h, 0x1005, NULL, 0) && ncommands == 1);
+        log_since(from, logs, sizeof logs);
+        CHECK(strstr(logs, "probe tail_complete") != NULL);
+        if (arrivals[i] >= 0 && arrivals[i] <= 6000)
+            CHECK(strstr(logs, "class=late") != NULL);
+        host_close(h);
+        CHECK(sim_resources(s).closes == 1);
+        sim_free(s);
+    }
+    puts("PROBE tail: deadline, late, tail boundary, after-tail and missing; exactly one command each");
+#endif
+}
+
 static void test_usb_secrets(void)
 {
     unsigned char ev[32] = {0x0e, 4 + sizeof secret, 1, 0x34, 0x12, 0};
@@ -420,6 +510,9 @@ static void test_usb_timeout_secrets(void)
     unsigned char ev[25] = {0x18, 23, 0x91, 0xa2, 0xb3, 0xc4, 0xd5, 0xe6};
     unsigned long from;
     reset();
+#if WHATEVERPAD_PROBE
+    usb.wait_budget = 1000 + PROBE_TAIL_MS;
+#endif
     attrib_reset();
     hci_t transport = start();
     host_t *h = host_prepare(transport, "build/attrib-absent.db", NULL);
@@ -429,8 +522,15 @@ static void test_usb_timeout_secrets(void)
     from = log_seq();
     completion(0, ev, sizeof ev);
     /* The USB transfer completes, but no HCI answer arrives: command_wait calls diag. */
-    CHECK(!hci_sync(h, 0x1002, NULL, 0));
-    CHECK(usb.commands == 1 && usb.last_opcode == 0x1002);
+    unsigned op = WHATEVERPAD_PROBE ? 0x1005 : 0x1002;
+    long begin = clock_ms;
+    CHECK(!hci_sync(h, op, NULL, 0));
+#if WHATEVERPAD_PROBE
+    CHECK(clock_ms - begin == 1000 + PROBE_TAIL_MS);
+#else
+    CHECK(clock_ms - begin == 2000);
+#endif
+    CHECK(usb.commands == 1 && usb.last_opcode == op);
     CHECK(attrib_get()->timeout == 1 && attrib_get()->unanswered == 1);
     CHECK(log_since(from, logs, sizeof logs) == log_seq());
     CHECK(strstr(logs, "diag:") != NULL);
@@ -440,6 +540,91 @@ static void test_usb_timeout_secrets(void)
     host_close(h);
     CHECK(usb.closes == 1 && !usb.fd_open && !usb.initialized);
     puts("ATTRIB USB timeout: real command timeout diagnostics contain no sentinel bytes");
+}
+
+#if WHATEVERPAD_PROBE
+typedef struct { long at; int delivered; } late_query;
+static void deliver_late_query(void *ud)
+{
+    late_query *q = ud;
+    static const unsigned char answer[] = {0x0e, 11, 1, 5, 0x10, 0, 64, 0, 0, 4, 0, 0, 0};
+    if (clock_ms < q->at || q->delivered) return;
+    q->delivered = 1;
+    completion(0, answer, sizeof answer);
+}
+#endif
+
+static void test_probe_usb_tail(void)
+{
+#if WHATEVERPAD_PROBE
+    reset();
+    usb.wait_budget = 1000 + PROBE_TAIL_MS; /* Exact new diagnostic duration, not a relaxed old USB case. */
+    attrib_reset();
+    hci_t transport = start();
+    host_t *h = host_prepare(transport, "build/attrib-absent.db", NULL);
+    CHECK(h != NULL);
+    late_query q = {.at = clock_ms + 1500};
+    CHECK(hci_usb_bind_ownership(&transport, host_ownership(h), deliver_late_query, &q));
+    long begin = clock_ms;
+    CHECK(!host_start(h));
+    CHECK(q.delivered && clock_ms == begin + 1000 + PROBE_TAIL_MS);
+    CHECK(usb.commands == 1 && usb.last_opcode == 0x1005);
+    CHECK(attrib_get()->submitted == 1 && attrib_get()->timeout == 1);
+    CHECK(attrib_get()->classes[ATTRIB_LATE] == 1 && attrib_get()->unanswered == 0);
+    CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0 &&
+          attrib_get()->classes[ATTRIB_UNMATCHED] == 0);
+    CHECK(test_usb_receipts.calls == 1 && test_usb_receipts.last == OWN_RECEIPT_NONE);
+    CHECK(!host_admits(h) && !own_activate(host_ownership(h)));
+    CHECK(!hci_sync(h, 0x1005, NULL, 0) && usb.commands == 1);
+    CHECK(usb.starts[0] >= 2); /* The late completion is rearmed for read-only observation. */
+    host_close(h);
+    CHECK(usb.closes == 1 && !usb.fd_open && !usb.initialized);
+    puts("PROBE real USB tail: one late diagnostic, no sequenced receipt or renewed authority");
+#endif
+}
+
+static void test_probe_usb_receipts(void)
+{
+#if WHATEVERPAD_PROBE
+    static const unsigned char ev[] = {0x0e, 4, 1, 5, 0x10, 0};
+    static const unsigned char acl[] = {0x41, 0x20, 1, 0, 0xaa};
+    unsigned char packet[32];
+    unsigned long from = log_seq();
+    hci_t h;
+    reset();
+    probe_deadline_ms = clock_ms + 1;
+    h = start();
+    completion(0, ev, sizeof ev);
+    completion(EVENTS, acl, sizeof acl);
+    CHECK(h.ops->pump(h.ctx, 0) == 1);
+    CHECK(h.ops->next_event(h.ctx, packet, sizeof packet) == sizeof ev);
+    CHECK(h.ops->next_acl(h.ctx, packet, sizeof packet) == sizeof acl);
+    CHECK(h.ops->pump(h.ctx, 0) == 0); /* Arm the next reads before completing them. */
+    clock_ms = probe_deadline_ms;
+    completion(0, ev, sizeof ev);
+    completion(EVENTS, acl, sizeof acl);
+    CHECK(h.ops->pump(h.ctx, 0) == 1);
+    usb.fail_request = USB_FS_STOP;
+    usb.fail_index = 1;
+    closed_once(h);
+    log_since(from, logs, sizeof logs);
+    CHECK(strstr(logs, "probe selection function=0 interface=0 events=0x81 acl_in=0x82 acl_out=0x02") != NULL);
+    CHECK(strstr(logs, "probe open node=/dev/ugen0.2 attempts=1 rc=0 errno=0 mono_ms=") != NULL);
+    CHECK(strstr(logs, "op=start transfer=0 rc=0 errno=0") != NULL);
+    CHECK(strstr(logs, "op=complete transfer=0 rc=0 errno=0 phase=before") != NULL);
+    CHECK(strstr(logs, "op=complete transfer=0 rc=0 errno=0 phase=late") != NULL);
+    CHECK(strstr(logs, "op=stop transfer=1 rc=-1 errno=5") != NULL);
+    CHECK(strstr(logs, "op=uninit transfer=-1 rc=0 errno=0") != NULL);
+    CHECK(strstr(logs, "probe close rc=0 errno=0 mono_ms=") != NULL);
+    CHECK(strstr(logs, "event_before=1 event_late=1 acl_before=1 acl_late=1") != NULL);
+    CHECK(strstr(logs, (const char *)secret) == NULL);
+    reset(); usb.reject_node = 1;
+    CHECK(!hci_usb_open(&h));
+    log_since(from, logs, sizeof logs);
+    CHECK(strstr(logs, "attempts=5 rc=-1 errno=6 mono_ms=") != NULL);
+    probe_deadline_ms = 0;
+    puts("PROBE USB receipts: selection, actual node attempts, operation results and deadline-split completion counts");
+#endif
 }
 
 static void test_receipt_provenance(void)
@@ -488,10 +673,17 @@ int main(void)
     test_multiset_and_capacity();
     test_requests();
     test_usb_overflow();
+#if !WHATEVERPAD_PROBE
+    test_ordinary_startup();
+#endif
+    test_ordinary_missing_answer();
     test_host_profile();
     test_probe_missing_answer();
     test_usb_timeout_secrets();
+    test_probe_passive_tail();
+    test_probe_usb_tail();
     test_usb_secrets();
+    test_probe_usb_receipts();
     test_receipt_provenance();
     test_credit_event_forms();
     ph_clock_hook = NULL;

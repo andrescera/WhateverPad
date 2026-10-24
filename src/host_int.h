@@ -6,6 +6,7 @@
 #include "host.h"
 #include "profiles.h"
 #include "bond_store.h"
+#include "attrib.h"
 
 #include <stdint.h>
 
@@ -258,6 +259,9 @@ struct host {
     own_ref dhkey, p256;
     int dispatching, submitting, sync_done, sync_ok;
     unsigned long ambiguity_seen;
+#if WHATEVERPAD_PROBE
+    unsigned probe_commands;
+#endif
     host_events ev;
     char db_path[256];
     char map_dir[256];
