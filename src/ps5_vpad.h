@@ -21,6 +21,7 @@
 #define PH_PS5_VPAD_H
 
 #include "pad.h"
+#include "attrib.h"
 
 /* Raises this process's credentials (checked), loads MBus and libScePad.
  * Returns 0 if any step fails; virtual pads then stay off. */
@@ -52,6 +53,10 @@ void    vpad_close_physical(void);      /* closes the pad WhateverPad PS5 opened
  * turns out not to answer while they are raised. Both check what they did. */
 int  vpad_creds_restore(void);
 int  vpad_creds_raise(void);
+#if WHATEVERPAD_PROBE
+/* Readback only; never prints credential values. */
+const char *vpad_creds_mode(void);
+#endif
 
 void notify(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 

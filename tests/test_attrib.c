@@ -5,6 +5,7 @@
 #undef test_usb_ioctl
 #undef main
 #include "../src/attrib.h"
+#include "../src/probe.h"
 #include "../src/host_int.h"
 #include "../src/log.h"
 #include "sim.h"
@@ -226,6 +227,9 @@ static void test_host_profile(void)
     h = host_open(transport, "build/attrib-preserved.db", NULL);
     CHECK(h != NULL);
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
+#if WHATEVERPAD_PROBE
+    CHECK(ncommands == 1 && commands[0x1005] == 1);
+#endif
     /* Exercise both trace sinks, even with an outstanding, unready link. */
     from = log_seq();
     CHECK(host_tune_set(h, "trace", 1));
@@ -313,6 +317,41 @@ static void test_probe_missing_answer(void)
 #endif
 }
 
+static void test_probe_passive_tail(void)
+{
+#if WHATEVERPAD_PROBE
+    static const int arrivals[] = {1000, 1500, 6000, 6001, -1};
+    for (unsigned i = 0; i < sizeof arrivals / sizeof arrivals[0]; i++) {
+        sim_pad pad = {0};
+        sim_t *s = sim_new(&pad);
+        hci_t transport = sim_hci(s);
+        hci_ops ops = *transport.ops;
+        long begin = sim_now();
+        unsigned long from = log_seq();
+        attrib_reset();
+        memset(commands, 0, sizeof commands);
+        ncommands = 0;
+        sim_delay_events(s, 0x0e, 1, arrivals[i]);
+        ops.cmd = recording_cmd;
+        transport.ops = &ops;
+        CHECK(host_open(transport, "build/attrib-absent.db", NULL) == NULL);
+        CHECK(ncommands == 1 && commands[0x1005] == 1);
+        CHECK(attrib_get()->submitted == 1 && attrib_get()->timeout == 1);
+        CHECK(sim_now() - begin == 1000 + PROBE_TAIL_MS);
+        CHECK(attrib_get()->classes[ATTRIB_LATE] == (unsigned)(arrivals[i] >= 0 && arrivals[i] <= 6000));
+        CHECK(attrib_get()->classes[ATTRIB_SOLICITED] == 0);
+        log_since(from, logs, sizeof logs);
+        CHECK(strstr(logs, "probe tail_complete") != NULL);
+        if (arrivals[i] >= 0 && arrivals[i] <= 6000)
+            CHECK(strstr(logs, "class=late") != NULL);
+        transport.ops->close(transport.ctx);
+        CHECK(sim_resources(s).closes == 1);
+        sim_free(s);
+    }
+    puts("PROBE tail: deadline, late, tail boundary, after-tail and missing; exactly one command each");
+#endif
+}
+
 static void test_usb_secrets(void)
 {
     unsigned char ev[32] = {0x0e, 4 + sizeof secret, 1, 0x34, 0x12, 0};
@@ -335,6 +374,50 @@ static void test_usb_secrets(void)
 #endif
     closed_once(h);
     puts("ATTRIB USB diagnostics: sentinel checked in probe log buffer");
+}
+
+static void test_probe_usb_receipts(void)
+{
+#if WHATEVERPAD_PROBE
+    static const unsigned char ev[] = {0x0e, 4, 1, 5, 0x10, 0};
+    static const unsigned char acl[] = {0x41, 0x20, 1, 0, 0xaa};
+    unsigned char packet[32];
+    unsigned long from = log_seq();
+    hci_t h;
+    reset();
+    probe_deadline_ms = clock_ms + 1;
+    h = start();
+    completion(0, ev, sizeof ev);
+    completion(EVENTS, acl, sizeof acl);
+    CHECK(h.ops->pump(h.ctx, 0) == 1);
+    CHECK(h.ops->next_event(h.ctx, packet, sizeof packet) == sizeof ev);
+    CHECK(h.ops->next_acl(h.ctx, packet, sizeof packet) == sizeof acl);
+    CHECK(h.ops->pump(h.ctx, 0) == 0); /* Arm the next reads before completing them. */
+    clock_ms = probe_deadline_ms;
+    completion(0, ev, sizeof ev);
+    completion(EVENTS, acl, sizeof acl);
+    CHECK(h.ops->pump(h.ctx, 0) == 1);
+    usb.fail_request = USB_FS_STOP;
+    usb.fail_index = 1;
+    closed_once(h);
+    log_since(from, logs, sizeof logs);
+    CHECK(strstr(logs, "probe selection function=0 interface=0 events=0x81 acl_in=0x82 acl_out=0x02") != NULL);
+    CHECK(strstr(logs, "probe open node=/dev/ugen0.2 attempts=1 rc=0 errno=0 mono_ms=") != NULL);
+    CHECK(strstr(logs, "op=start transfer=0 rc=0 errno=0") != NULL);
+    CHECK(strstr(logs, "op=complete transfer=0 rc=0 errno=0 phase=before") != NULL);
+    CHECK(strstr(logs, "op=complete transfer=0 rc=0 errno=0 phase=late") != NULL);
+    CHECK(strstr(logs, "op=stop transfer=1 rc=-1 errno=5") != NULL);
+    CHECK(strstr(logs, "op=uninit transfer=-1 rc=0 errno=0") != NULL);
+    CHECK(strstr(logs, "probe close rc=0 errno=0 mono_ms=") != NULL);
+    CHECK(strstr(logs, "event_before=1 event_late=1 acl_before=1 acl_late=1") != NULL);
+    CHECK(strstr(logs, (const char *)secret) == NULL);
+    reset(); usb.reject_node = 1;
+    CHECK(!hci_usb_open(&h));
+    log_since(from, logs, sizeof logs);
+    CHECK(strstr(logs, "attempts=5 rc=-1 errno=6 mono_ms=") != NULL);
+    probe_deadline_ms = 0;
+    puts("PROBE USB receipts: selection, actual node attempts, operation results and deadline-split completion counts");
+#endif
 }
 
 static void test_receipt_provenance(void)
@@ -385,7 +468,9 @@ int main(void)
     test_usb_overflow();
     test_host_profile();
     test_probe_missing_answer();
+    test_probe_passive_tail();
     test_usb_secrets();
+    test_probe_usb_receipts();
     test_receipt_provenance();
     test_credit_event_forms();
     ph_clock_hook = NULL;
