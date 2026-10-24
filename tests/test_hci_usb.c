@@ -810,7 +810,8 @@ static link_ref acquire_link(hci_t h, own_ledger *l, own_ref *ref)
     CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
     acknowledge(h, 0x0405, 1, 0);
     terminal.peer = peer;
-    own_terminal(l, *ref, &terminal, (uint64_t)clock_ms);
+    own_observe_connection(l, peer.le, peer.address_type, terminal.peer.wire,
+                           terminal.handle, terminal.status, (uint64_t)clock_ms);
     fence(h, l, 1);
     return link;
 }

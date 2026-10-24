@@ -343,7 +343,7 @@ void link_free(host_t *h, link_t *l)
     l->disconnecting = 1;
     if (announced && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, ref);
     if (!same_link(l->ref, ref)) return;
-    if (!own_link_current(h->ownership, ref) ||
+    if (!own_link_retained(h->ownership, ref) ||
         own_detach_link(h->ownership, ref) == OWN_OK) memset(l, 0, sizeof *l);
 }
 
@@ -1778,6 +1778,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             link_free(h, l);
             break;
         }
+        if (!own_link_current(h->ownership, l->ref)) break;
         l->connected = 1;
         l->handle = le16(ev + 3) & 0x0FFF;
         l->t_conn = now_ms();

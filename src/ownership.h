@@ -115,6 +115,7 @@ void own_submitted(own_ledger *, const own_token *, own_submit_result, uint64_t 
 own_provenance own_backend_receipt(own_ledger *, const own_ack *, uint64_t now,
                                   own_receipt *);
 void own_receive(own_ledger *, const own_receipt *, uint64_t now);
+/* Successful connections are backend-only; host terminals cannot grant a binding. */
 void own_terminal(own_ledger *, own_ref, const own_terminal_event *, uint64_t now);
 void own_setting_changed(own_ledger *, uint16_t opcode, uint64_t now);
 void own_readback(own_ledger *, uint16_t opcode, const uint8_t *, size_t);
@@ -123,6 +124,8 @@ int own_drain_allowed(const own_ledger *, uint64_t now, unsigned completed_in_ba
 
 own_result own_reserve_link(own_ledger *, const own_peer *, link_ref *);
 int own_link_current(const own_ledger *, link_ref);
+/* Local identity survives wire revocation until retirement obligations settle. */
+int own_link_retained(const own_ledger *, link_ref);
 /* Only a profile-accepted report may call this, with the actual wire handle. */
 own_result own_input(own_ledger *, link_ref, uint16_t handle, uint64_t now);
 own_result own_next_local(own_ledger *, uint64_t now, own_token *);
@@ -167,8 +170,8 @@ own_result own_commit_hci(own_ledger *, const own_token *, uint64_t now,
 /* Wire observation revokes an existing lease before any output can be committed. */
 void own_observe_disconnect(own_ledger *, uint16_t handle, uint64_t now);
 
-/* Retain a wire terminal for the current submitted Create/Accept generation
- * before queued dispatch; a later wire disconnect then remains a durable veto. */
+/* Backend-only: revoke conflicting bindings before matching a submitted
+ * Create/Accept. Retained pending terminals are subject to the same veto. */
 void own_observe_connection(own_ledger *, uint8_t le, uint8_t address_type,
                             const uint8_t address[6], uint16_t handle, uint8_t status,
                             uint64_t now);
