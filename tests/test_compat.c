@@ -18,26 +18,26 @@ typedef struct {
     pad_state last;
 } seen;
 
-static void on_connect(void *ud, int slot, const pad_info *info)
+static void on_connect(void *ud, link_ref ref, const pad_info *info)
 {
     seen *s = ud;
     s->connects++;
-    s->slot = slot;
+    s->slot = ref.slot;
     s->info = *info;
 }
 
-static void on_state(void *ud, int slot, const pad_state *st)
+static void on_state(void *ud, link_ref ref, const pad_state *st)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->states++;
     s->last = *st;
 }
 
-static void on_disconnect(void *ud, int slot)
+static void on_disconnect(void *ud, link_ref ref)
 {
     seen *s = ud;
-    (void)slot;
+    (void)ref;
     s->disconnects++;
 }
 
@@ -51,8 +51,9 @@ static void run(host_t *h, int ms)
 
 static host_t *open_host(sim_t *sim, seen *s)
 {
+    attrib_reset();
     host_events ev = { on_connect, on_state, on_disconnect, s, NULL };
-    return host_open(sim_hci(sim), DB, &ev);
+    return sim_open_host(sim, DB, &ev);
 }
 
 static void base_pad(sim_pad *p, uint16_t vid, uint16_t pid, uint32_t cod)

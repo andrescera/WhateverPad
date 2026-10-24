@@ -674,9 +674,10 @@ static unsigned request(const char *method, const char *path, int blocked)
     if (f.stop) release_now();
     return radio_left;
 }
-static void connected(void *ud, int slot, const pad_info *info)
+static void connected(void *ud, link_ref ref, const pad_info *info)
 {
     (void)ud; (void)info;
+    int slot = ref.slot;
     REQUIRE(slot >= 0 && slot < 4);
     f.connects++;
     invocation *r = &f.history[f.link_invocation];
@@ -686,17 +687,18 @@ static void connected(void *ud, int slot, const pad_info *info)
     if (++f.connected_invocation[f.link_invocation] > 1) violation(CALLBACK_ONCE);
     REQUIRE(vpad_add(slot));
 }
-static void input(void *ud, int slot, const pad_state *state)
+static void input(void *ud, link_ref ref, const pad_state *state)
 {
     (void)ud;
     if (f.foreign_handle || (f.handle_live && f.history[f.handle_owner].origin.foreign))
         f.foreign_inputs++;
     else if (f.handle_live) f.last_input = now_ms();
-    vpad_update(slot, state);
+    vpad_update(ref.slot, state);
 }
-static void disconnected(void *ud, int slot)
+static void disconnected(void *ud, link_ref ref)
 {
     (void)ud;
+    int slot = ref.slot;
     f.disconnects++;
     if (f.disconnects > f.connects) violation(CALLBACK_ONCE);
     unsigned invocation = f.slot_invocation[slot];
@@ -866,7 +868,13 @@ static void begin(unsigned seed)
         REQUIRE(bond_store_save(db, &store) == BOND_COMMITTED);
     }
     host_events ev = {connected, input, disconnected, NULL, NULL};
-    f.host = host_open(f.transport, db, &ev);
+    f.host = host_prepare(f.transport, db, &ev);
+    REQUIRE(f.host != NULL);
+    REQUIRE(hci_usb_bind_ownership(&f.transport, host_ownership(f.host), NULL, NULL));
+    if (!host_start(f.host)) {
+        host_close(f.host);
+        f.host = NULL;
+    }
     if (f.positive) REQUIRE(f.host != NULL);
     if (f.scenario == 15) REQUIRE(f.host && host_paired_count(f.host) == 16);
     f.bt = f.host ? WEB_BT_OK : WEB_BT_FAILED;

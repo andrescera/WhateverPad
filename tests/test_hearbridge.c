@@ -8,10 +8,10 @@
 #define EXPECT_BACKOFF 0
 #endif
 static long ready_at;
-static void ready(void *ud, int slot, const pad_info *info)
+static void ready(void *ud, link_ref ref, const pad_info *info)
 {
     ready_at = sim_now();
-    on_connect(ud, slot, info);
+    on_connect(ud, ref, info);
 }
 int main(void)
 {
@@ -40,7 +40,8 @@ int main(void)
         p.early_cfg = scenario == 1 || scenario == 2;
         p.no_cfg_repeat = scenario == 2;
         p.refuse_count = scenario == 3 ? 2 : scenario == 4 ? -1 : 0;
-        sim = sim_new(&p); h = host_open(sim_hci(sim), DB, &ev);
+        attrib_reset();
+        sim = sim_new(&p); h = sim_open_host(sim, DB, &ev);
         CHECK(h != NULL); if (!h) { sim_free(sim); fixture_cleanup(); return 1; }
         start = sim_now(); ready_at = 0;
         host_pair(h, 5);

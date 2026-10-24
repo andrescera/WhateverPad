@@ -193,7 +193,7 @@ static int recording_cmd(void *ctx, unsigned op, const void *p, int n)
 {
     commands[op]++;
     ncommands++;
-    return sim_hci(ctx).ops->cmd(ctx, op, p, n);
+    return sim_model_command(ctx, op, p, n);
 }
 
 static void test_host_profile(void)
@@ -201,7 +201,6 @@ static void test_host_profile(void)
     sim_pad pad = { .mode = SIM_RECONNECT };
     sim_t *s = sim_new(&pad);
     hci_t transport = sim_hci(s);
-    hci_ops ops = *transport.ops;
     host_t *h;
     FILE *bond;
     unsigned long from;
@@ -215,21 +214,20 @@ static void test_host_profile(void)
     attrib_reset();
     memset(commands, 0, sizeof commands);
     ncommands = 0;
-    ops.cmd = recording_cmd;
-    transport.ops = &ops;
+    sim_output_hooks(s, recording_cmd, NULL);
     bond = fopen("build/attrib-preserved.db", "wb");
     CHECK(bond != NULL);
     if (bond) {
         CHECK(fwrite("keep", 1, 4, bond) == 4);
         CHECK(fclose(bond) == 0);
     }
-    h = host_open(transport, "build/attrib-preserved.db", NULL);
+    h = sim_open_host(s, "build/attrib-preserved.db", NULL);
     CHECK(h != NULL);
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
     /* Exercise both trace sinks, even with an outstanding, unready link. */
     from = log_seq();
     CHECK(host_tune_set(h, "trace", 1));
-    CHECK(link_new(h, linking_peer) != NULL);
+    CHECK(link_new(h, linking_peer, 0, 0) != NULL);
     memcpy(cc + 4, secret, sizeof secret);
     memcpy(cs + 4, secret, sizeof secret);
     sim_inject_event(s, 0x0e, cc, 4 + sizeof secret);
@@ -297,17 +295,20 @@ static void test_probe_missing_answer(void)
     sim_pad pad = {0};
     sim_t *s = sim_new(&pad);
     hci_t transport = sim_hci(s);
-    hci_ops ops = *transport.ops;
+    host_t *h;
     attrib_reset();
     memset(commands, 0, sizeof commands);
     ncommands = 0;
     sim_go_deaf(s);
-    ops.cmd = recording_cmd;
-    transport.ops = &ops;
-    CHECK(host_open(transport, "build/attrib-absent.db", NULL) == NULL);
+    sim_output_hooks(s, recording_cmd, NULL);
+    h = host_prepare(transport, "build/attrib-absent.db", NULL);
+    CHECK(h != NULL);
+    if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
+    sim_bind_ownership(s, host_ownership(h));
+    CHECK(!host_start(h));
     CHECK(ncommands == 1 && commands[0x1005] == 1);
     CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
-    transport.ops->close(transport.ctx); /* startup transport ownership is todo 15 */
+    host_close(h); /* the caller retires the prepared host after failed startup */
     sim_free(s);
     puts("PROBE missing answer: one submission, one timeout, no retransmission");
 #endif
