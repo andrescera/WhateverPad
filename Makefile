@@ -236,7 +236,7 @@ OWN_EXPLORE ?= 1
 OWN_EXPLORE_WORKERS ?= 4
 OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_session_policy
 ifeq ($(OWN_EXPLORE),1)
-OWN_TESTS += $(BUILD)/test_ownership_explore
+OWN_TESTS += $(BUILD)/test_ownership_explore $(BUILD)/test_explorer_key_storage
 endif
 
 .PHONY: test-ownership check-mutations check-ownership check-peer-reply-mutation check-link-generation-mutation sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
@@ -244,6 +244,7 @@ test: test-ownership
 test-ownership: $(OWN_TESTS)
 	./$(BUILD)/test_ownership
 ifeq ($(OWN_EXPLORE),1)
+	./$(BUILD)/test_explorer_key_storage
 	./$(BUILD)/test_ownership_explore
 endif
 	./$(BUILD)/test_session_policy
@@ -251,7 +252,8 @@ endif
 sanitize-ownership:
 	$(MAKE) test-ownership BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
-test-ownership-case: $(BUILD)/test_ownership_explore
+test-ownership-case: $(BUILD)/test_ownership_explore $(BUILD)/test_explorer_key_storage
+	@./$(BUILD)/test_explorer_key_storage >&2
 	@./$(BUILD)/test_ownership_explore --policy "$(POLICY)" --case "$(CASE)"
 
 sanitize-ownership-case:
