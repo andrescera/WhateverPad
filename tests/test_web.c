@@ -70,12 +70,11 @@ static int fake_physical(uint32_t *buttons, int *err)
 
 static int g_ps_calls, g_ps_slot = -1, g_ps_result = 1;
 static int wire_commands;
-static int (*real_command)(void *, unsigned, const void *, int);
 
 static int count_command(void *ctx, unsigned opcode, const void *params, int len)
 {
     wire_commands++;
-    return real_command(ctx, opcode, params, len);
+    return sim_model_command(ctx, opcode, params, len);
 }
 
 static int fake_press_ps(int slot)
@@ -215,10 +214,16 @@ static void test_failed_startup_reports_after_cleanup_deadline(void)
         .session = &policy, .service = lifecycle_service, .ud = &l, .retry_lock = retry_lock};
     unlink("build/test_web_failed.db");
     sim_go_deaf(sim);
-    g_host = host_open(io, "build/test_web_failed.db", NULL);
+    attrib_reset();
+    host_t *candidate = host_prepare(io, "build/test_web_failed.db", NULL);
+    CHECK(candidate != NULL);
+    if (!candidate) { io.ops->close(io.ctx); sim_free(sim); return; }
+    sim_bind_ownership(sim, host_ownership(candidate));
+    g_host = host_start(candidate) ? candidate : NULL;
     CHECK(!g_host);
     EFFECT(15, "failed-startup-transport-cleanup", sim_resources(sim).closes == 1);
-    io.ops->close(io.ctx); /* M's caller must finish the failed attempt. */
+    host_close(candidate); /* M's caller must finish the failed attempt. */
+    g_host = NULL;
     CHECK(sim_resources(sim).closes == 1);
     session_fail(&policy, (uint64_t)sim_now(), 1);
     session_cleanup_done(&policy);
@@ -407,8 +412,7 @@ static void test_routes_reply_completely_in_available_states(void)
         sim_pad pad = {0};
         sim_t *sim = sim_new(&pad);
         hci_t io = sim_hci(sim);
-        hci_ops ops = *io.ops;
-        real_command = ops.cmd; ops.cmd = count_command; io.ops = &ops;
+        sim_output_hooks(sim, count_command, NULL);
         volatile int stop = 0;
         session_t policy;
         session_init(&policy);
@@ -424,7 +428,8 @@ static void test_routes_reply_completely_in_available_states(void)
             .bt_state = &g_bt_state, .version = "matrix", .press_ps = fake_press_ps,
             .log_path = "build/test_web.log", .ps_combo_set = matrix_combo_set,
             .session = &policy, .service = lifecycle_service, .ud = &l, .retry_lock = retry_lock};
-        g_host = state == 1 ? host_open(io, "build/test_web_matrix.db", NULL) : NULL;
+        attrib_reset();
+        g_host = state == 1 ? sim_open_host(sim, "build/test_web_matrix.db", NULL) : NULL;
         if (state == 1) CHECK(g_host != NULL);
         g_bt_state = state == 0 ? WEB_BT_TRYING : state == 1 ? WEB_BT_OK : WEB_BT_FAILED;
         g_web = web_start(&cfg, PORT); CHECK(g_web != NULL);
@@ -648,7 +653,8 @@ static void test_raw_wait_only_queues_other_mutations(void)
     volatile int stop = 0;
     web_cfg cfg = {.host = &g_host, .session = &policy, .stop = &stop,
         .press_ps = fake_press_ps};
-    g_host = host_open(io, "build/test_web_nested.db", &events);
+    attrib_reset();
+    g_host = sim_open_host(sim, "build/test_web_nested.db", &events);
     CHECK(g_host != NULL);
     g_web = web_start(&cfg, PORT); CHECK(g_web != NULL);
     if (g_host && g_web) {
@@ -801,7 +807,8 @@ int main(int argc, char **argv)
         /* As on the console: the host serves the page while it waits for the chip. */
         static host_events ev;
         ev.idle = web_idle;
-        g_host = host_open(sim_hci(sim), "build/test_web.db", &ev);
+        attrib_reset();
+        g_host = sim_open_host(sim, "build/test_web.db", &ev);
     }
     memset(&wc, 0, sizeof wc);
     wc.host = &g_host;

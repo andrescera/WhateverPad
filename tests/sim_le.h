@@ -5,7 +5,7 @@
 #ifndef PH_SIM_LE_H
 #define PH_SIM_LE_H
 
-#include "../src/hci.h"
+#include "../src/host.h"
 #include "sim_lifetime.h"
 
 #include <stdint.h>
@@ -40,6 +40,14 @@ typedef struct {
 sim_le_t *sim_le_new(const sim_le_pad *pad);
 void      sim_le_free(sim_le_t *s);
 hci_t     sim_le_hci(sim_le_t *s);
+void sim_le_output_hooks(sim_le_t *, int (*)(void *, unsigned, const void *, int),
+                          int (*)(void *, const unsigned char *, int));
+int sim_le_model_command(void *, unsigned, const void *, int);
+int sim_le_model_acl(void *, const unsigned char *, int);
+unsigned sim_le_handle(const sim_le_t *);
+void sim_le_set_next_handle(sim_le_t *, unsigned);
+void      sim_le_bind_ownership(sim_le_t *s, own_ledger *ledger);
+host_t   *sim_le_open_host(sim_le_t *s, const char *db, const host_events *events);
 long      sim_le_now(void);
 
 void sim_le_power_off(sim_le_t *s);     /* drops the link, stops advertising */

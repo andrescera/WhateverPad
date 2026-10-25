@@ -42,7 +42,7 @@ enum action {
     STOP, REST, NATIVE, FAILURE, CLOSE, RETRY, TIMEOUT,
     CUTOFF_MINUS_ONE, CUTOFF, DEADLINE, OVERFLOW, MALFORMED, WRONG_EVENT,
     FOREIGN_WRITE, READBACK, REUSED_HANDLE, OLD_DISCONNECT, READBACK_FOREIGN,
-    OLD_REFUSAL, DISCONNECT_FAILURE, ACTIONS
+    OLD_REFUSAL, DISCONNECT_FAILURE, FOREIGN_CONNECTION, ACTIONS
 };
 static const char *const action_names[] = {
     "prepare-old", "prepare-new", "send", "not-sent", "uncertain", "hold-token", "commit-held",
@@ -52,7 +52,7 @@ static const char *const action_names[] = {
     "own-identity", "unproven-identity", "Stop", "rest", "native", "failure", "close",
     "Retry", "timeout", "cutoff-1", "cutoff", "deadline+1", "overflow", "malformed",
     "wrong-event", "foreign-write", "equal-readback", "reused-handle", "old-disconnect",
-    "foreign-value-readback", "old-refusal", "disconnect-failure"
+    "foreign-value-readback", "old-refusal", "disconnect-failure", "foreign-connection"
 };
 
 /* Fixed-width oracle state, serialized separately from the production key.
@@ -64,8 +64,8 @@ enum {
     ACCEPTED = LINK_SLOT + 2, CONFIRMED = ACCEPTED + 4,
     TERMINALS = CONFIRMED + 4, SENDS = TERMINALS + 4, HANDLES = SENDS + 4,
     ORIGINAL_VALUE = HANDLES + 4, UNDOS = ORIGINAL_VALUE + 4,
-    UNDO_TERMINALS = UNDOS + 4,
-    CONNECTS = UNDO_TERMINALS + 4, RETIRES = CONNECTS + 2, DELETES = RETIRES + 2,
+    UNDO_TERMINALS = UNDOS + 4, BINDING_REVOKED = UNDO_TERMINALS + 4,
+    CONNECTS = BINDING_REVOKED + 4, RETIRES = CONNECTS + 2, DELETES = RETIRES + 2,
     ADDS = DELETES + 2, IDENTIFIED = ADDS + 2, BOUND = IDENTIFIED + 2,
     INPUT_SEEN = BOUND + 2, LAST_INPUT = INPUT_SEEN + 2, LIVE = LAST_INPUT + 2,
     PENDING_I = LIVE + 2, PENDING_PHASE, PENDING_OP, PENDING_EVENT,
@@ -206,7 +206,8 @@ static const char *effect(world *w, enum scenario s, const own_effect *e,
                 (w->o[TERMINALS+i] != 1 || g < 0 || !w->o[INPUT_SEEN+g] ||
                  w->o[NOW] < w->o[LAST_INPUT+g] ||
                  w->o[NOW] - w->o[LAST_INPUT+g] > OWN_FRESH_MS ||
-                 e->handle != w->o[HANDLES+i])) return "I10: unowned/stale handle";
+                 e->handle != w->o[HANDLES+i] || w->o[BINDING_REVOKED+i]))
+                return "I10: unowned/stale handle";
             if (snapshot.runtime.cleanup_pending &&
                 w->o[NOW] >= snapshot.runtime.deadline - SESSION_RESERVE_MS)
                 return "I11: undo after work cutoff";
@@ -245,6 +246,10 @@ static const char *effect(world *w, enum scenario s, const own_effect *e,
     if ((e->kind == OWN_EFFECT_CONNECT || e->kind == OWN_EFFECT_ADD ||
          e->kind == OWN_EFFECT_BIND || e->kind == OWN_EFFECT_INPUT) && !active)
         return "I3: normal local effect after latch";
+    unsigned owner = is_create(s) ? (unsigned)g : (unsigned)g + 2;
+    if ((e->kind == OWN_EFFECT_CONNECT || e->kind == OWN_EFFECT_ADD ||
+         e->kind == OWN_EFFECT_BIND || e->kind == OWN_EFFECT_INPUT) &&
+        w->o[BINDING_REVOKED+owner]) return "I10: local effect from revoked acquisition";
     switch (e->kind) {
     case OWN_EFFECT_CONNECT:
         if (++w->o[CONNECTS+g] > 1) return "I8: repeated connect";
@@ -430,7 +435,22 @@ static int apply(world *w, enum scenario s, enum action action, const char **err
         w->o[HANDLES+i] = term.handle;
         w->o[TERMINALS+i] = action == TERMINAL_FAIL ? 2 : 1;
         if (is_create(s) && action != TERMINAL_FAIL) w->o[LIVE+i] = 1;
-        own_terminal(w->l, ref_at(w, (unsigned)i), &term, now);
+        if (is_create(s) && !term.status)
+            own_observe_connection(w->l, term.peer.le, term.peer.address_type,
+                                   term.peer.wire, term.handle, term.status, now);
+        else own_terminal(w->l, ref_at(w, (unsigned)i), &term, now);
+        return 1;
+    }
+    if (action == FOREIGN_CONNECTION) {
+        if (!is_create(s) && s != VIRTUAL && s != AUTH && s != ENCRYPT && s != DHKEY)
+            return 0;
+        unsigned owner = is_create(s) ? 0 : 2;
+        if (w->o[TERMINALS+owner] != 1 || w->o[BINDING_REVOKED+owner]) return 0;
+        own_peer foreign = peer(9, s == LE_CREATE);
+        own_observe_connection(w->l, foreign.le, foreign.address_type, foreign.wire,
+                               (uint16_t)w->o[HANDLES+owner], 0, now);
+        w->o[BINDING_REVOKED+owner] = 1;
+        w->o[LIVE] = 0;
         return 1;
     }
     if (action == INPUT || action == OLD_INPUT || action == DISCONNECT ||
@@ -446,7 +466,8 @@ static int apply(world *w, enum scenario s, enum action action, const char **err
         if (action == INPUT || action == OLD_INPUT) {
             if (own_input(w->l, link, handle, now) != OWN_OK) return 0;
             if (!w->o[ACCEPTED+owner] || !w->o[CONFIRMED+owner] ||
-                w->o[TERMINALS+owner] != 1) *error = "I5: usable input from unowned link";
+                w->o[TERMINALS+owner] != 1 || w->o[BINDING_REVOKED+owner])
+                *error = "I5: usable input from unowned link";
             unsigned other = owner == 0 ? 1 : owner == 1 ? 0 : owner == 2 ? 3 : 2;
             if (w->o[CONFIRMED+other] && w->o[TERMINALS+other] == 1 &&
                 w->o[HANDLES+other] == handle) *error = "I10: reused handle became usable";
@@ -584,7 +605,7 @@ static world initial(own_policy policy, enum scenario s)
         REQUIRE(wire(&w, 0x2018, OWN_CC, 0, 8, ++w.o[RAND_COUNTER], 0, 0) == OWN_RECEIPT_SEQUENCED);
         own_terminal_event term = { .kind = OWN_TERM_CONNECTION, .peer = p,
                                    .handle = (uint16_t)(40+g) };
-        own_terminal(w.l, ref, &term, 0);
+        own_observe_connection(w.l, p.le, p.address_type, p.wire, term.handle, 0, 0);
         own_ledger *probe = own_clone(w.l);
         REQUIRE(probe != NULL);
         REQUIRE(own_input(probe, link, term.handle, 0) == OWN_OK);
@@ -599,18 +620,57 @@ static world initial(own_policy policy, enum scenario s)
     return w;
 }
 
-static size_t key_of(const world *w, uint8_t out[KEY_MAX])
+/* Lossless storage: six frequent bytes, zero runs, and an escape for every
+ * other byte. The original length disambiguates final-byte padding. */
+static size_t pack_key(const uint8_t *key, size_t n, uint8_t out[2 * KEY_MAX])
 {
-    size_t n = own_canonical(w->l, out, KEY_MAX);
+    size_t used = 2;
+    out[0] = (uint8_t)n; out[1] = (uint8_t)(n >> 8);
+    uint32_t pending = 0;
+    unsigned bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned run = 1, code, width = 3;
+        if (!key[i])
+            while (run < 255 && i + run < n && !key[i + run]) run++;
+        if (run >= 4) {
+            code = (6u << 8) | run;
+            width = 11;
+            i += run - 1;
+        } else {
+            switch (key[i]) {
+            case 0: code = 0; break;
+            case 1: code = 1; break;
+            case 2: code = 2; break;
+            case 16: code = 3; break;
+            case 128: code = 4; break;
+            case 129: code = 5; break;
+            default: code = (7u << 8) | key[i]; width = 11; break;
+            }
+        }
+        pending = (pending << width) | code;
+        bits += width;
+        while (bits >= 8) {
+            bits -= 8;
+            out[used++] = (uint8_t)(pending >> bits);
+        }
+    }
+    if (bits) out[used++] = (uint8_t)(pending << (8 - bits));
+    return used;
+}
+
+static size_t key_of(const world *w, uint8_t out[2 * KEY_MAX])
+{
+    uint8_t key[KEY_MAX];
+    size_t n = own_canonical(w->l, key, KEY_MAX);
     if (n + 10*O_COUNT + sizeof w->held > KEY_MAX) {
         fputs("canonical key exceeds bound\n", stderr); exit(2);
     }
     for (unsigned i = 0; i < O_COUNT; i++) {
         uint64_t v = w->o[i];
-        do { out[n++] = (uint8_t)(v & 127) | (v > 127 ? 128 : 0); v >>= 7; } while (v);
+        do { key[n++] = (uint8_t)(v & 127) | (v > 127 ? 128 : 0); v >>= 7; } while (v);
     }
-    if (w->o[HELD]) { memcpy(out+n, &w->held, sizeof w->held); n += sizeof w->held; }
-    return n;
+    if (w->o[HELD]) { memcpy(key+n, &w->held, sizeof w->held); n += sizeof w->held; }
+    return pack_key(key, n, out);
 }
 
 /* These are the same oracle-only early returns in apply(), before any production
@@ -667,7 +727,7 @@ static void rehash(search *q)
 }
 static void insert(search *q, const world *w, const node *parent, unsigned action)
 {
-    uint8_t key[KEY_MAX];
+    uint8_t key[2 * KEY_MAX];
     size_t n = key_of(w, key);
     uint64_t hash = hash_key(key, n);
     if (!q->slot_capacity || q->count * 2 >= q->slot_capacity) rehash(q);
@@ -736,7 +796,7 @@ static size_t explore(own_policy policy, enum scenario s, int *saw_g, int *saw_h
         for (unsigned k = 0; k < current.depth; k++) {
             if (!apply(&base, s, (enum action)current.path[k], &error) || error) exit(2);
         }
-        uint8_t replay_key[KEY_MAX];
+        uint8_t replay_key[2 * KEY_MAX];
         size_t replay_len = key_of(&base, replay_key);
         if (replay_len != current.len || memcmp(replay_key, current.key, replay_len)) {
             fputs("nondeterministic replay\n", stderr); exit(2);

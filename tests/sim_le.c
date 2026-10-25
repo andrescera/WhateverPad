@@ -1,14 +1,16 @@
 #include "sim_le.h"
+#include "../src/attrib.h"
 #include "../src/smp_crypto.h"
 #include "../src/util.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define QLEN    256
 #define PKT     600
-#define HANDLE  0x0050
+#define INITIAL_HANDLE 0x0050
 
 typedef struct {
     unsigned char d[QLEN][PKT];
@@ -27,6 +29,11 @@ enum {
 };
 
 struct sim_le {
+    long inquiry_end;
+    sim_origin inquiry_origin;
+    uint16_t handle, next_handle;
+    int (*command_hook)(void *, unsigned, const void *, int);
+    int (*acl_hook)(void *, const unsigned char *, int);
     sim_le_pad pad;
     queue ev, acl, system;
     struct { uint8_t data[257]; int len; long due; unsigned order; sim_origin origin; } delayed[32];
@@ -38,6 +45,8 @@ struct sim_le {
     unsigned schedule_order;
     int delay_code, delay_subevent, delay_left, delay_ms;
     sim_lifetime life;
+    own_ledger *ledger;
+    uint64_t random_value;
     long yield_until;
     uint8_t host_addr[6];
     uint8_t cur_addr[6];        /* the address advertised now */
@@ -190,7 +199,7 @@ static void event(sim_le_t *s, unsigned char code, const unsigned char *p, int n
 
 static void cmd_complete(sim_le_t *s, unsigned op, const unsigned char *ret, int n)
 {
-    unsigned char p[64];
+    unsigned char p[68];
 
     p[0] = 1;
     put16(p + 1, op);
@@ -232,7 +241,7 @@ static void enc_change(sim_le_t *s, unsigned char status)
     unsigned char p[4];
 
     p[0] = status;
-    put16(p + 1, HANDLE);
+    put16(p + 1, s->handle);
     p[3] = status == 0;
     event(s, 0x08, p, 4);
 }
@@ -266,7 +275,7 @@ static void acl_to_host(sim_le_t *s, unsigned cid, const unsigned char *d, int n
     unsigned char pkt[PKT];
 
     if (!s->life.acl_reads) return;
-    put16(pkt, HANDLE | 0x2000);
+    put16(pkt, s->handle | 0x2000);
     put16(pkt + 2, (unsigned)(4 + n));
     put16(pkt + 4, (unsigned)n);
     put16(pkt + 6, cid);
@@ -333,6 +342,7 @@ static void on_smp(sim_le_t *s, const uint8_t *d, int n)
     switch (d[0]) {
     case 0x01:                          /* pairing request */
         if (n < 7) return;
+        s->error = NULL; /* A new feature exchange is a new pairing procedure. */
         s->pairings++;
         memcpy(s->preq, d, 7);
         s->sc = s->pad.sc && (d[3] & 0x08);
@@ -640,7 +650,7 @@ static void disconnect(sim_le_t *s, unsigned char reason)
 
     if (!s->connected) return;
     p[0] = 0;
-    put16(p + 1, HANDLE);
+    put16(p + 1, s->handle);
     p[3] = reason;
     event(s, 0x05, p, 4);
     s->connected = s->encrypted = 0;
@@ -649,7 +659,7 @@ static void disconnect(sim_le_t *s, unsigned char reason)
     s->awake = 0;                       /* suspend is per connection */
 }
 
-static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
+static int model_command(void *ctx, unsigned op, const void *params, int plen)
 {
     sim_le_t *s = ctx;
     const unsigned char *p = params;
@@ -670,9 +680,21 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     }
     (void)plen;
     switch (op) {
+    case 0x0401:                        /* Inquiry uses Status, never Complete. */
+        cmd_status(s, op, 0);
+        s->inquiry_end = sim_le_now() + 1280 * (plen >= 4 ? p[3] : 8);
+        s->inquiry_origin = s->origin;
+        break;
+    case 0x1002:                        /* Read Local Supported Commands */
+        memset(r, 0, 65);
+        r[1 + 27] = 0x80;              /* LE Rand: octet 27, bit 7 */
+        cmd_complete(s, op, r, 65);
+        break;
     case 0x2018:
         memset(r, 0, 9);
-        put32(r + 1, s->origin.invocation);
+        s->random_value++;
+        put32(r + 1, (uint32_t)s->random_value);
+        put32(r + 5, (uint32_t)(s->random_value >> 32));
         cmd_complete(s, op, r, 9);
         break;
     case 0x1005:
@@ -720,15 +742,16 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         break;
     case 0x200D:                        /* create connection */
         s->creates++;
-        if (s->pad.busy > 0) {          /* one attempt at a time */
+        if (s->pad.busy > 0 || s->scanning) { /* This controller cannot initiate while scanning. */
             cmd_status(s, op, 0x0C);
             break;
         }
         cmd_status(s, op, 0);
         if (s->powered && !s->connected && p[5] == s->cur_type && memcmp(p + 6, s->cur_addr, 6) == 0) {
+            s->handle = s->next_handle++;
             r[0] = 0x01;
             r[1] = 0;
-            put16(r + 2, HANDLE);
+            put16(r + 2, s->handle);
             r[4] = 0;
             r[5] = s->cur_type;
             memcpy(r + 6, s->cur_addr, 6);
@@ -804,7 +827,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     return 1;
 }
 
-static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
+static int model_acl_send(void *ctx, const unsigned char *pkt, int len)
 {
     sim_le_t *s = ctx;
     unsigned char ncp[5];
@@ -813,7 +836,7 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     if (!s->life.acl_reads) return 0;
     if (len < 8 || !s->connected) return 1;
     ncp[0] = 1;
-    put16(ncp + 1, HANDLE);
+    put16(ncp + 1, s->handle);
     put16(ncp + 3, 1);
     event(s, 0x13, ncp, 5);
     n = (int)le16(pkt + 4);
@@ -822,17 +845,78 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     return 1;
 }
 
+static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
+{
+    sim_le_t *s = ctx;
+    return !s->ledger && model_command(s, op, params, plen);
+}
+
+static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
+{
+    sim_le_t *s = ctx;
+    return !s->ledger && model_acl_send(s, pkt, len);
+}
+
+static own_submit_result op_submit(void *ctx, const hci_submission *submission)
+{
+    sim_le_t *s = ctx;
+    int sent;
+
+    if (!s->ledger || !s->life.acl_reads || !submission) return OWN_NOT_SENT;
+    switch (submission->kind) {
+    case HCI_SUBMIT_COMMAND: {
+        own_effect effect;
+        uint64_t ack_by;
+        const own_token *token = submission->token.command;
+        if (!token || own_commit_hci(s->ledger, token, (uint64_t)sim_le_now(),
+                                     &effect, &ack_by) != OWN_OK) return OWN_NOT_SENT;
+        sent = s->command_hook ? s->command_hook(s, effect.opcode, effect.params, effect.plen) :
+                                model_command(s, effect.opcode, effect.params, effect.plen);
+        own_submitted(s->ledger, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)sim_le_now());
+        if (sent) {
+            attrib_submit(effect.opcode, 1, sim_le_now());
+            attrib_deadline(effect.opcode, ack_by > LONG_MAX ? LONG_MAX : (long)ack_by);
+        }
+        return sent ? OWN_SENT : OWN_NOT_SENT;
+    }
+    case HCI_SUBMIT_ACL: {
+        own_acl_effect effect;
+        own_acl_lane *lane = submission->token.acl.lane;
+        const own_acl_token *token = submission->token.acl.token;
+        if (!lane || !token || own_acl_commit(s->ledger, lane, token, (uint64_t)sim_le_now(),
+                                              &effect) != OWN_OK) return OWN_NOT_SENT;
+        sent = s->acl_hook ? s->acl_hook(s, effect.packet, effect.len) :
+                            model_acl_send(s, effect.packet, effect.len);
+        own_acl_submitted(lane, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)sim_le_now());
+        return sent ? OWN_SENT : OWN_NOT_SENT;
+    }
+    }
+    return OWN_NOT_SENT;
+}
+
 static int op_pump(void *ctx, int timeout_ms)
 {
     sim_le_t *s = ctx;
 
     g_clock += timeout_ms > 0 ? timeout_ms : 1;
+    if (s->ledger) {
+        own_tick(s->ledger, (uint64_t)sim_le_now());
+        attrib_poll(sim_le_now());
+    }
     if (s->busy_until && g_clock >= s->busy_until) {
         if (s->pad.busy > 0) s->foreign_finishes++;
         s->pad.busy = 0;
         s->busy_until = 0;
     }
     due_events(s);
+    if (s->inquiry_end && g_clock >= s->inquiry_end) {
+        unsigned char status = 0;
+        sim_origin previous = s->origin;
+        s->origin = s->inquiry_origin;
+        s->inquiry_end = 0;
+        event(s, 0x01, &status, 1);
+        s->origin = previous;
+    }
     if (!s->life.acl_reads) return -1;
     if (s->powered && s->scanning && !s->connected && g_clock - s->t_adv >= 30) {
         sim_le_peer_advertise(s, s->cur_addr, s->cur_type);
@@ -859,6 +943,7 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
         sim_origin origin = s->ev.origin[s->ev.head];
         n = q_get(&s->ev, out, max);
         if (out[0] != 0x13 || !lose(s)) {
+            sim_ownership_event(s->ledger, out, n, sim_le_now());
             if (s->observer) s->observer(s->observer_context, SIM_DELIVERED, origin, out[0], out + 2, n - 2);
             return n;
         }
@@ -886,6 +971,8 @@ static void op_close(void *ctx)
     s->life.uninits++;
     s->life.closes++;
     s->ev.count = s->acl.count = 0;
+    if (s->ledger) own_transport_closed(s->ledger, (uint64_t)sim_le_now());
+    s->ledger = NULL;
 }
 
 static void op_yield(void *ctx, int ms)
@@ -895,7 +982,11 @@ static void op_yield(void *ctx, int ms)
     s->yield_until = sim_le_now() + ms;
 }
 
-static const hci_ops k_ops = { op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, NULL, op_yield, NULL, NULL, NULL, NULL, NULL, NULL };
+static const hci_ops k_ops = {
+    .cmd = op_cmd, .acl_send = op_acl_send, .pump = op_pump,
+    .next_event = op_next_event, .next_acl = op_next_acl, .close = op_close,
+    .yield = op_yield, .op_submit = op_submit,
+};
 
 /* ---- public ------------------------------------------------------------------ */
 
@@ -904,8 +995,11 @@ sim_le_t *sim_le_new(const sim_le_pad *pad)
     sim_le_t *s = calloc(1, sizeof *s);
 
     s->pad = *pad;
+    s->ssp = 1;
+    s->handle = s->next_handle = INITIAL_HANDLE;
     if (!s->pad.mtu) s->pad.mtu = 23;
     s->drop_state = pad->seed;
+    s->random_value = (uint64_t)pad->seed << 32;
     memcpy(s->host_addr, k_host_addr, 6);
     s->powered = 1;
     srand(pad->seed + 1);
@@ -916,6 +1010,13 @@ sim_le_t *sim_le_new(const sim_le_pad *pad)
 
 void sim_le_free(sim_le_t *s) { free(s); }
 
+unsigned sim_le_handle(const sim_le_t *s) { return s->handle; }
+void sim_le_set_next_handle(sim_le_t *s, unsigned handle)
+{
+    assert(handle < 0x0f00);
+    s->next_handle = (uint16_t)handle;
+}
+
 hci_t sim_le_hci(sim_le_t *s)
 {
     hci_t h = { &k_ops, s };
@@ -924,6 +1025,40 @@ hci_t sim_le_hci(sim_le_t *s)
         s->life.event_reads = 40;
         s->life.acl_reads = 20;
         s->yield_until = 0;
+    }
+    return h;
+}
+
+void sim_le_bind_ownership(sim_le_t *s, own_ledger *ledger)
+{
+    s->ledger = ledger;
+}
+
+void sim_le_output_hooks(sim_le_t *s, int (*command)(void *, unsigned, const void *, int),
+                          int (*acl)(void *, const unsigned char *, int))
+{
+    s->command_hook = command;
+    s->acl_hook = acl;
+}
+
+int sim_le_model_command(void *s, unsigned op, const void *p, int n)
+{
+    return model_command(s, op, p, n);
+}
+
+int sim_le_model_acl(void *s, const unsigned char *p, int n)
+{
+    return model_acl_send(s, p, n);
+}
+
+host_t *sim_le_open_host(sim_le_t *s, const char *db, const host_events *events)
+{
+    host_t *h = host_prepare(sim_le_hci(s), db, events);
+    if (!h) return NULL;
+    sim_le_bind_ownership(s, host_ownership(h));
+    if (!host_start(h)) {
+        host_close(h);
+        return NULL;
     }
     return h;
 }

@@ -100,19 +100,25 @@ static int query(void *ctx, unsigned op, const void *p, int n)
     CHECK(!strcmp(mode, PROBE_CREDS));
     CHECK(op == 0x1005 && commands == 1);
 #endif
-    return sim_hci(ctx).ops->cmd(ctx, op, p, n);
+    return sim_model_command(ctx, op, p, n);
 }
 int hci_usb_open(hci_t *out)
 {
-    static hci_ops ops;
     sim_pad pad = {0};
     assert(opens < 5);
     sim_t *s = radio[opens++] = sim_new(&pad);
     if (!answer_query) sim_go_deaf(s);
     *out = sim_hci(s);
-    ops = *out->ops;
-    ops.cmd = query;
-    out->ops = &ops;
+    sim_output_hooks(s, query, NULL);
+    return 1;
+}
+
+int hci_usb_bind_ownership(hci_t *hci, own_ledger *ledger,
+                          void (*service)(void *), void *ud)
+{
+    (void)service; (void)ud;
+    CHECK(sim_is_hci(*hci));
+    sim_bind_ownership(hci->ctx, ledger);
     return 1;
 }
 
@@ -145,7 +151,7 @@ static void run_case(int scenario)
     if (scenario >= 5) CHECK(web_starts == 2);
 #else
     CHECK(installs == !remove_flag && removes == remove_flag);
-    CHECK(opens == 5 && commands == 15);
+    CHECK(opens == 5 && commands == 5); /* One unanswered capability query per open, never three retries. */
     CHECK(raises == 1 && restores == 2);
 #endif
     for (int i = 0; i < opens; i++) {

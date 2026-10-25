@@ -5,14 +5,10 @@ cd "$(dirname "$0")/.."
 exec bun --eval '
 const root = process.argv[1] || ".";
 const failures = [];
-// Counts are an upper bound, not a whole-file bypass. New sites fail even inside
-// a legacy file. These are exactly the nine sites on 2ce2933 (todos 13-15 remove).
-const legacy = new Map([
-  ["src/host.c:send_cmd:OP_INQUIRY_CANCEL", 6],
-  ["src/le.c:hci_sync:OP_LE_CREATE_CONN_CANCEL", 1],
-  ["src/le.c:send_cmd:OP_LE_CREATE_CONN_CANCEL", 2],
-  // The T2 inherited-defect reproducer (tests/test_session.c:623) must submit
-  // a forbidden command to prove it is refused. Removed with todos 13-15.
+const legacy = new Map();
+// An intentional refusal test is not a legacy production authority path.
+// Counts remain an upper bound: a second call in the same test still fails.
+const testControls = new Map([
   ["tests/test_session.c:host_raw_cmd:0x0408", 1]
 ]);
 const observed = new Map();
@@ -74,7 +70,8 @@ function scan(path, original, allowLegacy = true) {
     const key = `${path}:${m[1]}:${opcode}`;
     const count = (observed.get(key) || 0) + 1;
     observed.set(key, count);
-    if (!allowLegacy || count > (legacy.get(key) || 0)) fail(m.index, `A2 command passed to ${m[1]}`);
+    if (!allowLegacy || count > (legacy.get(key) || testControls.get(key) || 0))
+      fail(m.index, `A2 command passed to ${m[1]}`);
   }
   return errors;
 }
@@ -104,6 +101,8 @@ for await (const path of new Bun.Glob("{src,tests}/**/*.{c,h}").scan({cwd: root}
 }
 console.log("legacy allowlist (2ce2933; remove in todos 13-15):");
 for (const [key,max] of legacy) console.log(`  ${key}: observed=${observed.get(key)||0} allowed<=${max}`);
+console.log("test-only negative controls:");
+for (const [key,max] of testControls) console.log(`  ${key}: observed=${observed.get(key)||0} allowed<=${max}`);
 if (failures.length) { console.error(failures.join("\n")); process.exit(1); }
 console.log(`ownership boundary checks passed; negative-controls=${controls.length}`);
 '

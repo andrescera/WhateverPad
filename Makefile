@@ -7,12 +7,13 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 WHATEVERPAD_PROBE ?= 0
+WHATEVERPAD_ATTRIB_POLICY ?= OWN_POLICY_NO_RESTORE
 WHATEVERPAD_PROBE_CREDS ?= raised
 
 OWN_CORE := src/ownership.c src/session.c
 CORE   := src/util.c src/log.c src/attrib.c src/probe.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/bond_store.c src/host.c src/le.c $(OWN_CORE)
 WEB    := src/web.c src/web_page.c
-HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE)
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE $(CPPFLAGS) -DWHATEVERPAD_PROBE=$(WHATEVERPAD_PROBE) -DWHATEVERPAD_ATTRIB_POLICY=$(WHATEVERPAD_ATTRIB_POLICY)
 ifeq ($(WHATEVERPAD_PROBE),1)
 ifeq ($(filter $(WHATEVERPAD_PROBE_CREDS),raised original),)
 $(error WHATEVERPAD_PROBE_CREDS must be raised or original)
@@ -63,6 +64,26 @@ $(BUILD)/test_crypto: src/smp_crypto.c tests/test_crypto.c | $(BUILD)
 $(BUILD)/test_le: $(CORE) tests/sim_le.c tests/test_le.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_host_transactions: $(CORE) tests/sim.c tests/sim_le.c tests/test_host_transactions.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_runtime_link_callbacks: tests/test_runtime_link_callbacks.c src/ps5_main.c src/host.h | $(BUILD)
+	cc $(HOST_CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $<
+
+$(BUILD)/test_settings_ack_interleavings: $(CORE) tests/sim.c tests/test_settings_ack_interleavings.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_le_crypto_owner: $(CORE) tests/test_le_crypto_owner.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+$(BUILD)/test_connection_namespace: $(CORE) tests/test_connection_namespace.c tests/test_le_crypto_owner.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(CORE) tests/test_connection_namespace.c
+
+$(BUILD)/test_controller_fingerprints: $(CORE) tests/sim.c tests/test_controller_fingerprints.c tests/test_host.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(CORE) tests/sim.c tests/test_controller_fingerprints.c
+
+test: $(BUILD)/test_host_transactions $(BUILD)/test_runtime_link_callbacks $(BUILD)/test_settings_ack_interleavings $(BUILD)/test_le_crypto_owner $(BUILD)/test_connection_namespace $(BUILD)/test_controller_fingerprints
+
 $(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DBOND_STORE_TEST -o $@ $^
 
@@ -103,6 +124,9 @@ $(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/ownership.h s
 $(BUILD)/test_hci_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 
+$(BUILD)/test_usb_handle_reassignment: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_usb_handle_reassignment.c tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
+
 $(BUILD)/test_attrib: $(CORE) $(USB_STANDIN) src/usb_desc.c src/evstream.c tests/sim.c tests/test_attrib.c tests/test_hci_usb.c src/attrib.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
 
@@ -130,11 +154,12 @@ test: test-probe-main
 $(BUILD)/test_session: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
-test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_migrate $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_hci_usb $(BUILD)/test_usb_handle_reassignment $(BUILD)/test_session $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_migrate $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
 	./$(BUILD)/test_attrib
 	./$(BUILD)/test_bond_store
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_hci_usb
+	./$(BUILD)/test_usb_handle_reassignment
 	./$(BUILD)/test_session
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
@@ -143,6 +168,12 @@ test: $(BUILD)/test_attrib $(BUILD)/test_bond_store $(BUILD)/test_hearbridge $(B
 	./$(BUILD)/test_profiles
 	./$(BUILD)/test_host
 	./$(BUILD)/test_le
+	./$(BUILD)/test_host_transactions
+	./$(BUILD)/test_runtime_link_callbacks
+	./$(BUILD)/test_settings_ack_interleavings
+	./$(BUILD)/test_le_crypto_owner
+	./$(BUILD)/test_connection_namespace
+	./$(BUILD)/test_controller_fingerprints
 	./$(BUILD)/test_compat
 	./$(BUILD)/test_web
 	./$(BUILD)/test_launcher
@@ -205,14 +236,15 @@ OWN_EXPLORE ?= 1
 OWN_EXPLORE_WORKERS ?= 4
 OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_session_policy
 ifeq ($(OWN_EXPLORE),1)
-OWN_TESTS += $(BUILD)/test_ownership_explore
+OWN_TESTS += $(BUILD)/test_ownership_explore $(BUILD)/test_explorer_key_storage
 endif
 
-.PHONY: test-ownership check-mutations check-ownership sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
+.PHONY: test-ownership check-mutations check-ownership check-peer-reply-mutation check-link-generation-mutation sanitize-ownership test-ownership-case sanitize-ownership-case test-explorer-results
 test: test-ownership
 test-ownership: $(OWN_TESTS)
 	./$(BUILD)/test_ownership
 ifeq ($(OWN_EXPLORE),1)
+	./$(BUILD)/test_explorer_key_storage
 	./$(BUILD)/test_ownership_explore
 endif
 	./$(BUILD)/test_session_policy
@@ -220,14 +252,19 @@ endif
 sanitize-ownership:
 	$(MAKE) test-ownership BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
-test-ownership-case: $(BUILD)/test_ownership_explore
+test-ownership-case: $(BUILD)/test_ownership_explore $(BUILD)/test_explorer_key_storage
+	@./$(BUILD)/test_explorer_key_storage >&2
 	@./$(BUILD)/test_ownership_explore --policy "$(POLICY)" --case "$(CASE)"
 
 sanitize-ownership-case:
 	@$(MAKE) --no-print-directory test-ownership-case BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
 
-test-explorer-results: $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+test-explorer-results: $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode $(BUILD)/test_explorer_key_storage
+	./$(BUILD)/test_explorer_key_storage
 	sh tests/test_explorer_results.sh $(BUILD)/test_ownership_explore $(BUILD)/mutation-ack_by_opcode
+
+$(BUILD)/test_explorer_key_storage: $(OWN_CORE) tests/test_explorer_key_storage.c tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -O2 -o $@ $(OWN_CORE) tests/test_explorer_key_storage.c
 
 $(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
@@ -244,7 +281,24 @@ $(BUILD)/test_session_policy: src/session.c tests/test_session_policy.c src/sess
 check-ownership:
 	sh tools/check-ownership.sh
 
-check-mutations: test-ownership
+$(BUILD)/mutation-reply_without_owned_peer: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DOWN_MUTATION=reply_without_owned_peer -o $@ $(filter %.c %.o,$^)
+
+check-peer-reply-mutation: $(BUILD)/mutation-reply_without_owned_peer
+	@set -eu; status=0; $< --peer-reply > $(BUILD)/mutation-reply_without_owned_peer.log 2>&1 || status=$$?; \
+	  test "$$status" -eq 1; grep -q '^FAIL ' $(BUILD)/mutation-reply_without_owned_peer.log; \
+	  printf 'reply_without_owned_peer killed (exit %s)\n' "$$status"
+
+$(BUILD)/mutation-drop_link_generation: $(CORE) tests/sim.c tests/sim_le.c tests/test_session.c | $(BUILD)
+	cc $(filter-out -DWHATEVERPAD_ATTRIB_POLICY=%,$(HOST_CFLAGS)) -DWHATEVERPAD_ATTRIB_POLICY=OWN_POLICY_SINGLE_PRODUCER -DOWN_MUTATION=drop_link_generation -o $@ $^
+
+check-link-generation-mutation: $(BUILD)/mutation-drop_link_generation
+	@set -eu; status=0; $< --handle-reuse > $(BUILD)/mutation-drop_link_generation.log 2>&1 || status=$$?; \
+	  test "$$status" -eq 1; grep -Fq 'FAIL ' $(BUILD)/mutation-drop_link_generation.log; \
+	  grep -Fq '!own_link_current(host_ownership(h), other_generation)' $(BUILD)/mutation-drop_link_generation.log; \
+	  printf 'drop_link_generation killed in lost-terminal handle reuse (exit %s)\n' "$$status"
+
+check-mutations: test-ownership check-peer-reply-mutation check-link-generation-mutation
 	@set -eu; for id in ack_by_opcode ownership_on_sent resend_missing_ack deadline_is_teardown rearm_undo_duplicate readback_is_lease claims_after_callback deadline_only_idle expired_retry failed_http_deadline retry_without_cleanup; do \
 	  case $$id in \
 	    ack_by_opcode) test=test_ownership_explore;; \
@@ -271,6 +325,10 @@ test-integration-oracle: $(BUILD)/test_integration_gen $(BUILD)/test_integration
 	sh tests/test_integration_oracle.sh ./$(BUILD)/test_integration_gen ./$(BUILD)/test_integration_oracle
 test-integration: $(BUILD)/test_integration_gen test-integration-oracle
 	./$(BUILD)/test_integration_gen
+	$(MAKE) BUILD=$(BUILD)/single-producer WHATEVERPAD_ATTRIB_POLICY=OWN_POLICY_SINGLE_PRODUCER HOST_CFLAGS="$(filter-out -DWHATEVERPAD_ATTRIB_POLICY=%,$(HOST_CFLAGS)) -DWHATEVERPAD_ATTRIB_POLICY=OWN_POLICY_SINGLE_PRODUCER" $(BUILD)/single-producer/test_integration_gen
+	./$(BUILD)/single-producer/test_integration_gen
+	./$(BUILD)/test_integration_gen --seed 7
+	./$(BUILD)/single-producer/test_integration_gen --seed 7
 check-integration: $(BUILD)/test_integration_gen
 	./$(BUILD)/test_integration_gen --full
 check-integration-mutations: $(BUILD)/test_integration_gen test-integration-oracle

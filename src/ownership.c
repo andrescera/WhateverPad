@@ -80,7 +80,7 @@ typedef struct {
     uint8_t barrier_pending, undo_consumed, undo_ack, undo_terminal;
     uint8_t submit_pending, submitted_phase;
     uint8_t forward_status, undo_status, undo_terminal_status;
-    uint8_t proof_veto;
+    uint8_t proof_veto, binding_revoked;
     uint64_t phase_ack_by, phase_terminal_by;
     own_terminal_event terminal;
     own_token committed;
@@ -134,7 +134,9 @@ static void wipe(void *storage, size_t n)
 
 static int same_link(link_ref a, link_ref b)
 {
-    return a.attempt == b.attempt && a.generation == b.generation && a.slot == b.slot;
+    return a.attempt == b.attempt &&
+           (mutation("drop_link_generation") || a.generation == b.generation) &&
+           a.slot == b.slot;
 }
 
 static int same_peer(const own_peer *a, const own_peer *b)
@@ -337,6 +339,12 @@ static own_result target_valid(own_ledger *l, const own_command *c, const descri
     if (d->class == REPLY &&
         (!same_peer(&p->peer, &c->peer) || memcmp(c->params, p->peer.wire, 6) ||
          (c->opcode == 0x040a && p->state != RESERVED))) return OWN_NO_PROOF;
+    if (d->class == REPLY && !mutation("reply_without_owned_peer")) {
+        own_record *owner = record(l, p->owner);
+        if (!owner || owner->state != OWN_ACKNOWLEDGED || !owner->lease ||
+            !p->has_handle || (p->state != UP && p->state != READY))
+            return OWN_NO_PROOF;
+    }
     if (c->opcode == 0x0411 || c->opcode == 0x0413 || c->opcode == 0x2013 ||
         c->opcode == 0x2019 || c->opcode == 0x2026) {
         own_record *owner = record(l, p->owner);
@@ -784,15 +792,18 @@ static void bind_link(own_ledger *l, own_record *r, uint64_t now)
     if (commands[r->desc].class != CREATE || !r->acked || !r->barrier_done ||
         !r->terminal_seen || r->terminal_failed || r->state == OWN_QUARANTINED ||
         r->state == OWN_CLOSED) return;
+    if (r->binding_revoked) {
+        own_detector_trip(l, now);
+        return;
+    }
     own_link *p = link_at(l, r->c.link);
     if (!p || p->has_handle) return;
     uint16_t h = r->terminal.handle;
-    if (h >= 0x0f00 || (l->handles_seen[h / 8] & (1u << (h % 8)))) {
+    if (h >= 0x0f00) {
         own_detector_trip(l, now);
         if (p) p->state = LINK_QUARANTINED;
         return;
     }
-    l->handles_seen[h / 8] |= (uint8_t)(1u << (h % 8));
     p->handle = h;
     p->has_handle = 1;
     p->state = admits(l) ? UP : RETIRING;
@@ -933,7 +944,8 @@ void own_receive(own_ledger *l, const own_receipt *receipt, uint64_t now)
     if (r->terminal_failed) r->state = OWN_CLOSED;
 }
 
-void own_terminal(own_ledger *l, own_ref ref, const own_terminal_event *event, uint64_t now)
+static void terminal_received(own_ledger *l, own_ref ref,
+                              const own_terminal_event *event, uint64_t now)
 {
     own_tick(l, now);
     own_record *r = record(l, ref);
@@ -988,6 +1000,13 @@ void own_terminal(own_ledger *l, own_ref ref, const own_terminal_event *event, u
         }
         if (!r->barrier_pending && !same_ref(l->waiter, r->ref)) r->state = OWN_CLOSED;
     } else bind_link(l, r, now);
+}
+
+void own_terminal(own_ledger *l, own_ref ref, const own_terminal_event *event, uint64_t now)
+{
+    /* Host dispatch consumes successes; only backend ingress may establish one. */
+    if (event->kind == OWN_TERM_CONNECTION && !event->status) return;
+    terminal_received(l, ref, event, now);
 }
 
 void own_setting_changed(own_ledger *l, uint16_t opcode, uint64_t now)
@@ -1086,6 +1105,13 @@ own_result own_reserve_link(own_ledger *l, const own_peer *peer, link_ref *out)
 }
 
 int own_link_current(const own_ledger *l, link_ref ref)
+{
+    const own_link *p = link_at((own_ledger *)l, ref);
+    const own_record *r = p ? const_record(l, p->owner) : NULL;
+    return p && (!r || !r->binding_revoked);
+}
+
+int own_link_retained(const own_ledger *l, link_ref ref)
 {
     return link_at((own_ledger *)l, ref) != NULL;
 }
@@ -1280,6 +1306,7 @@ const char *own_invariant(const own_ledger *l)
         if (r->lease && (!r->acked || !r->barrier_done || l->ambiguities))
             return "I2: lease without barrier-confirmed acknowledgement";
         if (r->lease && r->proof_veto) return "I15: vetoed proof regained a lease";
+        if (r->lease && r->binding_revoked) return "I10: revoked binding regained a lease";
         if (r->lease && r->result == OWN_REFUSED) return "I4: refusal acquired authority";
         if (r->lease && commands[r->desc].class == SETTING &&
             (!r->c.original_known || l->policy == OWN_POLICY_NO_RESTORE))
@@ -1299,7 +1326,8 @@ const char *own_invariant(const own_ledger *l)
             return "I9: deletion without acquired identity";
         if (p->has_handle && !l->transport_closed) {
             const own_record *r = const_record(l, p->owner);
-            if (!r || !r->acked || !r->terminal_seen || !r->barrier_done)
+            if (!r || !r->acked || !r->terminal_seen || !r->barrier_done ||
+                r->binding_revoked)
                 return "I10: local generation substituted for wire authority";
         }
         if (p->vstate == V_READY && (!p->usable || !p->device_id || !p->add_ok))
@@ -1393,7 +1421,7 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
         N(r->undo_consumed); N(r->undo_ack); N(r->undo_terminal);
         N(r->submit_pending); N(r->submitted_phase);
         N(r->forward_status); N(r->undo_status); N(r->undo_terminal_status);
-        N(r->proof_veto);
+        N(r->proof_veto); N(r->binding_revoked);
         N(r->phase_ack_by); N(r->phase_terminal_by);
         if (r->terminal_seen && commands[r->desc].terminal != OWN_TERM_COMMAND) {
             N(r->terminal.kind); N(r->terminal.status); N(r->terminal.handle);
@@ -1562,16 +1590,46 @@ void own_observe_connection(own_ledger *l, uint8_t le, uint8_t address_type,
                             const uint8_t address[6], uint16_t handle, uint8_t status,
                             uint64_t now)
 {
+    if (status || handle >= 0x0f00 || le > 1 ||
+        (!le && address_type) || (le && address_type > 3)) return;
+    /* Revoke by handle BEFORE expected-peer matching, including unpublished
+     * terminals. This tombstone cannot be undone by a late ACK or fence. */
+    for (unsigned i = 0; i < OWN_MAX; i++) {
+        own_record *r = &l->records[i];
+        if (r->state == OWN_FREE || commands[r->desc].class != CREATE ||
+            !r->terminal_seen || r->terminal.status ||
+            r->terminal.handle != handle || r->binding_revoked) continue;
+        if (r->c.peer.le == le && r->c.peer.address_type == address_type &&
+            !memcmp(r->c.peer.wire, address, 6)) continue;
+        if (mutation("no_binding_revocation")) continue;
+        r->binding_revoked = 1;
+        r->lease = 0;
+        r->revision++;
+        own_link *p = link_at(l, r->c.link);
+        if (p && same_ref(p->owner, r->ref)) {
+            p->has_handle = 0;
+            p->state = RETIRING;
+            p->input_pending = 0;
+            if (p->vstate == V_QUEUED) p->vstate = V_FREE;
+            p->revision++;
+        }
+    }
+    int seen = l->handles_seen[handle / 8] & (1u << (handle % 8));
     for (unsigned i = 0; i < OWN_LINK_MAX; i++) {
         own_link *p = &l->links[i];
         own_record *r = record(l, p->owner);
-        if (!r || !r->sent || commands[r->desc].class != CREATE ||
+        if (!r || !r->sent || r->binding_revoked || commands[r->desc].class != CREATE ||
             !same_link(p->ref, r->c.link) || r->c.peer.le != le ||
             r->c.peer.address_type != address_type ||
             memcmp(r->c.peer.wire, address, 6)) continue;
         own_terminal_event terminal = {
             .kind = OWN_TERM_CONNECTION, .peer = r->c.peer, .handle = handle, .status = status
         };
-        own_terminal(l, r->ref, &terminal, now);
+        if (seen && !r->terminal_seen) {
+            r->binding_revoked = 1;
+        }
+        terminal_received(l, r->ref, &terminal, now);
     }
+    /* Observation, not publication, consumes H even if its Create later fails. */
+    l->handles_seen[handle / 8] |= (uint8_t)(1u << (handle % 8));
 }

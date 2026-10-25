@@ -3,8 +3,8 @@
  *
  * Runs on one thread: host_poll() pumps the transport, dispatches what
  * arrived and advances every link's state machine. Every step that needs a
- * reply is retried or timed out, since a few packets go to the system's
- * driver instead of here.
+ * protocol reply is retried or timed out. A missing HCI acknowledgement
+ * quarantines its invocation and stops normal admission; it is never resent.
  *
  *   pairing:    host_pair() searches for a pad in pairing mode, connects,
  *               pairs, reads its vendor/product id over SDP and opens the
@@ -20,13 +20,16 @@
 #include "pad.h"
 
 #define HOST_MAX_PADS 4
+#ifndef WHATEVERPAD_ATTRIB_POLICY
+#define WHATEVERPAD_ATTRIB_POLICY OWN_POLICY_NO_RESTORE
+#endif
 
 typedef struct host host_t;
 
 typedef struct {
-    void (*on_connect)(void *ud, int slot, const pad_info *info);
-    void (*on_state)(void *ud, int slot, const pad_state *st);
-    void (*on_disconnect)(void *ud, int slot);
+    void (*on_connect)(void *ud, link_ref link, const pad_info *info);
+    void (*on_state)(void *ud, link_ref link, const pad_state *st);
+    void (*on_disconnect)(void *ud, link_ref link);
     void *ud;
     /* Called every time the host waits (at least every 50 ms), including
      * while it waits for the controller to answer at start-up, so that the
@@ -35,10 +38,14 @@ typedef struct {
     void (*idle)(void *ud);
 } host_events;
 
-/* Prepares the controller and loads the paired pads from db_path. Returns
- * NULL if the controller does not answer. */
-host_t *host_open(hci_t hci, const char *db_path, const host_events *ev);
+/* Allocate first, bind the transport to host_ownership(), then start protocol
+ * work. The host owns its ledger until host_close(), including startup failure. */
+host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev);
+own_ledger *host_ownership(host_t *);
+int     host_start(host_t *);
 void    host_close(host_t *h);
+/* Remaining observed radio links, including the last closed host's result. */
+unsigned host_radio_left(const host_t *h);
 
 void host_poll(host_t *h, int timeout_ms);
 

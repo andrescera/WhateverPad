@@ -33,11 +33,11 @@ enum property {
 static const struct { const char *name; int todo; } properties[] = {
     {"no-cancel-or-reset", 0}, {"no-normal-effect-after-release", 13},
     {"one-unanswered-command-no-resubmission", 13},
-    {"no-restore-policy-no-undo", 13}, {"undo-needs-own-ack-barrier-and-version", 14},
-    {"disconnect-needs-fresh-owned-input", 14}, {"status-is-not-link-completion", 14},
-    {"callback-per-generation-once", 14}, {"no-vpad-work-after-release", 15},
+    {"no-restore-policy-no-undo", 0}, {"undo-needs-own-ack-barrier-and-version", 0},
+    {"disconnect-needs-fresh-owned-input", 0}, {"status-is-not-link-completion", 0},
+    {"callback-per-generation-once", 0}, {"no-vpad-work-after-release", 15},
     {"one-ten-second-cleanup-budget", 15}, {"native-request-releases-transport", 15},
-    {"undelivered-retry-is-not-admitted", 0}, {"uncertain-link-reported-left-connected", 15},
+    {"undelivered-retry-is-not-admitted", 0}, {"uncertain-link-reported-left-connected", 0},
     {"exact-usb-acquisitions-and-finalization", 0}, {"delete-only-acquired-identity-once", 0},
     {"complete-http-framing", 0}, {"pairing-reaches-usable-virtual-input", 0}
 };
@@ -102,6 +102,11 @@ typedef struct {
 } invocation;
 typedef struct { int32_t id; int acquired, identified, deletes; } device;
 typedef struct {
+    sim_origin origin;
+    unsigned char bytes[12];
+    int length;
+} answer;
+typedef struct {
     unsigned seed, scenario;
     int le, positive, released, lost, foreign_create, fault, identity, add_fail, delete_fail;
     int reenter, reentry_case, serving, refuse_send, port, logpipe[2], foreign_stimulus, reassignment_stimulus;
@@ -112,12 +117,16 @@ typedef struct {
     int open[XFERS], busy[XFERS], cancelled[XFERS];
     int initialized, fd_open, out_done, command_done, command_status, churn;
     unsigned inject_op, latest, barrier_parent;
+    answer scan_answer, rand_answer;
+    unsigned copy_op;
+    int copy_stage, copy_foreign;
     unsigned setting_owner[6], setting_pending[6];
     unsigned char original[6][8];
     int original_known[6], current_length[6], ambiguous;
     unsigned char barrier_values[256][8];
     unsigned barrier_count;
-    int acknowledgements[MAX_COMMANDS], foreign_handle, foreign_inputs;
+    int acknowledgements[MAX_COMMANDS], foreign_handle, foreign_inputs, foreign_wire_inputs;
+    unsigned radio_disconnects;
     unsigned link_invocation, slot_invocation[4];
     unsigned handle_owner, handle_version;
     unsigned handle_value, reassignment_handle;
@@ -145,6 +154,8 @@ typedef struct {
 } fixture;
 static fixture f;
 static const char *mutation;
+static int unsafe_attribution_control;
+static int b1_order_control;
 static char directory[128], db[160];
 static unsigned checks, runs, positives[3], deliveries, generated_events, submitted, empty_completions;
 #define REQUIRE(c) do { checks++; if (!(c)) { \
@@ -175,10 +186,12 @@ static int status_ack(unsigned op)
            op == 0x0411 || op == 0x0413 || op == 0x2013 || op == 0x2019 ||
            op == 0x2025 || op == 0x2026;
 }
+static void causal_event(sim_origin, unsigned, const unsigned char *, int, int);
+static void delay_events(int, int, int);
 static void release_now(void)
 {
     if (!f.released) {
-        if (f.scenario == 7 && f.foreign_handle && f.foreign_inputs) {
+        if (f.scenario == 7 && f.foreign_handle && f.foreign_wire_inputs) {
             for (unsigned i = 1; i < MAX_COMMANDS; i++)
                 if (create(f.history[i].op) && !f.history[i].origin.foreign && !f.history[i].answered)
                     f.foreign_stimulus = 1;
@@ -212,6 +225,18 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
         if (!origin.foreign) for (unsigned i = 1; i < origin.invocation; i++)
             if (f.history[i].op && !f.history[i].origin.foreign && !f.history[i].answered)
                 violation(COMMAND_SERIALIZATION);
+        if ((f.copy_stage == 1 && code == f.copy_op) ||
+            (f.copy_stage == 2 && code == 0x2018)) {
+            answer *a = f.copy_stage == 1 ? &f.scan_answer : &f.rand_answer;
+            sim_origin copy = a->origin;
+            if (f.copy_foreign) { copy.foreign = 1; copy.invocation = 0; }
+            else copy.copy = 1;
+            causal_event(copy, 0x0e, a->bytes, a->length, 0);
+            /* Real answers retain submission order (B1); the two old copies
+             * precede both the replacement's refusal and its fresh Rand. */
+            delay_events(0x0e, 1, f.copy_stage == 1 ? 100 : 200);
+            f.copy_stage = f.copy_stage == 1 && !f.copy_foreign ? 2 : 0;
+        }
         return;
     }
     if (kind == SIM_GENERATED) generated_events++;
@@ -225,11 +250,28 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
                 if (op == 0x0c1a || op == 0x200c) f.duplicate_copies |= 1;
                 if (op == 0x2018) f.duplicate_copies |= 2;
             } else {
+                if (!origin.foreign)
+                    for (unsigned i = 1; i < origin.invocation; i++)
+                        if (f.history[i].op && !f.history[i].origin.foreign &&
+                            !f.history[i].answered) f.assumptions |= 2;
                 if (origin.invocation < f.last_real_answer) f.assumptions |= 2;
                 if (origin.invocation > f.last_real_answer) f.last_real_answer = origin.invocation;
             }
         }
         if (origin.invocation) REQUIRE(r->op == op);
+        if (kind == SIM_DELIVERED && origin.invocation && !origin.copy &&
+            !origin.foreign && !status && code == 0x0e) {
+            if (op == (f.le ? 0x200cu : 0x0c1au)) {
+                REQUIRE(n == 4);
+                f.scan_answer = (answer){.origin = origin, .length = n};
+                memcpy(f.scan_answer.bytes, p, (size_t)n);
+                memset(&f.rand_answer, 0, sizeof f.rand_answer);
+            } else if (op == 0x2018 && f.barrier_parent == f.scan_answer.origin.invocation) {
+                REQUIRE(n == 12);
+                f.rand_answer = (answer){.origin = origin, .length = n};
+                memcpy(f.rand_answer.bytes, p, (size_t)n);
+            }
+        }
         if (kind == SIM_GENERATED) {
             if (!status && origin.invocation && !r->accepted) {
                 r->accepted = 1;
@@ -287,6 +329,12 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
             f.generation++;
             f.link_invocation = origin.invocation;
             if (origin.foreign) f.foreign_handle = 1;
+            if (f.scenario == 7 && origin.foreign) {
+                unsigned char report[79] = {0xa1, 0x11, 0xc0};
+                report[4] = 0x20; report[5] = 0xe0;
+                report[6] = report[7] = 0x80; report[8] = 0x20;
+                sim_inject_acl(f.classic, 0x0042, report, sizeof report);
+            }
             if (f.reassignment_pending && origin.invocation == f.reassignment_create &&
                 r->terminal && f.handle_owner == origin.invocation &&
                 r->resource_version > f.reassignment_version &&
@@ -353,12 +401,14 @@ static void wire_command(const unsigned char *packet)
     int n = packet[2];
     const unsigned char *p = packet + 3;
     submitted++; f.commands++;
+    if (op == 0x0406) f.radio_disconnects++;
     if (op == 0x0402 || op == 0x0408 || op == 0x200e || op == 0x0c03) violation(NO_CANCEL);
     if (f.released) {
         if (now_ms() >= f.release_at + 9750) violation(CLEANUP_BOUND);
         if (!setting(op) && op != 0x0406) violation(NORMAL_ADMISSION);
         if (setting(op) || op == 0x0406) {
-            f.policy_bad[0] |= 1u << NO_RESTORE_UNDO;
+            if (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_NO_RESTORE)
+                f.policy_bad[0] |= 1u << NO_RESTORE_UNDO;
             int proven = 0;
             for (unsigned i = 1; i < MAX_COMMANDS; i++) {
                 invocation *r = &f.history[i];
@@ -390,6 +440,15 @@ static void wire_command(const unsigned char *packet)
         delay_events(0x0f, 1, 15000);
         refuse_command(op);
     }
+    if (f.scenario == 7 && op == 0x2018 && !b1_order_control)
+        for (unsigned i = 1; i < MAX_COMMANDS; i++)
+            if (create(f.history[i].op) && !f.history[i].origin.foreign &&
+                !f.history[i].answered) {
+                /* B1 cannot deliver a later local fence ahead of this refusal.
+                 * Keep the Create unanswered, without depending on publication. */
+                delay_events(0x0e, 1, 15000);
+                break;
+            }
     f.controller.ops->cmd(f.controller.ctx, op, p, n);
 }
 int test_usb_ioctl(int fd, unsigned long request, ...)
@@ -497,6 +556,12 @@ int test_usb_ioctl(int fd, unsigned long request, ...)
             ep->status = (unsigned)f.command_status;
         }
         if (n) memcpy(ep->ppBuffer[0], bytes, (size_t)n);
+        if (found >= 40 && found < 60 && n == 87 && f.foreign_handle &&
+            f.handle_live && f.history[f.handle_owner].origin.foreign &&
+            (le16(bytes) & 0x0fff) == f.handle_value && le16(bytes + 2) == 83 &&
+            le16(bytes + 4) == 79 && le16(bytes + 6) == 0x0042 &&
+            bytes[8] == 0xa1 && bytes[9] == 0x11)
+            f.foreign_wire_inputs++;
         if (!cancelled_completion) {
             REQUIRE(f.busy[found]);
             f.complete_count[found]++;
@@ -674,9 +739,10 @@ static unsigned request(const char *method, const char *path, int blocked)
     if (f.stop) release_now();
     return radio_left;
 }
-static void connected(void *ud, int slot, const pad_info *info)
+static void connected(void *ud, link_ref ref, const pad_info *info)
 {
     (void)ud; (void)info;
+    int slot = ref.slot;
     REQUIRE(slot >= 0 && slot < 4);
     f.connects++;
     invocation *r = &f.history[f.link_invocation];
@@ -686,17 +752,18 @@ static void connected(void *ud, int slot, const pad_info *info)
     if (++f.connected_invocation[f.link_invocation] > 1) violation(CALLBACK_ONCE);
     REQUIRE(vpad_add(slot));
 }
-static void input(void *ud, int slot, const pad_state *state)
+static void input(void *ud, link_ref ref, const pad_state *state)
 {
     (void)ud;
     if (f.foreign_handle || (f.handle_live && f.history[f.handle_owner].origin.foreign))
         f.foreign_inputs++;
     else if (f.handle_live) f.last_input = now_ms();
-    vpad_update(slot, state);
+    vpad_update(ref.slot, state);
 }
-static void disconnected(void *ud, int slot)
+static void disconnected(void *ud, link_ref ref)
 {
     (void)ud;
+    int slot = ref.slot;
     f.disconnects++;
     if (f.disconnects > f.connects) violation(CALLBACK_ONCE);
     unsigned invocation = f.slot_invocation[slot];
@@ -749,19 +816,15 @@ static void execute(step s)
         raw(scan, p, f.le ? 2 : 1); break;
     case DUPLICATE_ACK: case FOREIGN_ACK: {
         raw(scan, p, f.le ? 2 : 1);
-        sim_origin old = f.history[f.latest].origin;
-        raw(0x2018, NULL, 0);
-        sim_origin old_barrier = f.history[f.latest].origin;
-        if (s.action == FOREIGN_ACK) { old.foreign = 1; old.invocation = 0; }
-        else { old.copy = 1; old_barrier.copy = 1; }
-        unsigned char cc[] = {1, (unsigned char)scan, (unsigned char)(scan >> 8), 0};
-        causal_event(old, 0x0e, cc, sizeof cc, 0);
-        if (s.action == DUPLICATE_ACK) {
-            unsigned char rand_cc[12] = {1, 0x18, 0x20, 0};
-            put32(rand_cc + 4, old_barrier.invocation);
-            causal_event(old_barrier, 0x0e, rand_cc, sizeof rand_cc, 0);
-        }
-        refuse_command(scan); p[0] = 1;
+        host_poll(f.host, 0); /* deliver the automatic barrier left by the synchronous ACK */
+        /* An unchanged write can be suppressed. Use the actual acknowledged
+         * setting and its automatic barrier, not the last synchronous call. */
+        REQUIRE(f.scan_answer.length == 4 && f.rand_answer.length == 12);
+        REQUIRE(f.scan_answer.origin.invocation != f.rand_answer.origin.invocation);
+        f.copy_op = scan; f.copy_stage = 1;
+        f.copy_foreign = s.action == FOREIGN_ACK;
+        refuse_command(scan);
+        p[0] = !f.history[f.scan_answer.origin.invocation].p[0];
         raw(scan, p, f.le ? 2 : 1);
         break;
     }
@@ -866,7 +929,13 @@ static void begin(unsigned seed)
         REQUIRE(bond_store_save(db, &store) == BOND_COMMITTED);
     }
     host_events ev = {connected, input, disconnected, NULL, NULL};
-    f.host = host_open(f.transport, db, &ev);
+    f.host = host_prepare(f.transport, db, &ev);
+    REQUIRE(f.host != NULL);
+    REQUIRE(hci_usb_bind_ownership(&f.transport, host_ownership(f.host), NULL, NULL));
+    if (!host_start(f.host)) {
+        host_close(f.host);
+        f.host = NULL;
+    }
     if (f.positive) REQUIRE(f.host != NULL);
     if (f.scenario == 15) REQUIRE(f.host && host_paired_count(f.host) == 16);
     f.bt = f.host ? WEB_BT_OK : WEB_BT_FAILED;
@@ -882,6 +951,13 @@ static void finish(void)
             f.seed, f.connects, f.disconnects, f.inputs, f.ndevices, f.generation, f.commands, f.acl);
     if (f.positive && !f.inputs) violation(POSITIVE_INPUT);
     release_now();
+    if (unsafe_attribution_control) {
+        /* Feed the real wire oracle the restore an opcode-only owner would
+         * emit after the copied ACKs. The causal guard must reject it. */
+        const unsigned char restore[] = {0x1a, 0x0c, 1, 0};
+        wire_command(restore);
+        REQUIRE(!(f.policy_bad[1] & (1u << CAUSAL_UNDO)));
+    }
     if (f.host) { host_close(f.host); f.host = NULL; }
     if (f.disconnects != f.connects) violation(CALLBACK_ONCE);
     for (unsigned i = 0; i < MAX_COMMANDS; i++)
@@ -1008,9 +1084,13 @@ int main(int argc, char **argv)
             first = (unsigned)value; seeds = 1; single = 1;
         }
         else if (!strcmp(argv[i], "--mutate") && i + 1 < argc) { mutation = argv[++i]; seeds = 1; }
+        else if (!strcmp(argv[i], "--unsafe-attribution-control")) unsafe_attribution_control = 1;
+        else if (!strcmp(argv[i], "--b1-order-control")) b1_order_control = 1;
         else { fprintf(stderr, "invalid integration argument: %s\n", argv[i]); return 2; }
     }
     if (first > 1000000) return 2;
+    if (unsafe_attribution_control && (!single || first != 4 || strict || mutation)) return 2;
+    if (b1_order_control && (!single || first != 7 || strict || mutation)) return 2;
     if (mutation && !mutated("refuse-everything") && !mutated("drop-input") &&
         !mutated("foreign-delete") && !mutated("duplicate-delete") && !mutated("truncate-http") &&
         !mutated("leak-usb") && !mutated("drop-delete")) return 2;
@@ -1030,12 +1110,22 @@ int main(int argc, char **argv)
     unsigned sample[PROPERTY_COUNT], assumptions[8] = {0};
     for (unsigned p = 0; p < PROPERTY_COUNT; p++) sample[p] = ~0u;
     unsigned hard = 0, foreign_stimuli = 0, reassignment_stimuli = 0, failing_properties = 0;
+    unsigned foreign_inputs = 0, foreign_disconnects = 0;
     unsigned duplicate_stimuli = 0, unexpected_passes = 0, expected_cases = 0;
     for (unsigned seed = first; seed < first + seeds; seed++) {
         step trace[MAX_STEPS];
         schedule(seed, trace, steps);
         unsigned bad = replay(seed, trace, steps);
-        if (f.scenario == 7) { REQUIRE(f.foreign_stimulus); foreign_stimuli++; }
+        if (b1_order_control)
+            printf("B1_ORDER_CONTROL violated=%u disconnects=%u\n",
+                !!(f.assumptions & 2), f.radio_disconnects);
+        if (f.scenario == 7) {
+            REQUIRE(f.foreign_stimulus);
+            REQUIRE(f.radio_disconnects == 0);
+            foreign_stimuli++;
+            foreign_inputs += (unsigned)f.foreign_wire_inputs;
+            foreign_disconnects += f.radio_disconnects;
+        }
         if (f.scenario == 8) { REQUIRE(f.reassignment_stimulus); reassignment_stimuli++; }
         if (f.scenario == 4) { REQUIRE(f.duplicate_copies == 3); duplicate_stimuli++; }
         assumptions[f.assumptions]++;
@@ -1084,9 +1174,10 @@ int main(int argc, char **argv)
     log_close();
     printf("INTEGRATION seeds=%u first=%u steps=%u scheduled=%u checks=%u commands=%u generated=%u delivered=%u empty-error-completions=%u"
            " positives=DS4:%u,8BitDo:%u,LE:%u foreign-Create-with-fresh-input-before-refusal=%u"
+           " foreign-wire-inputs=%u foreign-Disconnects=%u"
            " unobserved-reassignment=%u two-duplicate-traces=%u hard=%u xpass=%u replays=%u\n",
         seeds, first, steps, seeds * steps, checks, submitted, generated_events, deliveries, empty_completions,
-        positives[0], positives[1], positives[2], foreign_stimuli, reassignment_stimuli,
+        positives[0], positives[1], positives[2], foreign_stimuli, foreign_inputs, foreign_disconnects, reassignment_stimuli,
         duplicate_stimuli, hard, unexpected_passes, runs - seeds);
     return integration_result(hard, unexpected_passes, strict && failing_properties);
 }
