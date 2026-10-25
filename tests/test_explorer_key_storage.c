@@ -38,6 +38,31 @@ static void round_trip(const uint8_t *key, size_t n)
     while (bit < 8 * used) assert(take_bits(packed, &bit, 1) == 0);
 }
 
+static void collision_insertions(void)
+{
+    world a = initial(OWN_POLICY_NO_RESTORE, QUERY), b = a;
+    a.o[NOISE] = 1; b.o[NOISE] = 2;
+    uint8_t ka[2 * KEY_MAX], kb[2 * KEY_MAX];
+    size_t na = key_of(&a, ka), nb = key_of(&b, kb);
+    assert(na == nb && memcmp(ka, kb, na));
+    search q = {0};
+    insert(&q, &a, NULL, 0);
+    assert(q.count == 1);
+    /* Force equal hashes without relying on a probabilistic FNV collision. */
+    q.slots[q.nodes[0].hash & (q.slot_capacity - 1)] = 0;
+    q.nodes[0].hash = hash_key(kb, nb);
+    q.slots[q.nodes[0].hash & (q.slot_capacity - 1)] = 1;
+    insert(&q, &b, NULL, 0);
+    assert(q.count == 2);
+    assert(q.nodes[0].hash == q.nodes[1].hash);
+    assert(!memcmp(q.nodes[0].key, ka, na) && !memcmp(q.nodes[1].key, kb, nb));
+    insert(&q, &b, NULL, 0);
+    assert(q.count == 2);
+    for (size_t i = 0; i < q.count; i++) free(q.nodes[i].key);
+    free(q.nodes); free(q.slots); own_free(a.l);
+    puts("explorer key collision insertions passed");
+}
+
 int main(void)
 {
     uint8_t key[KEY_MAX] = {0};
@@ -54,6 +79,7 @@ int main(void)
     }
     memset(key, 255, sizeof key);
     round_trip(key, sizeof key);
+    collision_insertions();
     puts("explorer key storage round trips passed");
     return 0;
 }
