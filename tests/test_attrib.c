@@ -1,7 +1,9 @@
 /* Reuse the real USB syscall stand-in without editing its behavior of record. */
 #define main usb_lifetime_main
 #define test_usb_ioctl usb_fixture_ioctl
+#define test_usb_usleep usb_fixture_usleep
 #include "test_hci_usb.c"
+#undef test_usb_usleep
 #undef test_usb_ioctl
 #undef main
 #include "../src/attrib.h"
@@ -13,6 +15,14 @@
 
 static char json[ATTRIB_JSON_MAX], logs[130000];
 static const unsigned char secret[] = "ZQ_SECRET_73";
+static int freeze_usb_clock, frozen_waits;
+
+int test_usb_usleep(useconds_t us)
+{
+    /* Watchdog permits a failing implementation to finish in virtual time. */
+    if (freeze_usb_clock && ++frozen_waits <= 128) return 0;
+    return usb_fixture_usleep(us);
+}
 
 int test_usb_ioctl(int fd, unsigned long request, ...)
 {
@@ -206,7 +216,7 @@ typedef struct {
     struct { unsigned op, generated, answered, parent, barrier; } invocation[32];
     unsigned count, pending, required_parent, barriers;
     unsigned char random[4][8];
-    int startup;
+    int startup, missing;
 } probe_trace;
 
 static int probe_setting(unsigned op)
@@ -223,6 +233,14 @@ static void observe_probe(void *ud, enum sim_observation kind, sim_origin origin
     CHECK(!origin.foreign && !origin.copy);
     unsigned id = origin.invocation;
     if (kind == SIM_COMMAND) {
+        if (t->missing) {
+            CHECK(code == 0x1002 && t->count < 3 && !t->invocation[id].op);
+            CHECK(attrib_get()->unanswered == (unsigned)(t->count != 0));
+            t->invocation[id].op = code;
+            t->pending = id;
+            t->count++;
+            return;
+        }
         CHECK(t->startup && t->count < sizeof probe_startup / sizeof probe_startup[0]);
         /* The exact effect sequence catches retransmission even if the model
          * assigns the repeated submission a new private invocation number. */
@@ -403,7 +421,7 @@ static void test_ordinary_missing_answer(void)
     sim_t *s = sim_new(&pad);
     hci_t transport = sim_hci(s);
     host_t *h;
-    probe_trace trace = {.startup = 1};
+    probe_trace trace = {.startup = 1, .missing = 1};
     attrib_reset();
     memset(commands, 0, sizeof commands);
     ncommands = 0;
@@ -415,16 +433,19 @@ static void test_ordinary_missing_answer(void)
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
     sim_bind_ownership(s, host_ownership(h));
     CHECK(!host_start(h));
-    CHECK(ncommands == 1 && commands[0x1002] == 1);
-    CHECK(commands[0x1005] == 0 && attrib_get()->submitted == 1);
-    CHECK(trace.count == 1 && trace.pending == 1 && trace.invocation[1].op == 0x1002);
-    CHECK(!trace.invocation[1].generated && !trace.invocation[1].answered);
+    CHECK(ncommands == 3 && commands[0x1002] == 3);
+    CHECK(commands[0x1005] == 0 && attrib_get()->submitted == 3);
+    CHECK(trace.count == 3 && trace.pending == 3);
+    for (unsigned i = 1; i <= 3; i++) {
+        CHECK(trace.invocation[i].op == 0x1002);
+        CHECK(!trace.invocation[i].generated && !trace.invocation[i].answered);
+    }
     CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
     host_close(h); /* the caller retires the prepared host after failed startup */
-    CHECK(ncommands == 1 && attrib_get()->submitted == 1);
+    CHECK(ncommands == 3 && attrib_get()->submitted == 3);
     CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
     sim_free(s);
-    puts("PROBE missing answer: one submission, one timeout, no retransmission");
+    puts("PRODUCT missing answer: three wire sends, one waiter and final timeout");
 #endif
 }
 
@@ -554,6 +575,28 @@ static void deliver_late_query(void *ud)
 }
 #endif
 
+static void test_usb_stalled_query_clock(void)
+{
+#if !WHATEVERPAD_PROBE
+    reset();
+    usb.wait_budget = 5000;
+    attrib_reset();
+    hci_t transport = start();
+    host_t *h = host_prepare(transport, "build/attrib-absent.db", NULL);
+    CHECK(h != NULL);
+    CHECK(hci_usb_bind_ownership(&transport, host_ownership(h), NULL, NULL));
+    long begin = clock_ms;
+    frozen_waits = 0;
+    freeze_usb_clock = 1;
+    CHECK(!hci_sync(h, 0x1002, NULL, 0));
+    freeze_usb_clock = 0;
+    CHECK(frozen_waits <= 64);
+    CHECK(clock_ms == begin && usb.commands == 1 && !host_admits(h));
+    host_close(h);
+    CHECK(usb.closes == 1 && !usb.fd_open && !usb.initialized);
+#endif
+}
+
 static void test_probe_usb_tail(void)
 {
 #if WHATEVERPAD_PROBE
@@ -667,8 +710,13 @@ static void test_credit_event_forms(void)
     CHECK(violations == 0);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--stalled-clock")) {
+        test_usb_stalled_query_clock();
+        printf("%d USB clock checks, %d failed\n", checks, failures);
+        return failures != 0;
+    }
     test_classes();
     test_multiset_and_capacity();
     test_requests();
@@ -680,6 +728,7 @@ int main(void)
     test_host_profile();
     test_probe_missing_answer();
     test_usb_timeout_secrets();
+    test_usb_stalled_query_clock();
     test_probe_passive_tail();
     test_probe_usb_tail();
     test_usb_secrets();

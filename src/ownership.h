@@ -13,6 +13,7 @@
 #define OWN_LINK_MAX 4
 #define OWN_BARRIER_MAX 256
 #define OWN_FRESH_MS 1000
+#define OWN_SETUP_MS 5000
 
 typedef struct { uint64_t attempt, serial; } own_ref;
 typedef struct { uint64_t attempt, generation; uint8_t slot; } link_ref;
@@ -27,7 +28,7 @@ typedef enum {
 } own_state;
 typedef enum { OWN_NOT_SENT, OWN_SENT, OWN_SEND_UNCERTAIN } own_submit_result;
 typedef enum { OWN_FORWARD, OWN_BARRIER, OWN_UNDO } own_phase;
-typedef enum { OWN_RECEIPT_NONE, OWN_RECEIPT_SEQUENCED } own_provenance;
+typedef enum { OWN_RECEIPT_NONE, OWN_RECEIPT_SEQUENCED, OWN_RECEIPT_RETIRED } own_provenance;
 typedef enum { OWN_CC = 0x0e, OWN_CS = 0x0f } own_ack_event;
 typedef enum {
     OWN_TERM_COMMAND, OWN_TERM_INQUIRY, OWN_TERM_CONNECTION, OWN_TERM_DISCONNECT,
@@ -55,6 +56,7 @@ typedef struct {
     own_peer peer;
     link_ref link; /* generation zero means no link */
     uint64_t ack_by, terminal_by; /* Absolute deadlines, supplied by the owner. */
+    uint8_t setup_retry; /* Explicit pre-link startup only; never runtime/undo. */
 } own_command;
 
 typedef struct {
@@ -78,6 +80,7 @@ typedef struct {
     uint16_t opcode, handle;
     uint8_t plen, params[255];
     uint64_t device_id;
+    uint8_t resend;
 } own_effect;
 
 typedef struct {
@@ -103,6 +106,7 @@ void own_snapshot(const own_ledger *, own_summary *);
 own_result own_prepare(own_ledger *, const own_command *, own_ref *);
 own_result own_reclaim(own_ledger *, own_ref);
 own_result own_status(const own_ledger *, own_ref, own_state *);
+uint64_t own_wait_deadline(const own_ledger *, own_ref);
 /* A pending barrier outranks all normal commands; undo is derived, never supplied. */
 own_result own_next_hci(own_ledger *, uint64_t now, own_token *);
 own_result own_request_undo(own_ledger *, own_ref, uint64_t now, own_token *);

@@ -52,6 +52,27 @@ demo: $(BUILD)/web_demo
 $(BUILD)/test_host: $(CORE) tests/sim.c tests/test_host.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_setup_retry: $(CORE) tests/sim.c tests/test_setup_retry.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: test-setup-retry
+test-setup-retry: $(BUILD)/test_setup_retry
+	./$(BUILD)/test_setup_retry
+
+$(BUILD)/test_setup_wait: $(CORE) tests/sim.c tests/test_setup_wait.c tests/test_setup_retry.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_setup_retry.c,$^)
+
+test: test-setup-wait
+test-setup-wait: $(BUILD)/test_setup_wait
+	./$(BUILD)/test_setup_wait
+
+$(BUILD)/test_setup_reopen: $(CORE) tests/sim.c tests/test_setup_reopen.c tests/test_setup_retry.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_setup_retry.c,$^)
+
+test: test-setup-reopen
+test-setup-reopen: $(BUILD)/test_setup_reopen
+	./$(BUILD)/test_setup_reopen
+
 $(BUILD)/test_compat: $(CORE) tests/sim.c tests/test_compat.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 

@@ -257,7 +257,7 @@ struct host {
     own_ref inquiry, sync;
     link_ref crypto_owner;          /* scheduling only; acquisition stays in records */
     own_ref dhkey, p256;
-    int dispatching, submitting, sync_done, sync_ok;
+    int dispatching, submitting, sync_done, sync_ok, setup_retry;
     unsigned long ambiguity_seen;
 #if WHATEVERPAD_PROBE
     unsigned probe_commands;

@@ -65,6 +65,7 @@ static const descriptor commands[] = {
     {0x1005, QUERY, OWN_CC, OWN_TERM_COMMAND, 0},
     {0x1009, QUERY, OWN_CC, OWN_TERM_COMMAND, 0}
 };
+_Static_assert(sizeof commands / sizeof *commands <= 64, "setup history width");
 
 enum link_state { LINK_FREE, RESERVED, CONNECTING, UP, READY, RETIRING, RETIRED, LINK_QUARANTINED };
 enum virtual_state { V_FREE, V_QUEUED, V_ADDING, V_PENDING_ID, V_IDENTIFIED, V_BINDING, V_READY, V_FAILED, V_DELETED };
@@ -82,6 +83,8 @@ typedef struct {
     uint8_t forward_status, undo_status, undo_terminal_status;
     uint8_t proof_veto, binding_revoked;
     uint64_t phase_ack_by, phase_terminal_by;
+    uint64_t setup_by;
+    uint8_t setup_sends, retry_pending;
     own_terminal_event terminal;
     own_token committed;
 } own_record;
@@ -119,6 +122,8 @@ struct own_ledger {
     unsigned ambiguities, credits;
     unsigned radio_left;
     uint8_t rand_supported, transport_closed, finalize_claimed, finalized, dirty_local;
+    uint64_t setup_retired;
+    uint8_t rand_resent;
 };
 
 static int same_ref(own_ref a, own_ref b)
@@ -225,6 +230,7 @@ void own_model_copy(own_ledger *out, const own_ledger *in)
 
 int own_activate(own_ledger *l)
 {
+    if (l->rand_resent && !l->waiter.serial) { own_detector_trip(l, l->now); return 0; }
     if (!admits(l)) return 0;
     for (unsigned i = 0; i < OWN_MAX; i++)
         if (l->records[i].state == OWN_PREPARED || l->records[i].state == OWN_SUBMITTED ||
@@ -238,6 +244,7 @@ static void freeze(own_ledger *l)
     l->epoch++;
     for (unsigned i = 0; i < OWN_MAX; i++) {
         own_record *r = &l->records[i];
+        r->retry_pending = 0;
         if (r->state == OWN_PREPARED && !mutation("deadline_is_teardown")) {
             r->state = OWN_CLOSED;
             r->result = OWN_STOPPED;
@@ -312,6 +319,7 @@ int own_retry(own_ledger *l)
         if (l->links[i].state != LINK_FREE) return 0;
     if (!session_retry(&l->session)) return 0;
     memset(l->records, 0, sizeof l->records);
+    l->setup_retired = l->rand_resent = 0;
     l->transport_closed = l->finalize_claimed = l->finalized = 0;
     l->cleanup_deadline = 0;
     l->epoch++;
@@ -370,6 +378,10 @@ own_result own_prepare(own_ledger *l, const own_command *c, own_ref *out)
         c->plen != commands[d].plen || !c->ack_by || c->terminal_by < c->ack_by ||
         (c->original_known && c->original_len != c->plen)) return OWN_INVALID;
     if (c->opcode == 0x1004 && c->params[0] != 1) return OWN_INVALID;
+    /* HCI has no invocation ID: surplus replies are safe only if reuse is denied. */
+    if (l->setup_retired & (UINT64_C(1) << d)) return OWN_NO_PROOF;
+    if (c->setup_retry && (l->session.state != SESSION_STARTING || l->generation ||
+        (commands[d].class != QUERY && commands[d].class != SETTING))) return OWN_INVALID;
     own_result target = target_valid(l, c, &commands[d]);
     if (target != OWN_OK) return target;
     own_link *p = link_at(l, c->link);
@@ -409,6 +421,8 @@ own_result own_prepare(own_ledger *l, const own_command *c, own_ref *out)
     r->revision = 1;
     r->desc = d;
     r->c = *c;
+    /* Setup replies may cross opens; they cannot authorize a restore. */
+    r->proof_veto = c->setup_retry && l->policy == OWN_POLICY_SINGLE_PRODUCER;
     /* Only actual bytes are retained; callers' unused buffers are not evidence. */
     memset(r->c.params + c->plen, 0, sizeof r->c.params - c->plen);
     memset(r->c.original + c->original_len, 0, sizeof r->c.original - c->original_len);
@@ -429,6 +443,12 @@ own_result own_status(const own_ledger *l, own_ref ref, own_state *out)
     if (!r) return OWN_INVALID;
     if (out) *out = r->state;
     return r->result;
+}
+
+uint64_t own_wait_deadline(const own_ledger *l, own_ref ref)
+{
+    const own_record *r = const_record(l, ref);
+    return r ? (r->setup_by ? r->setup_by : r->c.ack_by) : 0;
 }
 
 own_result own_reclaim(own_ledger *l, own_ref ref)
@@ -471,6 +491,7 @@ static int link_fresh(const own_ledger *l, const own_record *r, uint64_t now)
 
 static int undo_eligible(const own_ledger *l, const own_record *r, uint64_t now)
 {
+    if (l->setup_retired & (UINT64_C(1) << r->desc)) return 0;
     if (l->policy != OWN_POLICY_SINGLE_PRODUCER || l->ambiguities ||
         !before_cutoff(l, now) || r->state != OWN_ACKNOWLEDGED ||
         !r->acked || !r->lease || r->proof_veto || r->undo_consumed) return 0;
@@ -492,6 +513,7 @@ own_result own_request_undo(own_ledger *l, own_ref ref, uint64_t now, own_token 
     own_tick(l, now);
     own_record *r = record(l, ref);
     if (!r) return OWN_INVALID;
+    if (r->c.setup_retry && l->policy == OWN_POLICY_SINGLE_PRODUCER) { own_detector_trip(l, now); return OWN_NO_PROOF; }
     if (l->waiter.serial) return OWN_BUSY;
     if (admits(l))
         for (unsigned i = 0; i < OWN_MAX; i++)
@@ -505,7 +527,12 @@ own_result own_next_hci(own_ledger *l, uint64_t now, own_token *out)
 {
     own_tick(l, now);
     if (!before_cutoff(l, now)) return OWN_STOPPED;
-    if (l->waiter.serial) return OWN_BUSY;
+    if (l->waiter.serial) {
+        own_record *r = record(l, l->waiter);
+        if (!r->retry_pending) return OWN_BUSY;
+        *out = token_for(l, r, NULL, OWN_EFFECT_HCI, l->waiting_phase);
+        return OWN_OK;
+    }
     own_record *normal = NULL, *restore = NULL;
     for (unsigned i = 0; i < OWN_MAX; i++) {
         own_record *r = &l->records[i];
@@ -621,16 +648,19 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
     own_record *r = record(l, ref);
     if (!r || r->revision != t->_opaque[3] || t->_opaque[5] > OWN_UNDO)
         return OWN_INVALID;
-    if (l->waiter.serial || !before_cutoff(l, now)) return OWN_BUSY;
+    int retry = r->retry_pending && same_ref(l->waiter, ref) &&
+                t->_opaque[5] == l->waiting_phase;
+    if ((l->waiter.serial && !retry) || !before_cutoff(l, now)) return OWN_BUSY;
     e.owner = r->ref;
     e.link = r->c.link;
     e.phase = (own_phase)t->_opaque[5];
     const descriptor *d = &commands[r->desc];
     if (e.phase == OWN_FORWARD) {
         int admitted = admits(l);
-        if (r->state != OWN_PREPARED ||
+        if ((r->state != OWN_PREPARED && !retry) ||
             (!admitted && !(mutation("deadline_is_teardown") && l->session.deadline)))
             return OWN_STOPPED;
+        if (l->setup_retired & (UINT64_C(1) << r->desc) && !retry) return OWN_NO_PROOF;
         own_result target = target_valid(l, &r->c, d);
         if (target != OWN_OK) {
             r->state = OWN_CLOSED;
@@ -655,6 +685,8 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
         own_link *p = link_at(l, r->c.link);
         if (d->class == CREATE && p) { p->state = CONNECTING; p->revision++; }
     } else if (e.phase == OWN_BARRIER) {
+        /* A repeated Rand can leave a different, unseen value behind. */
+        if (l->rand_resent && !retry) { own_detector_trip(l, now); return OWN_NO_PROOF; }
         if (!admits(l) || !l->rand_supported || !r->barrier_pending ||
             (r->state != OWN_ACKNOWLEDGED &&
              !(r->state == OWN_SUBMITTED && r->result == OWN_REFUSED &&
@@ -688,6 +720,23 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
             memcpy(e.params, r->c.original, e.plen);
         }
     }
+    if (r->c.setup_retry && l->session.state == SESSION_STARTING &&
+        !l->generation && e.phase != OWN_UNDO) {
+        if (!retry) {
+            r->setup_sends = 0;
+            r->setup_by = bounded_add(now, OWN_SETUP_MS);
+            if (r->c.terminal_by < r->setup_by)
+                r->setup_by = r->c.terminal_by;
+        }
+        e.resend = r->setup_sends++;
+        r->phase_ack_by = bounded_add(now, r->setup_sends == 3 ? 3000 : 1000);
+        if (r->phase_ack_by > r->setup_by) r->phase_ack_by = r->setup_by;
+        if (retry) {
+            if (e.phase == OWN_BARRIER) l->rand_resent = 1;
+            else l->setup_retired |= UINT64_C(1) << r->desc;
+        }
+        r->retry_pending = 0;
+    }
     r->revision++;
     r->committed = *t;
     r->submit_pending = 1;
@@ -720,6 +769,7 @@ void own_submitted(own_ledger *l, const own_token *t, own_submit_result result, 
     r->submit_pending = 0;
     if (result == OWN_SEND_UNCERTAIN) { own_detector_trip(l, now); return; }
     if (result == OWN_NOT_SENT) {
+        if (r->setup_sends > 1) { own_detector_trip(l, now); return; }
         l->waiter = (own_ref){0};
         if (r->submitted_phase == OWN_FORWARD) {
             previous_settled(l, r, 0);
@@ -767,7 +817,8 @@ own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now
                (a->event == OWN_CC || (a->event == OWN_CS && a->status == 0));
     own_record *r = record(l, l->waiter);
     if (r && !l->ambiguities && !l->transport_closed && !a->malformed && !a->overflow &&
-        !r->submit_pending && now < r->phase_ack_by) {
+        !r->submit_pending && (now < r->phase_ack_by ||
+                              (r->retry_pending && now < r->setup_by))) {
         unsigned opcode = l->waiting_phase == OWN_BARRIER ? 0x2018 :
                           l->waiting_phase == OWN_UNDO &&
                           commands[r->desc].class == CREATE ? 0x0406 : r->c.opcode;
@@ -780,6 +831,13 @@ own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now
             p.serial = r->ref.serial;
             p.phase = l->waiting_phase;
         }
+    }
+    if (!p.provenance && !a->malformed && !a->overflow && !a->status && a->event == OWN_CC) {
+        for (unsigned d = 0; d < sizeof commands / sizeof *commands; d++)
+            if (a->opcode == commands[d].opcode &&
+                ((l->setup_retired & (UINT64_C(1) << d)) ||
+                 (a->opcode == 0x2018 && l->rand_resent)))
+                p.provenance = OWN_RECEIPT_RETIRED;
     }
     memset(out, 0, sizeof *out);
     memcpy(out, &p, sizeof p);
@@ -833,6 +891,7 @@ void own_receive(own_ledger *l, const own_receipt *receipt, uint64_t now)
     l->receipt_seen = p.sequence;
     own_tick(l, now);
     if (p.credit) { l->credits++; return; }
+    if (p.provenance == OWN_RECEIPT_RETIRED) return;
     own_ref ref = {p.attempt, p.serial};
     own_record *r = record(l, ref);
     if (p.provenance == OWN_RECEIPT_SEQUENCED && r &&
@@ -905,6 +964,9 @@ void own_receive(own_ledger *l, const own_receipt *receipt, uint64_t now)
     r->forward_status = (uint8_t)p.status;
     r->forward_receipt = p.sequence;
     if (p.status) {
+        if (r->setup_sends > 1 && commands[r->desc].class == SETTING) {
+            own_detector_trip(l, now); return;
+        }
         own_record *previous = record(l, r->previous);
         r->result = OWN_REFUSED;
         if (previous && previous->lease && commands[r->desc].class == SETTING) {
@@ -1042,6 +1104,12 @@ void own_tick(own_ledger *l, uint64_t now)
     if (l->transport_closed) return;
     own_record *r = record(l, l->waiter);
     if (r && (now >= r->phase_ack_by || !before_cutoff(l, now))) {
+        if (r->c.setup_retry && l->session.state == SESSION_STARTING && !l->generation &&
+            admits(l) && l->waiting_phase != OWN_UNDO &&
+            r->setup_sends < 3 && now < r->setup_by) {
+            if (!r->retry_pending) { r->retry_pending = 1; r->revision++; }
+            return;
+        }
         if (mutation("resend_missing_ack")) {
             r->state = OWN_PREPARED;
             r->c.ack_by = bounded_add(now, 1000);
@@ -1300,6 +1368,8 @@ const char *own_invariant(const own_ledger *l)
         const own_record *r = &l->records[i];
         if (r->state == OWN_FREE) continue;
         if (!r->ref.serial || !r->ref.attempt) return "I6: absent record identity";
+        if (r->setup_sends > 3 || (r->retry_pending && !r->c.setup_retry))
+            return "setup retry escaped its budget";
         if (r->acked && (!r->sent || !r->forward_receipt))
             return "I1: acknowledgement without own sequenced receipt";
         if (r->state == OWN_QUARANTINED && r->lease) return "I7: quarantined lease";
@@ -1377,6 +1447,7 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
     N(l->receipt_issued); N(l->receipt_seen); N(l->ambiguities); N(l->credits);
     N(l->rand_supported); N(l->transport_closed); N(l->finalize_claimed);
     N(l->finalized); N(l->dirty_local); N(l->radio_left);
+    N(l->setup_retired); N(l->rand_resent);
     reference(&w, l->waiter);
     if (l->waiter.serial) N(l->waiting_phase);
     if (l->receipt_issued != l->receipt_seen) {
@@ -1416,6 +1487,7 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
         }
         bytes(&w, (const uint8_t *)&r->c.peer, sizeof r->c.peer);
         link_reference(&w, r->c.link); N(r->c.ack_by); N(r->c.terminal_by);
+        N(r->c.setup_retry); N(r->setup_by); N(r->setup_sends); N(r->retry_pending);
         N(r->sent); N(r->acked); N(r->terminal_seen); N(r->terminal_failed);
         N(r->lease); N(r->barrier_done); N(r->barrier_pending);
         N(r->undo_consumed); N(r->undo_ack); N(r->undo_terminal);
@@ -1570,7 +1642,11 @@ own_result own_commit_hci(own_ledger *l, const own_token *token, uint64_t now,
     if (!l || !token || !out || !ack_by || token->_opaque[4] != OWN_EFFECT_HCI)
         return OWN_INVALID;
     own_result result = own_commit(l, token, now, out);
-    if (result == OWN_OK) *ack_by = record(l, out->owner)->phase_ack_by;
+    if (result == OWN_OK) {
+        own_record *r = record(l, out->owner);
+        *ack_by = r->c.setup_retry && out->phase != OWN_UNDO &&
+                  l->session.state == SESSION_STARTING ? r->setup_by : r->phase_ack_by;
+    }
     return result;
 }
 

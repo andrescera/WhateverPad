@@ -51,6 +51,13 @@ void attrib_reset(void)
     samples_omitted = 0;
 }
 
+void attrib_begin_try(void)
+{
+    memset(pending, 0, sizeof pending);
+    counts.unanswered = 0;
+    for (unsigned op = 0; op < 65536; op++) opcodes[op].unanswered = opcodes[op].untracked_pending = 0;
+}
+
 /* DD 4: procedures acknowledge with Status, queries/settings/replies with Complete. */
 static unsigned expected(unsigned op)
 {
@@ -92,6 +99,12 @@ void attrib_deadline(unsigned op, long deadline)
         if (pending[i].used && pending[i].opcode == op &&
             (newest < 0 || pending[i].serial > pending[newest].serial)) newest = i;
     if (newest >= 0) pending[newest].deadline = deadline;
+}
+
+void attrib_resend(unsigned op)
+{
+    counts.submitted++;
+    opcodes[op].submitted++;
 }
 
 void attrib_poll(long now)
@@ -256,6 +269,7 @@ void attrib_log_summary(void)
 enum attrib_class attrib_observe_receipt(const unsigned char *e, int len, long now,
                                          own_provenance provenance)
 {
+    if (provenance == OWN_RECEIPT_RETIRED) return ATTRIB_IGNORED;
     unsigned ev, op;
     if (provenance == OWN_RECEIPT_SEQUENCED || len <= 0 ||
         (e[0] != 0x0e && e[0] != 0x0f))

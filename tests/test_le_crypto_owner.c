@@ -119,7 +119,8 @@ static own_submit_result submit(void *ctx, const hci_submission *s)
             return OWN_NOT_SENT;
         command(b, e.opcode, e.params, e.plen);
         own_submitted(b->ledger, t, OWN_SENT, clock_ms);
-        attrib_submit(e.opcode, 1, clock_ms);
+        if (!e.resend) attrib_submit(e.opcode, 1, clock_ms);
+        else attrib_resend(e.opcode);
         attrib_deadline(e.opcode, (long)deadline);
     } else {
         own_acl_effect e;

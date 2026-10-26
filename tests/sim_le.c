@@ -874,7 +874,8 @@ static own_submit_result op_submit(void *ctx, const hci_submission *submission)
                                 model_command(s, effect.opcode, effect.params, effect.plen);
         own_submitted(s->ledger, token, sent ? OWN_SENT : OWN_NOT_SENT, (uint64_t)sim_le_now());
         if (sent) {
-            attrib_submit(effect.opcode, 1, sim_le_now());
+            if (!effect.resend) attrib_submit(effect.opcode, 1, sim_le_now());
+            else attrib_resend(effect.opcode);
             attrib_deadline(effect.opcode, ack_by > LONG_MAX ? LONG_MAX : (long)ack_by);
         }
         return sent ? OWN_SENT : OWN_NOT_SENT;
