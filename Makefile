@@ -356,6 +356,14 @@ test-web-usb-idle: $(BUILD)/test_web_usb_idle
 	./$(BUILD)/test_web_usb_idle outside
 	./$(BUILD)/test_web_usb_idle backlog
 
+$(BUILD)/test_runtime_failure: $(INTEGRATION_SRCS) tests/test_runtime_failure.c src/ps5_main.c src/config.c src/hotkey.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out tests/test_integration_gen.c src/ps5_main.c,$(filter %.c %.o,$^))
+
+test: test-runtime-failure
+test-runtime-failure: $(BUILD)/test_runtime_failure
+	./$(BUILD)/test_runtime_failure
+	./$(BUILD)/test_runtime_failure native
+
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 $(BUILD)/test_integration_oracle: $(INTEGRATION_SRCS) tests/integration_oracle_faults.c | $(BUILD)

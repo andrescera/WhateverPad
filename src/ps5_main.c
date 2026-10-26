@@ -319,13 +319,13 @@ static void bt_try(long now)
     g_bt_next = now + 3000;
 }
 
-static void bt_lost(const char *why)
+static void bt_lost(void)
 {
-    log_line("Bluetooth lost: %s", why);
+    host_failure_reason(g_host, g_bt_reason, sizeof g_bt_reason);
+    log_line("Bluetooth failed: %s", g_bt_reason);
+    g_bt_state = WEB_BT_FAILED;
     host_close(g_host);                 /* drops every pad and its virtual pad */
     g_host = NULL;
-    g_bt_state = WEB_BT_FAILED;
-    snprintf(g_bt_reason, sizeof g_bt_reason, "Se perdio el Bluetooth (%s). Pulsa Reintentar.", why);
     notify(TR("WhateverPad PS5: se perdio el Bluetooth.\nPulsa Reintentar en el menu", "WhateverPad PS5: Bluetooth was lost.\nPress Retry in the menu"));
 }
 
@@ -450,6 +450,7 @@ int main(void)
         if (g_host) host_poll(g_host, 4);
         else usleep(4000);
         now = now_ms();
+        if (g_host && host_transport_lost(g_host)) bt_lost();
         web_run(g_web);
 #if WHATEVERPAD_PROBE
         if (g_bt_state == WEB_BT_FAILED) {
@@ -510,7 +511,6 @@ int main(void)
 
         /* The Bluetooth: tries, loss, and the menu's retry button. */
         if (g_bt_state == WEB_BT_TRYING && now >= g_bt_next) bt_try(now);
-        if (g_host && host_transport_lost(g_host)) bt_lost("sin respuesta del chip");
         if (g_retry) {
             g_retry = 0;
             if (g_vpad_ok && g_bt_state == WEB_BT_FAILED) {
