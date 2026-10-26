@@ -151,7 +151,7 @@ static void run_case(int scenario)
     if (scenario >= 5) CHECK(web_starts == 2);
 #else
     CHECK(installs == !remove_flag && removes == remove_flag);
-    CHECK(opens == 5 && commands == 5); /* One unanswered capability query per open, never three retries. */
+    CHECK(opens == 5 && commands == 15); /* Three bounded setup sends on each fresh open. */
     CHECK(raises == 1 && restores == 2);
 #endif
     for (int i = 0; i < opens; i++) {

@@ -206,7 +206,7 @@ typedef struct {
     struct { unsigned op, generated, answered, parent, barrier; } invocation[32];
     unsigned count, pending, required_parent, barriers;
     unsigned char random[4][8];
-    int startup;
+    int startup, missing;
 } probe_trace;
 
 static int probe_setting(unsigned op)
@@ -223,6 +223,14 @@ static void observe_probe(void *ud, enum sim_observation kind, sim_origin origin
     CHECK(!origin.foreign && !origin.copy);
     unsigned id = origin.invocation;
     if (kind == SIM_COMMAND) {
+        if (t->missing) {
+            CHECK(code == 0x1002 && t->count < 3 && !t->invocation[id].op);
+            CHECK(attrib_get()->unanswered == (unsigned)(t->count != 0));
+            t->invocation[id].op = code;
+            t->pending = id;
+            t->count++;
+            return;
+        }
         CHECK(t->startup && t->count < sizeof probe_startup / sizeof probe_startup[0]);
         /* The exact effect sequence catches retransmission even if the model
          * assigns the repeated submission a new private invocation number. */
@@ -403,7 +411,7 @@ static void test_ordinary_missing_answer(void)
     sim_t *s = sim_new(&pad);
     hci_t transport = sim_hci(s);
     host_t *h;
-    probe_trace trace = {.startup = 1};
+    probe_trace trace = {.startup = 1, .missing = 1};
     attrib_reset();
     memset(commands, 0, sizeof commands);
     ncommands = 0;
@@ -415,16 +423,19 @@ static void test_ordinary_missing_answer(void)
     if (!h) { transport.ops->close(transport.ctx); sim_free(s); return; }
     sim_bind_ownership(s, host_ownership(h));
     CHECK(!host_start(h));
-    CHECK(ncommands == 1 && commands[0x1002] == 1);
-    CHECK(commands[0x1005] == 0 && attrib_get()->submitted == 1);
-    CHECK(trace.count == 1 && trace.pending == 1 && trace.invocation[1].op == 0x1002);
-    CHECK(!trace.invocation[1].generated && !trace.invocation[1].answered);
+    CHECK(ncommands == 3 && commands[0x1002] == 3);
+    CHECK(commands[0x1005] == 0 && attrib_get()->submitted == 3);
+    CHECK(trace.count == 3 && trace.pending == 3);
+    for (unsigned i = 1; i <= 3; i++) {
+        CHECK(trace.invocation[i].op == 0x1002);
+        CHECK(!trace.invocation[i].generated && !trace.invocation[i].answered);
+    }
     CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
     host_close(h); /* the caller retires the prepared host after failed startup */
-    CHECK(ncommands == 1 && attrib_get()->submitted == 1);
+    CHECK(ncommands == 3 && attrib_get()->submitted == 3);
     CHECK(attrib_get()->unanswered == 1 && attrib_get()->timeout == 1);
     sim_free(s);
-    puts("PROBE missing answer: one submission, one timeout, no retransmission");
+    puts("PRODUCT missing answer: three wire sends, one waiter and final timeout");
 #endif
 }
 

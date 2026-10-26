@@ -6,6 +6,7 @@
  */
 #include "sim.h"
 #include "sim_le.h"
+#include "../src/host_int.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -48,7 +49,7 @@ typedef struct {
     unsigned ncommands, capability, barrier_due, rand_pending;
     unsigned rand_started, rand_completed;
     unsigned char randoms[256][8];
-    unsigned fault_op, fault_invocation;
+    unsigned fault_op, fault_invocation, fault_left;
     int fault_armed, fault_delay, closing;
     unsigned handle;
     int has_handle;
@@ -115,10 +116,12 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
         CHECK(!forbidden(code));
         if (setting(code) || code == RAND) CHECK(f->capability);
         if (!f->closing) {
-            CHECK(f->rand_pending == 0);
+            CHECK(f->rand_pending == 0 ||
+                  (code == RAND && f->fault_op == RAND && f->fault_left &&
+                   count(f, RAND) < 3));
             if (f->barrier_due) CHECK(code == RAND);
             if (code == RAND) {
-                CHECK(f->barrier_due);
+                CHECK(f->barrier_due || (f->rand_pending && f->fault_op == RAND));
                 f->barrier_due = 0;
                 f->rand_pending = origin.invocation;
                 f->rand_started++;
@@ -136,7 +139,8 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
         }
         /* Subscribe before model_command generates this invocation's response. */
         if (f->fault_armed && code == f->fault_op) {
-            f->fault_armed = 0;
+            if (f->fault_left) f->fault_left--;
+            f->fault_armed = f->fault_left != 0;
             f->fault_invocation = origin.invocation;
             if (f->le) sim_le_delay_events(f->le, 0x0e, -1, 1, f->fault_delay);
             else sim_delay_events(f->classic, 0x0e, 1, f->fault_delay);
@@ -178,7 +182,9 @@ static void observe(void *ud, enum sim_observation kind, sim_origin origin,
     }
     if (op == RAND) {
         CHECK(code == 0x0e && n == 12 && !status);
-        CHECK(f->rand_pending == origin.invocation);
+        if (f->fault_op == RAND && count(f, RAND) == 3)
+            CHECK(!host_admits(f->host)); /* Every delayed fence is already quarantined. */
+        else CHECK(f->rand_pending == origin.invocation);
         if (n == 12 && !status) {
             CHECK(f->rand_completed < 256);
             if (f->rand_completed < 256) {
@@ -490,7 +496,7 @@ static void pairing_mode_disabled(int le)
     finish(&f, 0);
 }
 
-/* Missing and 3-second-late responses both exceed the 2-second ACK budget.
+/* Missing and 6-second-late responses exhaust the complete setup retry budget.
  * Test capability acquisition, its first Rand barrier, and a running write. */
 static void ambiguous(int le, unsigned op, int delay)
 {
@@ -507,6 +513,7 @@ static void ambiguous(int le, unsigned op, int delay)
     unsigned before = count(&f, op);
     f.fault_op = op;
     f.fault_delay = delay;
+    f.fault_left = op == EVENT_MASK ? 1 : 3;
     f.fault_armed = 1;
     if (op == EVENT_MASK) {
         unsigned char mask[8] = {0xfe,0xff,0xff,0xff,0xff,0xff,0xff,0x3f};
@@ -518,11 +525,12 @@ static void ambiguous(int le, unsigned op, int delay)
         CHECK(!host_start(f.host));
     }
     CHECK(!f.fault_armed && f.fault_invocation != 0);
-    CHECK(count(&f, op) == before + 1);       /* Count real invocations, not tokens. */
+    unsigned physical = op == EVENT_MASK ? 1 : 3;
+    CHECK(count(&f, op) == before + physical); /* Count real invocations, not tokens. */
     CHECK(f.ncommands && f.commands[f.ncommands - 1].invocation == f.fault_invocation);
     unsigned stopped = f.ncommands;
     pump_until(&f, clock_now(&f) + 6000, -1, -1);
-    CHECK(f.ncommands == stopped && count(&f, op) == before + 1);
+    CHECK(f.ncommands == stopped && count(&f, op) == before + physical);
     wire_command *c = invocation(&f, f.fault_invocation);
     CHECK(c != NULL && c->completions == (unsigned)(delay >= 0));
     unsigned char reply[HCI_PKT_MAX];
@@ -822,7 +830,7 @@ int main(int argc, char **argv)
         static const unsigned targets[] = {SUPPORTED, RAND, EVENT_MASK};
         for (unsigned i = 0; i < sizeof targets / sizeof targets[0]; i++) {
             ambiguous(le, targets[i], -1);
-            ambiguous(le, targets[i], 3000);
+            ambiguous(le, targets[i], 6000);
         }
     }
     disconnect_reentrant();

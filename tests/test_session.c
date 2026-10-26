@@ -856,8 +856,9 @@ static void test_only_acknowledged_settings_authorize_restoration(void)
             }
         } else CHECK((h != NULL) == (mode == SET_ACKED));
         CHECK(setting_attempts > 0);
-        CHECK(setting_attempts == 1);
-        CHECK(setting_accepted == (mode != SET_REFUSED));
+        int expected_sends = i < 2 && mode == SET_LOST ? 3 : 1;
+        CHECK(setting_attempts == expected_sends);
+        CHECK(setting_accepted == (mode == SET_REFUSED ? 0 : expected_sends));
         closing_effects = 1;
         if (h) host_close(h);
         char name[80];

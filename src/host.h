@@ -4,7 +4,7 @@
  * Runs on one thread: host_poll() pumps the transport, dispatches what
  * arrived and advances every link's state machine. Every step that needs a
  * protocol reply is retried or timed out. A missing HCI acknowledgement
- * quarantines its invocation and stops normal admission; it is never resent.
+ * quarantines its invocation, except bounded pre-link setup retries.
  *
  *   pairing:    host_pair() searches for a pad in pairing mode, connects,
  *               pairs, reads its vendor/product id over SDP and opens the

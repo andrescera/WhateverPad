@@ -128,7 +128,8 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
     probe_deadline_ms = now_ms() + 1000;
 #endif
     own_command c = {.opcode = (uint16_t)op, .plen = (uint8_t)len,
-                     .ack_by = (uint64_t)now_ms() + 2000,
+                     .ack_by = (uint64_t)now_ms() + (h->setup_retry ? 5000 : 2000),
+                     .setup_retry = (uint8_t)h->setup_retry,
                      .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
 #if WHATEVERPAD_PROBE
     c.ack_by = (uint64_t)probe_deadline_ms;
@@ -2509,7 +2510,7 @@ int host_forget_all(host_t *h)
 
 static int command_wait(host_t *h, own_ref ref)
 {
-    long deadline = now_ms() + 2000;
+    long deadline = now_ms() + (h->setup_retry ? 5000 : 2000);
 #if WHATEVERPAD_PROBE
     deadline = probe_deadline_ms;
 #endif
@@ -2562,6 +2563,7 @@ int hci_sync(host_t *h, unsigned op, const void *p, int plen)
  * Bluetooth off and on in the settings. */
 static void chip_read(host_t *h, const char *name, unsigned op, const void *p, int plen)
 {
+    h->cc_op = 0;
     hci_sync(h, op, p, plen);
     if (h->cc_op != op || h->cc_len < 6) {
         log_line("chip: %s: no reply", name);
@@ -2710,7 +2712,11 @@ unsigned host_radio_left(const host_t *h)
 
 int host_start(host_t *h)
 {
-    if (!h || !h->hci.ops->op_submit || !setup(h)) return 0;
+    if (!h || !h->hci.ops->op_submit) return 0;
+    h->setup_retry = !WHATEVERPAD_PROBE;
+    int ready = setup(h);
+    h->setup_retry = 0;
+    if (!ready) return 0;
     if (WHATEVERPAD_PROBE) return own_activate(h->ownership); /* No store/IRK work. */
     memcpy(h->store.adapter.addr, h->bdaddr, 6);
     if (h->hci.ops->chip_vendor) h->store.adapter.vid = (uint16_t)h->hci.ops->chip_vendor(h->hci.ctx);
@@ -2721,7 +2727,7 @@ int host_start(host_t *h)
         log_line("store: load failed, preserved: %s", bond_store_result_name(h->store_error));
     h->committed = h->store;
     log_line("store: %d paired pad(s)", h->store.count);
-    long deadline = now_ms() + 2000;
+    long deadline = now_ms() + 5000;
     while (host_admits(h)) {
         if (own_activate(h->ownership)) return 1;
         if (now_ms() >= deadline) break;

@@ -94,6 +94,12 @@ void attrib_deadline(unsigned op, long deadline)
     if (newest >= 0) pending[newest].deadline = deadline;
 }
 
+void attrib_resend(unsigned op)
+{
+    counts.submitted++;
+    opcodes[op].submitted++;
+}
+
 void attrib_poll(long now)
 {
     int i;
@@ -256,6 +262,7 @@ void attrib_log_summary(void)
 enum attrib_class attrib_observe_receipt(const unsigned char *e, int len, long now,
                                          own_provenance provenance)
 {
+    if (provenance == OWN_RECEIPT_RETIRED) return ATTRIB_IGNORED;
     unsigned ev, op;
     if (provenance == OWN_RECEIPT_SEQUENCED || len <= 0 ||
         (e[0] != 0x0e && e[0] != 0x0f))
