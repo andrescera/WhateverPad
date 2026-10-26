@@ -115,6 +115,13 @@ test: $(BUILD)/test_host_transactions $(BUILD)/test_runtime_link_callbacks $(BUI
 $(BUILD)/test_bond_store: src/bond_store.c tests/test_bond_store.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DBOND_STORE_TEST -o $@ $^
 
+$(BUILD)/test_bond_missing_file: $(CORE) $(WEB) tests/sim.c tests/test_bond_missing_file.c tests/test_web.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DBOND_STORE_OPENAT_TEST -Wl,--wrap=openat,--wrap=fstat,--wrap=read,--wrap=close -o $@ $(filter-out tests/test_web.c,$^)
+
+test: test-bond-missing-file
+test-bond-missing-file: $(BUILD)/test_bond_missing_file
+	./$(BUILD)/test_bond_missing_file
+
 # The console source for virtual pads, against stand-ins for the console's libraries.
 # Keep the loader stand-ins from intercepting the sanitizer runtime's own calls.
 $(BUILD)/test_vpad.o: src/ps5_vpad.c | $(BUILD)

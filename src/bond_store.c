@@ -7,6 +7,33 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef __PROSPERO__
+#include <sys/syscall.h>
+#endif
+
+static int store_openat(int dir, const char *name, int flags, mode_t mode)
+{
+#if defined(__PROSPERO__) || defined(BOND_STORE_OPENAT_TEST)
+    unsigned char failed;
+#ifdef BOND_STORE_OPENAT_TEST
+    extern long bond_store_test_openat(int, const char *, int, mode_t, unsigned char *);
+    long result = bond_store_test_openat(dir, name, flags, mode, &failed);
+#else
+    /* The SDK's openat stub drops carry, returning positive errno as an fd. */
+    register long result __asm__("rax") = SYS_openat;
+    register long arg4 __asm__("r10") = mode;
+    __asm__ volatile("syscall; setc %1"
+                     : "+a"(result), "=qm"(failed)
+                     : "D"((long)dir), "S"(name), "d"((long)flags), "r"(arg4)
+                     : "rcx", "r11", "memory", "cc");
+#endif
+    if (failed) { errno = (int)result; return -1; }
+    return (int)result;
+#else
+    return openat(dir, name, flags, mode);
+#endif
+}
+
 static unsigned get16(const uint8_t *p) { return p[0] | (unsigned)p[1] << 8; }
 static void put16(uint8_t *p, unsigned v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 
@@ -156,12 +183,12 @@ static int open_parent(const char *path, char name[256], int create)
             memcpy(name, part, strlen(part) + 1);
             return fd;
         }
-        child = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        child = store_openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0);
         if (child < 0 && create && errno == ENOENT && !state[0]) {
             if (mkdirat(fd, part, 0700)) break;
             /* Persist creation of the state directory in its parent too. */
             if (fsync(fd)) break;
-            child = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            child = store_openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0);
         }
         if (child < 0) break;
         close(fd); fd = child; part = next;
@@ -176,7 +203,7 @@ static bond_result load_at(int dir, const char *name, const bond_adapter *adapte
     size_t n = 0;
     ssize_t got;
     struct stat st;
-    int fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    int fd = store_openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0);
     if (fd < 0) {
         if (errno != ENOENT) return BOND_ERROR;
         if (!address_ok(adapter->addr)) return BOND_ADAPTER;
@@ -238,7 +265,7 @@ bond_result bond_store_save(const char *path, const bond_store *s)
     result = load_at(dir, name, &s->adapter, &old);
     if (result != BOND_COMMITTED && result != BOND_MISSING) { close(dir); return result; }
     snprintf(temp, sizeof temp, ".bond-%ld-%u.tmp", (long)getpid(), ++sequence);
-    fd = openat(dir, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    fd = store_openat(dir, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) { close(dir); return BOND_ERROR; }
     f = fdopen(fd, "wb");
     if (!f) { close(fd); unlinkat(dir, temp, 0); close(dir); return BOND_ERROR; }
