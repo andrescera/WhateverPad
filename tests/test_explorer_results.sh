@@ -11,7 +11,7 @@ jq -nc '
   ["scan","mask","query","classic","le-create","inquiry","auth","encryption","p256","dhkey","virtual"][] as $c
   | [0,1][] as $p | ["normal","sanitized"][] as $b
   | {class:$c,policy:$p,build:$b,depth:12,
-     states:(if $c == "scan" then (if $p == 0 then 50727490 else 120901295 end) else 1 end),
+     states:(if $c == "scan" then (if $p == 0 then 51085920 else 121269713 end) else 1 end),
      edges:0,violations:0,g:($c == "scan"),h:($c == "scan")}
 ' > "$tmp/valid/results.jsonl"
 sh "$root/tools/check-explorer-results.sh" "$tmp/valid"
