@@ -51,6 +51,13 @@ void attrib_reset(void)
     samples_omitted = 0;
 }
 
+void attrib_begin_try(void)
+{
+    memset(pending, 0, sizeof pending);
+    counts.unanswered = 0;
+    for (unsigned op = 0; op < 65536; op++) opcodes[op].unanswered = opcodes[op].untracked_pending = 0;
+}
+
 /* DD 4: procedures acknowledge with Status, queries/settings/replies with Complete. */
 static unsigned expected(unsigned op)
 {

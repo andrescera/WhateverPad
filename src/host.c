@@ -2688,6 +2688,7 @@ host_t *host_prepare(hci_t hci, const char *db_path, const host_events *ev)
 #if WHATEVERPAD_PROBE
     probe_deadline_ms = 0;
 #endif
+    attrib_begin_try();
     h->ambiguity_seen = ambiguities();
     if (WHATEVERPAD_ATTRIB_POLICY == OWN_POLICY_NO_RESTORE)
         log_line("NO_RESTORE: changed radio settings stay as written; turn bridged controllers off to drop their radio links");

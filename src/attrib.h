@@ -26,6 +26,7 @@ typedef struct {
 
 /* Process-lifetime counters survive host retries. Reset only at a new run/test. */
 void attrib_reset(void);
+void attrib_begin_try(void); /* Retire pending entries, retain cumulative observations. */
 void attrib_submit(unsigned opcode, int sent, long now);
 void attrib_resend(unsigned opcode); /* Another wire send, the same logical waiter. */
 /* Override the default 1,000 ms acknowledgement deadline for a synchronous wait. */

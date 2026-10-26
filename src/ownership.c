@@ -421,6 +421,8 @@ own_result own_prepare(own_ledger *l, const own_command *c, own_ref *out)
     r->revision = 1;
     r->desc = d;
     r->c = *c;
+    /* Setup replies may cross opens; they cannot authorize a restore. */
+    r->proof_veto = c->setup_retry && l->policy == OWN_POLICY_SINGLE_PRODUCER;
     /* Only actual bytes are retained; callers' unused buffers are not evidence. */
     memset(r->c.params + c->plen, 0, sizeof r->c.params - c->plen);
     memset(r->c.original + c->original_len, 0, sizeof r->c.original - c->original_len);
@@ -511,6 +513,7 @@ own_result own_request_undo(own_ledger *l, own_ref ref, uint64_t now, own_token 
     own_tick(l, now);
     own_record *r = record(l, ref);
     if (!r) return OWN_INVALID;
+    if (r->c.setup_retry && l->policy == OWN_POLICY_SINGLE_PRODUCER) { own_detector_trip(l, now); return OWN_NO_PROOF; }
     if (l->waiter.serial) return OWN_BUSY;
     if (admits(l))
         for (unsigned i = 0; i < OWN_MAX; i++)
