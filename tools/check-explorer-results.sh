@@ -2,7 +2,7 @@
 set -eu
 
 classes='["scan","mask","query","classic","le-create","inquiry","auth","encryption","p256","dhkey","virtual"]'
-totals='{"0":50727500,"1":120901305}'
+totals='{"0":51085930,"1":121269723}'
 # Reduced contracts are only for local fixtures; host uses the fixed contract.
 if [ "$#" -eq 3 ] && [ "$1" = "--fixture" ]; then
   classes=$(jq -ce '.classes' "$2")

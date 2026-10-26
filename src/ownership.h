@@ -88,6 +88,8 @@ typedef struct {
     unsigned records, quarantined, links, radio_left, unidentified, barriers;
     unsigned ambiguity_count, credit_nops;
     int transport_closed, finalized;
+    uint16_t failed_opcode; /* Zero when no outstanding opcode was identifiable. */
+    uint8_t reply_timeout;
 } own_summary;
 
 /* Heap storage is private; allocation/free are the only non-transition operations. */

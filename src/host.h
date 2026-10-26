@@ -61,8 +61,9 @@ int  host_set_output(host_t *h, int slot, const pad_output *out);
 int  host_connected(const host_t *h, int slot);
 int  host_paired_count(const host_t *h);
 
-/* The controller went away (rest mode): close and open again. */
+/* Transport loss or ledger failure: close locally before offering Retry. */
 int  host_transport_lost(const host_t *h);
+void host_failure_reason(const host_t *h, char *out, size_t max);
 
 /* ---- for the web page ---- */
 

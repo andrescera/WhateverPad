@@ -802,8 +802,8 @@ static void execute(step s)
     case BLOCKED_RETRY: f.bt = WEB_BT_FAILED; request("POST", "/api/retry", 1); f.retry = 0; break;
     case STOP: request("POST", "/api/stop", 0); break;
     case NATIVE: {
-        static const unsigned char addr[6] = {0xd6, 0x32, 0xb0, 0x8d, 0x18, 0x48};
-        if (!f.le) sim_peer_request(f.classic, addr, 0x002508);
+        /* A handoff of this bridge, not an unrelated peer's reconnect. */
+        own_release(host_ownership(f.host), SESSION_NATIVE, (uint64_t)now_ms());
         release_now(); tick(50);
         if (!f.closes) violation(NATIVE_RELEASE);
         break;
