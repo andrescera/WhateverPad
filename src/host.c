@@ -128,7 +128,7 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
     probe_deadline_ms = now_ms() + 1000;
 #endif
     own_command c = {.opcode = (uint16_t)op, .plen = (uint8_t)len,
-                     .ack_by = (uint64_t)now_ms() + (h->setup_retry ? OWN_SETUP_MS : 2000),
+                     .ack_by = (uint64_t)now_ms() + (h->setup_retry ? OWN_SETUP_MS : HOST_COMMAND_WAIT_MS),
                      .setup_retry = (uint8_t)h->setup_retry,
                      .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
 #if WHATEVERPAD_PROBE
@@ -2510,7 +2510,7 @@ int host_forget_all(host_t *h)
 
 static int command_wait(host_t *h, own_ref ref)
 {
-    long deadline = now_ms() + 2000;
+    long deadline = now_ms() + HOST_COMMAND_WAIT_MS;
 #if WHATEVERPAD_PROBE
     deadline = probe_deadline_ms;
 #endif

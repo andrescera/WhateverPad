@@ -42,6 +42,13 @@ check-generated: | $(BUILD)
 $(BUILD)/test_web: $(CORE) $(WEB) tests/sim.c tests/test_web.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_web_product_loop: $(CORE) $(WEB) tests/sim.c tests/test_web_product_loop.c tests/test_web.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_web.c,$^)
+
+test: test-web-product-loop
+test-web-product-loop: $(BUILD)/test_web_product_loop
+	./$(BUILD)/test_web_product_loop
+
 # The page against a simulated pad, to look at in a browser: make demo
 $(BUILD)/web_demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^ -lm
@@ -338,6 +345,17 @@ check-mutations: test-ownership check-peer-reply-mutation check-link-generation-
 test: test-integration
 ci: check-integration check-integration-mutations
 INTEGRATION_SRCS := $(USB_STANDIN) $(BUILD)/test_vpad.o $(BUILD)/test_vpad_web.o $(CORE) src/web_page.c src/usb_desc.c src/evstream.c tests/sim.c tests/sim_le.c tests/test_integration_gen.c tests/sim.h tests/sim_le.h tests/sim_lifetime.h
+$(BUILD)/test_web_usb_idle: $(INTEGRATION_SRCS) tests/test_web_usb_idle.c src/ps5_main.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections,--wrap=host_pair -o $@ $(filter-out tests/test_integration_gen.c src/ps5_main.c,$(filter %.c %.o,$^))
+
+test: test-web-usb-idle
+test-web-usb-idle: $(BUILD)/test_web_usb_idle
+	./$(BUILD)/test_web_usb_idle
+	./$(BUILD)/test_web_usb_idle inside
+	./$(BUILD)/test_web_usb_idle at
+	./$(BUILD)/test_web_usb_idle outside
+	./$(BUILD)/test_web_usb_idle backlog
+
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
 $(BUILD)/test_integration_oracle: $(INTEGRATION_SRCS) tests/integration_oracle_faults.c | $(BUILD)

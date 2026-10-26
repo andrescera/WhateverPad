@@ -1,7 +1,7 @@
 /* WhateverPad PS5's web page: status, pairing, forgetting pads, stopping, the log.
  *
  * Served from the main loop without threads or blocking: at most WEB_CLIENTS
- * connections, requests of at most 8 KB, three seconds to read/admit and
+ * connections, requests of at most 8 KB, a bounded read/admission budget and
  * one bounded second to write the reply.
  *
  * There is no PIN, by the user's choice: anyone on the local network can
@@ -16,6 +16,8 @@
 #include <stddef.h>
 
 #define WEB_PORT 8095
+/* One turn: two page-scan waits + one diagnostic, 3 * 2000 + 1000 ms margin = 7000. */
+#define WEB_REQUEST_MS ((HOST_POLL_SYNC_WAITS + 1) * HOST_COMMAND_WAIT_MS + 1000)
 
 typedef struct web web_t;
 
@@ -57,8 +59,13 @@ typedef struct {
 
 /* Listens on `port` on every interface. Returns NULL if it cannot. */
 web_t *web_start(const web_cfg *cfg, int port);
+/* Poll only: callers may deliberately defer mutations. */
 void   web_poll(web_t *w);
-/* Call only after host_poll has unwound, never from its idle/service callback.
+/* Outer product loop only, after host/USB operations unwind; idle uses web_poll.
+ * Nonwaiting page actions first, then at most one diagnostic wait per turn.
+ * Nested calls can poll, but cannot take/apply while polling or applying. */
+void   web_run(web_t *w);
+/* Nonwaiting actions precede diagnostics; each class keeps request order.
  * Take one action, then apply it exactly once. Both boundaries recheck admission.
  * Retry is applied by a subsequent take, after its complete reply was written.
  * The owner observes cfg.retry and starts initialization outside this call. */

@@ -347,7 +347,7 @@ static void test_client_saturation_and_timeout(void)
         CHECK(complete_response(out, bytes, 200));
         int fd = idle_client();
         struct pollfd ready = {.fd = fd, .events = POLLIN};
-        io.ops->pump(io.ctx, 3000); web_poll(g_web);
+        io.ops->pump(io.ctx, WEB_REQUEST_MS); web_poll(g_web);
         CHECK(poll(&ready, 1, 0) == 0);
         io.ops->pump(io.ctx, 1); web_poll(g_web);
         bytes = response(&ready, out, sizeof out);
@@ -543,7 +543,7 @@ static void test_web_callbacks_preempt_pending_actions(void)
             int taken = web_take_pending(g_web, &action);
             CHECK(taken == (mode != 0));
             if (mode == 1) l.release = 1; /* service inside apply wins */
-            if (mode == 2) io.ops->pump(io.ctx, 3000); /* taken, not executed */
+            if (mode == 2) io.ops->pump(io.ctx, WEB_REQUEST_MS); /* taken, not executed */
             if (mode == 3) { /* a real Stop is latched by idle service */
                 int stop_fd = post_pending("/api/stop");
                 read_framed(stop_fd, out, sizeof out, 200);
@@ -628,7 +628,7 @@ static void test_retry_acknowledgement_and_cancellation(void)
                 session_fail(&policy, (uint64_t)sim_now(), 0);
                 session_cleanup_complete(&policy, CLEANUP_UNCERTAIN);
             }
-            if (mode == 7) io.ops->pump(io.ctx, 3000);
+            if (mode == 7) io.ops->pump(io.ctx, WEB_REQUEST_MS);
             if (mode == 8) session_fail(&policy, (uint64_t)sim_now(), 1);
             dispatch();
             CHECK(g_retry == (mode == 0));
