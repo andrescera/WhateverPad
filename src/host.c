@@ -128,7 +128,7 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
     probe_deadline_ms = now_ms() + 1000;
 #endif
     own_command c = {.opcode = (uint16_t)op, .plen = (uint8_t)len,
-                     .ack_by = (uint64_t)now_ms() + (h->setup_retry ? 5000 : 2000),
+                     .ack_by = (uint64_t)now_ms() + (h->setup_retry ? OWN_SETUP_MS : 2000),
                      .setup_retry = (uint8_t)h->setup_retry,
                      .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
 #if WHATEVERPAD_PROBE
@@ -2510,14 +2510,18 @@ int host_forget_all(host_t *h)
 
 static int command_wait(host_t *h, own_ref ref)
 {
-    long deadline = now_ms() + (h->setup_retry ? 5000 : 2000);
+    long deadline = now_ms() + 2000;
 #if WHATEVERPAD_PROBE
     deadline = probe_deadline_ms;
 #endif
     h->sync = ref;
     h->sync_done = h->sync_ok = 0;
     h->cc_op = 0;
-    while (!h->sync_done && host_admits(h) && now_ms() < deadline) pump(h, 20);
+    while (!h->sync_done && host_admits(h)) {
+        if (h->setup_retry) deadline = (long)own_wait_deadline(h->ownership, ref);
+        if (now_ms() >= deadline) break;
+        pump(h, 20);
+    }
     own_tick(h->ownership, (uint64_t)now_ms());
     int ok = h->sync_done && h->sync_ok && host_admits(h);
 #if WHATEVERPAD_PROBE
@@ -2727,7 +2731,7 @@ int host_start(host_t *h)
         log_line("store: load failed, preserved: %s", bond_store_result_name(h->store_error));
     h->committed = h->store;
     log_line("store: %d paired pad(s)", h->store.count);
-    long deadline = now_ms() + 5000;
+    long deadline = now_ms() + OWN_SETUP_MS;
     while (host_admits(h)) {
         if (own_activate(h->ownership)) return 1;
         if (now_ms() >= deadline) break;

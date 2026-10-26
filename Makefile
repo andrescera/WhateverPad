@@ -59,6 +59,13 @@ test: test-setup-retry
 test-setup-retry: $(BUILD)/test_setup_retry
 	./$(BUILD)/test_setup_retry
 
+$(BUILD)/test_setup_wait: $(CORE) tests/sim.c tests/test_setup_wait.c tests/test_setup_retry.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_setup_retry.c,$^)
+
+test: test-setup-wait
+test-setup-wait: $(BUILD)/test_setup_wait
+	./$(BUILD)/test_setup_wait
+
 $(BUILD)/test_compat: $(CORE) tests/sim.c tests/test_compat.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 

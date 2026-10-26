@@ -13,6 +13,7 @@
 #define OWN_LINK_MAX 4
 #define OWN_BARRIER_MAX 256
 #define OWN_FRESH_MS 1000
+#define OWN_SETUP_MS 5000
 
 typedef struct { uint64_t attempt, serial; } own_ref;
 typedef struct { uint64_t attempt, generation; uint8_t slot; } link_ref;
@@ -105,6 +106,7 @@ void own_snapshot(const own_ledger *, own_summary *);
 own_result own_prepare(own_ledger *, const own_command *, own_ref *);
 own_result own_reclaim(own_ledger *, own_ref);
 own_result own_status(const own_ledger *, own_ref, own_state *);
+uint64_t own_wait_deadline(const own_ledger *, own_ref);
 /* A pending barrier outranks all normal commands; undo is derived, never supplied. */
 own_result own_next_hci(own_ledger *, uint64_t now, own_token *);
 own_result own_request_undo(own_ledger *, own_ref, uint64_t now, own_token *);

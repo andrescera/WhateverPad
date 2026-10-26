@@ -443,6 +443,12 @@ own_result own_status(const own_ledger *l, own_ref ref, own_state *out)
     return r->result;
 }
 
+uint64_t own_wait_deadline(const own_ledger *l, own_ref ref)
+{
+    const own_record *r = const_record(l, ref);
+    return r ? (r->setup_by ? r->setup_by : r->c.ack_by) : 0;
+}
+
 own_result own_reclaim(own_ledger *l, own_ref ref)
 {
     own_record *r = record(l, ref);
@@ -715,7 +721,7 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
         !l->generation && e.phase != OWN_UNDO) {
         if (!retry) {
             r->setup_sends = 0;
-            r->setup_by = bounded_add(now, 5000);
+            r->setup_by = bounded_add(now, OWN_SETUP_MS);
             if (r->c.terminal_by < r->setup_by)
                 r->setup_by = r->c.terminal_by;
         }
