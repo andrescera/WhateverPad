@@ -217,7 +217,7 @@ static void on_disconnect(void *ud, link_ref link)
 static void on_idle(void *ud)
 {
     (void)ud;
-    web_poll(g_web);
+    web_run(g_web);
     if (g_host && (g_stop || g_web_stop))
         own_release(host_ownership(g_host), SESSION_STOP, (uint64_t)now_ms());
 }
@@ -450,7 +450,7 @@ int main(void)
         if (g_host) host_poll(g_host, 4);
         else usleep(4000);
         now = now_ms();
-        web_poll(g_web);
+        web_run(g_web);
 #if WHATEVERPAD_PROBE
         if (g_bt_state == WEB_BT_FAILED) {
             if (!probe_released) {

@@ -80,7 +80,7 @@ int web_alive(const web_t *w, int port)
     (void)port;
     return w && !(web_lost && web_starts == 1 && *cfg.bt_state == WEB_BT_FAILED);
 }
-void web_poll(web_t *w)
+void web_run(web_t *w)
 {
     if (!w) return;
     if (*cfg.bt_state == WEB_BT_FAILED) {

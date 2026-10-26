@@ -42,6 +42,13 @@ check-generated: | $(BUILD)
 $(BUILD)/test_web: $(CORE) $(WEB) tests/sim.c tests/test_web.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_web_product_loop: $(CORE) $(WEB) tests/sim.c tests/test_web_product_loop.c tests/test_web.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_web.c,$^)
+
+test: test-web-product-loop
+test-web-product-loop: $(BUILD)/test_web_product_loop
+	./$(BUILD)/test_web_product_loop
+
 # The page against a simulated pad, to look at in a browser: make demo
 $(BUILD)/web_demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^ -lm

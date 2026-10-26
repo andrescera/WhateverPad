@@ -591,8 +591,11 @@ void web_apply_pending(web_t *w, web_action action)
         switch (c->action) {
         case PAIR:
             if (!h) unavailable(c, 503);
+            else if (!host_pair(h, 60)) {
+                log_line("web: pairing refused");
+                respond_text(c, 503, "{\"error\":\"pairing refused\"}");
+            }
             else {
-                host_pair(h, 60);
                 log_line("web: pairing started");
                 respond_text(c, 200, "{\"ok\":true}");
             }
@@ -691,6 +694,13 @@ void web_poll(web_t *w)
     service(w);
     web_poll_once(w, now_ms());
     w->polling = 0;
+}
+
+void web_run(web_t *w)
+{
+    web_action action;
+    web_poll(w);
+    while (web_take_pending(w, &action)) web_apply_pending(w, action);
 }
 
 static void web_poll_once(web_t *w, long now)

@@ -57,9 +57,12 @@ typedef struct {
 
 /* Listens on `port` on every interface. Returns NULL if it cannot. */
 web_t *web_start(const web_cfg *cfg, int port);
+/* Poll only: callers may deliberately defer mutations. */
 void   web_poll(web_t *w);
-/* Call only after host_poll has unwound, never from its idle/service callback.
- * Take one action, then apply it exactly once. Both boundaries recheck admission.
+/* Product loop and host idle entry: poll, then drain admitted actions.
+ * Nested calls can poll, but cannot take/apply while polling or applying. */
+void   web_run(web_t *w);
+/* Take one action, then apply it exactly once. Both boundaries recheck admission.
  * Retry is applied by a subsequent take, after its complete reply was written.
  * The owner observes cfg.retry and starts initialization outside this call. */
 int    web_take_pending(web_t *w, web_action *action);
