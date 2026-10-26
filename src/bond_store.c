@@ -249,6 +249,23 @@ static int fault(bond_stage stage)
     return 0;
 }
 
+/* Retain the owned directory/name until cleanup succeeds, even across saves. */
+static int temp_dir = -1;
+static char temp_name[80];
+
+static int cleanup_temp(void)
+{
+    if (temp_dir < 0) return 1;
+    for (int attempt = 0; temp_name[0] && attempt < 2; attempt++) {
+        int result = unlinkat(temp_dir, temp_name, 0);
+        if (!result || result == ENOENT || (result < 0 && errno == ENOENT))
+            temp_name[0] = 0;
+    }
+    int synced = !fault(BOND_STAGE_DIR_FSYNC) && fsync(temp_dir) == 0;
+    if (!temp_name[0]) { close(temp_dir); temp_dir = -1; }
+    return synced;
+}
+
 bond_result bond_store_save(const char *path, const bond_store *s)
 {
     uint8_t b[BOND_FILE_MAX];
@@ -259,6 +276,7 @@ bond_result bond_store_save(const char *path, const bond_store *s)
     int dir, fd, missing;
     FILE *f;
     static unsigned sequence;
+    if (!cleanup_temp() || temp_dir >= 0) return BOND_ERROR;
     if (result != BOND_COMMITTED) return result;
     dir = open_parent(path, name, 1);
     if (dir < 0) return BOND_ERROR;
@@ -269,19 +287,21 @@ bond_result bond_store_save(const char *path, const bond_store *s)
     snprintf(temp, sizeof temp, ".bond-%ld-%u.tmp", (long)getpid(), ++sequence);
     fd = store_openat(dir, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) { close(dir); return BOND_ERROR; }
+    temp_dir = dir;
+    memcpy(temp_name, temp, strlen(temp) + 1);
     f = fdopen(fd, "wb");
-    if (!f) { close(fd); unlinkat(dir, temp, 0); close(dir); return BOND_ERROR; }
+    if (!f) { close(fd); cleanup_temp(); return BOND_ERROR; }
     result = BOND_ERROR;
     if (fchmod(fd, 0600) || fault(BOND_STAGE_WRITE) || fwrite(b, 1, len, f) != len ||
         fault(BOND_STAGE_FLUSH) || fflush(f) || fault(BOND_STAGE_FILE_FSYNC) || fsync(fd)) {
         fclose(f);
     } else if (fclose(f) == 0 && !fault(BOND_STAGE_RENAME) &&
                (missing ? linkat(dir, temp, dir, name, 0) : renameat(dir, temp, dir, name)) == 0) {
-        result = (missing && unlinkat(dir, temp, 0)) || fault(BOND_STAGE_DIR_FSYNC) ||
-                 fsync(dir) ? BOND_UNCERTAIN : BOND_COMMITTED;
+        result = BOND_COMMITTED;
+        if (!missing) temp_name[0] = 0;
     }
-    if (result == BOND_ERROR) unlinkat(dir, temp, 0);
-    close(dir);
+    int synced = cleanup_temp();
+    if (result == BOND_COMMITTED && !synced) result = BOND_UNCERTAIN;
     return result;
 }
 

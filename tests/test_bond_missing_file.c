@@ -11,13 +11,14 @@
 static int posix_mode, final_errno, wrong_owner, force_fd2, final_fd = -1;
 static int bogus_fd = -1, bogus_stats, bogus_reads, bogus_closes, fd2_reads;
 static int private_fd = -1;
-static int race_publish, temp_collision, fail_sync, fail_temp_unlink;
+static int race_publish, temp_collision, fail_sync, fail_temp_unlink, dir_syncs;
 static char collision_name[80];
 static const char corrupt[] = "concurrent-corrupt", collision[] = "colliding-temp";
 
 int __real_openat(int, const char *, int, ...);
 int __real_fstat(int, struct stat *);
 ssize_t __real_read(int, void *, size_t);
+ssize_t __real___read_chk(int, void *, size_t, size_t);
 int __real_close(int);
 int __real_fsync(int);
 int __real_renameat(int, const char *, int, const char *);
@@ -107,6 +108,13 @@ ssize_t __wrap_read(int fd, void *buf, size_t len)
     return __real_read(fd, buf, len);
 }
 
+ssize_t __wrap___read_chk(int fd, void *buf, size_t len, size_t capacity)
+{
+    if (fd == bogus_fd) { bogus_reads++; errno = EIO; return -1; }
+    if (fd == 2 && private_fd >= 0) { fd2_reads++; fd = private_fd; }
+    return __real___read_chk(fd, buf, len, capacity);
+}
+
 int __wrap_close(int fd)
 {
     if (fd == bogus_fd) {
@@ -126,7 +134,9 @@ int __wrap_close(int fd)
 int __wrap_fsync(int fd)
 {
     struct stat st;
-    if (fail_sync && __real_fstat(fd, &st) == 0 &&
+    int known = __real_fstat(fd, &st) == 0;
+    if (known && S_ISDIR(st.st_mode)) dir_syncs++;
+    if (fail_sync && known &&
         (S_ISDIR(st.st_mode) ? fail_sync == 2 : fail_sync == 1)) {
         errno = EIO;
         return -1;
@@ -164,7 +174,7 @@ int __wrap_linkat(int from, const char *temp, int to, const char *name, int flag
 int __wrap_unlinkat(int dir, const char *name, int flags)
 {
     if (fail_temp_unlink && !strncmp(name, ".bond-", 6)) {
-        fail_temp_unlink = 0;
+        if (fail_temp_unlink > 0) fail_temp_unlink--;
         errno = EIO;
         return -1;
     }
@@ -183,17 +193,16 @@ static int descriptors(void)
     return count;
 }
 
-static int temp_files(const char *path, int remove)
+static int temp_files(const char *path)
 {
     DIR *dir = opendir(path);
     struct dirent *entry;
     int count = 0;
     CHECK(dir != NULL);
     if (!dir) return -1;
-    while ((entry = readdir(dir))) if (!strncmp(entry->d_name, ".bond-", 6)) {
-        count++;
-        if (remove) CHECK(unlinkat(dirfd(dir), entry->d_name, 0) == 0);
-    }
+    while ((entry = readdir(dir)))
+        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..") &&
+            strcmp(entry->d_name, "pads.db")) count++;
     CHECK(closedir(dir) == 0);
     return count;
 }
@@ -391,13 +400,19 @@ static void transactions(const char *dir, const char *path)
             CHECK(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
             CHECK(unlink(path) == 0);
         }
-        CHECK(temp_files(dir, 0) == 0);
+        CHECK(temp_files(dir) == 0);
         CHECK(descriptors() == initial);
     }
 
     CHECK(chmod(dir, 0777) == 0);
     CHECK(bond_store_save(path, &saved) == BOND_COMMITTED);
     CHECK(stat(dir, &st) == 0 && (st.st_mode & 0777) == 0700);
+    mode_t mask = umask(0777);
+    bond_result restricted = bond_store_save(path, &saved);
+    umask(mask);
+    CHECK(restricted == BOND_COMMITTED);
+    CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
+    CHECK(chmod(path, 0600) == 0); /* Restore the fixture even for the chmod mutant. */
     next = saved;
     next.records[0].key[0] = 0x42;
     for (int missing = 0; missing <= 1; missing++) {
@@ -415,7 +430,7 @@ static void transactions(const char *dir, const char *path)
         fail_sync = 0;
         CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
         CHECK(same_store(&next, &out));
-        CHECK(temp_files(dir, 0) == 0);
+        CHECK(temp_files(dir) == 0);
         CHECK(descriptors() == initial);
     }
     temp_collision = 1;
@@ -428,14 +443,47 @@ static void transactions(const char *dir, const char *path)
     CHECK(unlink(temp) == 0);
     CHECK(unlink(path) == 0);
 
+    int synced = dir_syncs;
     fail_temp_unlink = 1;
-    CHECK(bond_store_save(path, &saved) == BOND_UNCERTAIN);
-    fail_temp_unlink = 0;
+    bond_result recovered = bond_store_save(path, &saved);
+    CHECK(recovered == BOND_COMMITTED || recovered == BOND_UNCERTAIN);
+    CHECK(dir_syncs > synced);
     CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
     CHECK(same_store(&saved, &out));
-    CHECK(temp_files(dir, 1) == 1);
+    CHECK(bond_store_save(path, &next) == BOND_COMMITTED);
+    CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+    CHECK(same_store(&next, &out));
+    CHECK(temp_files(dir) == 0);
     CHECK(unlink(path) == 0);
     CHECK(descriptors() == initial);
+
+    for (int stage = 0; stage < 3; stage++) {
+        fail_temp_unlink = -1;
+        fail_sync = stage == 0 ? 1 : 0;
+        race_publish = stage == 2 ? 1 : 0;
+        synced = dir_syncs;
+        bond_result unresolved = bond_store_save(path, &saved);
+        CHECK(stage == 1 ? unresolved == BOND_COMMITTED || unresolved == BOND_UNCERTAIN :
+                          unresolved == BOND_ERROR);
+        CHECK(dir_syncs > synced);
+        if (stage == 1) {
+            CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+            CHECK(same_store(&saved, &out));
+        }
+        fail_temp_unlink = fail_sync = 0;
+        if (stage == 2) {
+            CHECK(bond_store_save(path, &next) == BOND_INVALID);
+            same_bytes(path, corrupt, sizeof corrupt - 1);
+            CHECK(temp_files(dir) == 0);
+            CHECK(unlink(path) == 0);
+        }
+        CHECK(bond_store_save(path, &next) == BOND_COMMITTED);
+        CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+        CHECK(same_store(&next, &out));
+        CHECK(temp_files(dir) == 0);
+        CHECK(descriptors() == initial);
+        CHECK(unlink(path) == 0);
+    }
 }
 
 int main(int argc, char **argv)
@@ -444,6 +492,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     posix_mode = argc == 2 && !strcmp(argv[1], "--posix");
     CHECK(mkdtemp(dir) != NULL);
+    CHECK(chmod(dir, 0700) == 0);
     snprintf(path, sizeof path, "%s/pads.db", dir);
     store_cases(dir, path);
     transactions(dir, path);

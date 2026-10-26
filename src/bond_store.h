@@ -45,7 +45,8 @@ bond_result bond_store_encode(const bond_store *s, uint8_t bytes[BOND_FILE_MAX],
 bond_result bond_store_load(const char *path, const bond_adapter *adapter, bond_store *out);
 /* Validates the existing file before replacement; never imports legacy data.
  * A missing destination never replaces a concurrently created file.
- * UNCERTAIN means publication succeeded but cleanup/durability is unconfirmed. */
+ * Owned temporary cleanup is retried before any later save.
+ * UNCERTAIN means publication succeeded but directory durability is unconfirmed. */
 bond_result bond_store_save(const char *path, const bond_store *s);
 db_rec *bond_store_find(bond_store *s, uint8_t transport, uint8_t type, const uint8_t addr[6]);
 /* Stages a validated record in memory; only save establishes durable commit. */
