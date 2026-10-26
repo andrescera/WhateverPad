@@ -606,7 +606,8 @@ static int op_pump(void *ctx, int timeout_ms)
 {
     usb_ctx *c = ctx;
     long deadline = now_ms() + timeout_ms;
-    unsigned completed = 0;
+    long previous = now_ms();
+    unsigned completed = 0, stalled = 0;
     int first = 1;
 
     for (;;) {
@@ -620,6 +621,13 @@ static int op_pump(void *ctx, int timeout_ms)
         if (c->events.count || c->acl.count) return 1;
         if (c->dead) return -1;
         if (now_ms() >= deadline || !drain_allowed(c, 0, completed)) return 0;
+        long now = now_ms();
+        if (now > previous) stalled = 0;
+        else if (++stalled == 64) {
+            c->dead = 1; /* A stalled clock must not hold Stop or a query wait. */
+            return -1;
+        }
+        previous = now;
         first = 0;
         if (any) continue;
         usleep(1000);

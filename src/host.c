@@ -2517,10 +2517,17 @@ static int command_wait(host_t *h, own_ref ref)
     h->sync = ref;
     h->sync_done = h->sync_ok = 0;
     h->cc_op = 0;
+    long previous = now_ms();
+    unsigned stalled = 0;
     while (!h->sync_done && host_admits(h)) {
         if (h->setup_retry) deadline = (long)own_wait_deadline(h->ownership, ref);
         if (now_ms() >= deadline) break;
         pump(h, 20);
+        long now = now_ms();
+        if (now > previous) stalled = 0;
+        else if (!h->sync_done && ++stalled == 64)
+            own_fail(h->ownership, (uint64_t)now, 0);
+        previous = now;
     }
     own_tick(h->ownership, (uint64_t)now_ms());
     int ok = h->sync_done && h->sync_ok && host_admits(h);
@@ -2732,10 +2739,16 @@ int host_start(host_t *h)
     h->committed = h->store;
     log_line("store: %d paired pad(s)", h->store.count);
     long deadline = now_ms() + OWN_SETUP_MS;
+    long previous = now_ms();
+    unsigned stalled = 0;
     while (host_admits(h)) {
         if (own_activate(h->ownership)) return 1;
         if (now_ms() >= deadline) break;
         pump(h, 20);
+        long now = now_ms();
+        if (now > previous) stalled = 0;
+        else if (++stalled == 64) own_fail(h->ownership, (uint64_t)now, 0);
+        previous = now;
     }
     return 0;
 }
