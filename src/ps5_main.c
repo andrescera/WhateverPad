@@ -217,7 +217,7 @@ static void on_disconnect(void *ud, link_ref link)
 static void on_idle(void *ud)
 {
     (void)ud;
-    web_run(g_web);
+    web_poll(g_web); /* Host/USB work is still in progress: queue mutations only. */
     if (g_host && (g_stop || g_web_stop))
         own_release(host_ownership(g_host), SESSION_STOP, (uint64_t)now_ms());
 }

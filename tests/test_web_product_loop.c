@@ -8,7 +8,7 @@ static int checking_raw;
 static void product_idle(void *ud)
 {
     (void)ud;
-    web_run(g_web);
+    web_poll(g_web);
     if (checking_raw) CHECK(g_ps_calls == 0);
 }
 
@@ -32,6 +32,67 @@ static int product_reply(int fd, char *out, int max, int code)
     CHECK(complete_response(out, n, code));
     close(fd);
     return n;
+}
+
+static int reenter_poll;
+static void product_service(void *ud)
+{
+    (void)ud;
+    if (!reenter_poll) return;
+    reenter_poll = 0;
+    int before = g_ps_calls;
+    web_run(g_web);
+    CHECK(g_ps_calls == before);
+}
+
+static void test_product_admission(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    hci_t io = sim_hci(sim);
+    g_bt_state = WEB_BT_OK;
+    for (int mode = 0; mode < 5; mode++) {
+        session_t policy;
+        session_init(&policy);
+        CHECK(session_activate(&policy));
+        volatile int stop = 0;
+        lifecycle life = {.session = &policy, .lock_ok = 1};
+        web_cfg cfg = {.session = &policy, .stop = &stop, .retry = &g_retry,
+            .bt_state = &g_bt_state, .press_ps = fake_press_ps,
+            .service = mode == 3 ? product_service : NULL, .ud = &life,
+            .retry_lock = retry_lock};
+        if (mode == 4) {
+            session_fail(&policy, (uint64_t)sim_now(), 1);
+            session_cleanup_done(&policy);
+        }
+        g_ps_calls = 0; g_retry = 0;
+        g_web = web_start(&cfg, PORT);
+        CHECK(g_web != NULL);
+        if (!g_web) break;
+        int fd = post_pending(mode == 4 ? "/api/retry" : "/api/ps?slot=1");
+        CHECK(g_ps_calls == 0 && g_retry == 0);
+        if (mode == 0) policy.revision++;
+        if (mode == 1) policy.attempt++;
+        char out[2048];
+        if (mode == 2) {
+            product_reply(post_pending("/api/stop"), out, sizeof out, 200);
+            CHECK(stop == 1);
+        }
+        if (mode == 3) reenter_poll = 1;
+        if (mode == 4) {
+            block_response = 1;
+            web_run(g_web); web_run(g_web);
+            CHECK(!g_retry && life.locks == 1);
+            block_response = 0;
+        }
+        product_reply(fd, out, sizeof out, mode < 2 ? 409 : mode == 2 ? 503 : 200);
+        CHECK(g_ps_calls == (mode == 3));
+        CHECK(g_retry == (mode == 4));
+        if (mode == 4) CHECK(policy.attempt == 2 && policy.state == SESSION_STARTING);
+        web_stop(g_web); g_web = NULL;
+    }
+    io.ops->close(io.ctx);
+    sim_free(sim);
 }
 
 int main(void)
@@ -76,6 +137,22 @@ int main(void)
     web_run(g_web);
     CHECK(g_ps_calls == 1); /* Nested idle and callback drains never repeat it. */
 
+    int first = post_pending("/api/ps?slot=1");
+    int second = post_pending("/api/ps?slot=2");
+    int before = g_ps_calls;
+    web_run(g_web);
+    CHECK(g_ps_calls == before + 2); /* One outer turn drains the entire queue. */
+    product_reply(first, out, sizeof out, 200);
+    product_reply(second, out, sizeof out, 200);
+    int unread = idle_client();
+    const char request[] = "POST /api/ps?slot=3 HTTP/1.1\r\n"
+        "Host: localhost\r\nX-WhateverPad: 1\r\n\r\n";
+    CHECK(sendto(unread, request, sizeof request - 1, 0, NULL, 0) == sizeof request - 1);
+    before = g_ps_calls;
+    web_run(g_web);
+    CHECK(g_ps_calls == before + 1); /* Poll before draining in the same turn. */
+    product_reply(unread, out, sizeof out, 200);
+
     product_reply(post_pending("/api/pscombo?slot=1&combo=none"), out, sizeof out, 200);
     CHECK(combo_calls == 1);
     product_reply(post_pending("/api/tune?inq_len=4"), out, sizeof out, 200);
@@ -103,6 +180,8 @@ int main(void)
     CHECK(sim_resources(sim).closes == 1);
     sim_free(sim);
     unlink("build/test_web_product.db");
+    g_host = NULL; g_web = NULL;
+    test_product_admission();
     printf("%d product web checks, %d failures\n", g_checks, g_fail);
     return g_fail != 0;
 }

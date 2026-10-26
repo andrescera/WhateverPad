@@ -59,7 +59,7 @@ typedef struct {
 web_t *web_start(const web_cfg *cfg, int port);
 /* Poll only: callers may deliberately defer mutations. */
 void   web_poll(web_t *w);
-/* Product loop and host idle entry: poll, then drain admitted actions.
+/* Outer product loop only, after host/USB operations unwind; idle uses web_poll.
  * Nested calls can poll, but cannot take/apply while polling or applying. */
 void   web_run(web_t *w);
 /* Take one action, then apply it exactly once. Both boundaries recheck admission.

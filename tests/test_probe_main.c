@@ -29,6 +29,7 @@ static sim_t *radio[5];
 static int opens, commands, installs, removes, icon_checks, pad_polls, failed_polls;
 static int raises, restores, init_fail, creds_fail, remove_flag, answer_query;
 static int web_starts, web_start_fail, web_lost;
+static int web_runs;
 static long elapsed;
 static const char *mode = "original";
 
@@ -80,7 +81,7 @@ int web_alive(const web_t *w, int port)
     (void)port;
     return w && !(web_lost && web_starts == 1 && *cfg.bt_state == WEB_BT_FAILED);
 }
-void web_run(web_t *w)
+void web_poll(web_t *w)
 {
     if (!w) return;
     if (*cfg.bt_state == WEB_BT_FAILED) {
@@ -90,6 +91,8 @@ void web_run(web_t *w)
     if (*cfg.bt_state == WEB_BT_OK) *cfg.stop = 1;
     assert(opens <= 5 && commands <= 15);
 }
+
+void web_run(web_t *w) { web_runs++; web_poll(w); }
 
 int hci_usb_chip_vendor(void) { return 0; }
 const char *hci_usb_chip_name(void) { return "offline"; }
@@ -134,6 +137,7 @@ static void run_case(int scenario)
     web_lost = scenario == 6;
     attrib_reset();
     CHECK(payload_main() == 0);
+    CHECK(web_runs > 0); /* The real outer loop must dispatch, not merely poll. */
     log_since(from, logs, sizeof logs);
 #if WHATEVERPAD_PROBE
     CHECK(installs == 0 && removes == 0 && icon_checks == 0);
