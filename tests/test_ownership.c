@@ -1142,6 +1142,47 @@ static void credit_events(own_policy policy)
     }
 }
 
+static void failure_diagnostics(own_policy policy)
+{
+    own_ledger *timed = own_new(policy, 1);
+    prepare(timed, 0x1009, 0);
+    submit(timed, 0x1009, 0);
+    own_ledger *ambiguous = own_clone(timed);
+    CHECK(ambiguous != NULL);
+    own_tick(timed, 5000);
+    own_detector_trip(ambiguous, 5000);
+    own_summary a, b;
+    own_snapshot(timed, &a);
+    own_snapshot(ambiguous, &b);
+    CHECK(a.failed_opcode == 0x1009 && b.failed_opcode == 0x1009);
+    CHECK(a.reply_timeout && !b.reply_timeout);
+    CHECK(a.runtime.state == b.runtime.state && a.runtime.reason == b.runtime.reason);
+    uint8_t first[8192], second[8192];
+    size_t n = own_canonical(timed, first, sizeof first);
+    size_t m = own_canonical(ambiguous, second, sizeof second);
+    CHECK(n <= sizeof first && m <= sizeof second);
+    CHECK(n != m || memcmp(first, second, n) != 0);
+    own_transport_closed(timed, 5001);
+    local(timed, OWN_EFFECT_FINALIZE, 5001, 1);
+    own_finalized(timed, CLEANUP_CONFIRMED);
+    CHECK(!own_retry(timed)); /* Nonzero diagnostics follow terminal uncertainty. */
+    own_free(timed);
+    own_free(ambiguous);
+
+    own_ledger *recoverable = own_new(policy, 1);
+    own_fail(recoverable, 0, 1);
+    own_snapshot(recoverable, &a);
+    CHECK(!a.failed_opcode && !a.reply_timeout);
+    own_transport_closed(recoverable, 1);
+    local(recoverable, OWN_EFFECT_FINALIZE, 1, 1);
+    own_finalized(recoverable, CLEANUP_CONFIRMED);
+    CHECK(own_retry(recoverable));
+    own_snapshot(recoverable, &b);
+    CHECK(!b.failed_opcode && !b.reply_timeout);
+    CHECK(own_invariant(recoverable) == NULL);
+    own_free(recoverable);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--residual-r1") == 0) {
@@ -1165,6 +1206,7 @@ int main(int argc, char **argv)
         typed_hci_commit(policy);
         typed_hci_phase_deadlines(policy);
         credit_events(policy);
+        failure_diagnostics(policy);
     }
     printf("ownership checks=%d violations=%d\n", checks, failed);
     return failed != 0;

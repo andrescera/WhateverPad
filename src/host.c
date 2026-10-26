@@ -1707,11 +1707,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                         h->hci.ops->yield(h->hci.ctx, T_YIELD);
                     }
                 }
-                for (i = 0; i < HOST_MAX_PADS; i++)
-                    if (h->links[i].used) {
-                        own_release(h->ownership, SESSION_NATIVE, (uint64_t)now_ms());
-                        break;
-                    }
+                /* A different peer's request does not revoke our live links. */
                 break;
             }
             if (!r || r->le) break;                                 /* not ours */
@@ -2402,7 +2398,29 @@ int host_connected(const host_t *h, int slot)
 
 int host_paired_count(const host_t *h) { return h->committed.count; }
 
-int host_transport_lost(const host_t *h) { return h->dead; }
+int host_transport_lost(const host_t *h)
+{
+    own_summary s;
+    own_snapshot(h->ownership, &s);
+    return h->dead || s.runtime.state == SESSION_FAILED ||
+           s.runtime.reason == SESSION_AMBIGUOUS ||
+           s.runtime.reason == SESSION_NATIVE || s.quarantined;
+}
+
+void host_failure_reason(const host_t *h, char *out, size_t max)
+{
+    own_summary s;
+    own_snapshot(h->ownership, &s);
+    if (s.runtime.reason == SESSION_NATIVE) {
+        snprintf(out, max, "HCI opcode=0x%04x reason=native_takeover; the console took the controller back. Press Retry.",
+                 s.failed_opcode);
+        return;
+    }
+    snprintf(out, max, "HCI opcode=0x%04x reason=%s; admission closed. Press Retry.",
+             s.failed_opcode, s.reply_timeout ? "reply_timeout" :
+             s.runtime.reason == SESSION_AMBIGUOUS ? "ambiguous_evidence" :
+             h->dead ? "transport_lost" : "admission_closed");
+}
 
 /* Seconds left of the pause for the system (a call that was not ours,
  * usually the DualSense coming back), 0 if none. */

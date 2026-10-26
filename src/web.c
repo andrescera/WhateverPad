@@ -249,6 +249,11 @@ static void api_state(web_t *w, client *c)
         int fb = 1;
 
         json_text(reason, sizeof reason, w->cfg.bt_reason);
+        if (h && host_transport_lost(h)) {
+            st = WEB_BT_FAILED;
+            host_failure_reason(h, reason, sizeof reason);
+            h = NULL; /* Do not publish stale pads or a search from the failed host. */
+        }
         json_text(combo, sizeof combo, w->cfg.combo_text);
         PUT("{\"sequence\":%" PRIu64 ",\"runtime\":\"%s\",\"version\":\"%s\",\"lang\":\"%s\",\"running\":%s,\"pairing\":%d,\"pairwait\":%d,\"pause\":%d,\"chip\":\"%s\",\"bluetooth\":\"%s\","
             "\"reason\":\"%s\",\"combo\":\"%s\",\"physical\":{\"readable\":%s,\"error\":\"%08x\",\"buttons\":[",
@@ -388,6 +393,7 @@ static int status(web_t *w, enum session_request_kind kind)
         return w->cfg.bt_state && *w->cfg.bt_state == WEB_BT_FAILED &&
                w->cfg.retry && !*w->cfg.retry &&
                (!w->cfg.stop || !*w->cfg.stop) ? 200 : 409;
+    if (w->cfg.host && *w->cfg.host && host_transport_lost(*w->cfg.host)) return 503;
     return (!w->cfg.stop || !*w->cfg.stop) && w->cfg.bt_state &&
            *w->cfg.bt_state == WEB_BT_OK ? 200 : 503;
 }

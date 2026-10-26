@@ -124,6 +124,8 @@ struct own_ledger {
     uint8_t rand_supported, transport_closed, finalize_claimed, finalized, dirty_local;
     uint64_t setup_retired;
     uint8_t rand_resent;
+    uint16_t failed_opcode;
+    uint8_t reply_timeout;
 };
 
 static int same_ref(own_ref a, own_ref b)
@@ -287,6 +289,12 @@ void own_fail(own_ledger *l, uint64_t now, int recoverable)
 
 void own_detector_trip(own_ledger *l, uint64_t now)
 {
+    if (!l->ambiguities) {
+        own_record *r = record(l, l->waiter);
+        if (r) l->failed_opcode = l->waiting_phase == OWN_BARRIER ? 0x2018 :
+            l->waiting_phase == OWN_UNDO && commands[r->desc].class == CREATE ?
+            0x0406 : r->c.opcode;
+    }
     l->ambiguities++;
     l->session.unsafe = 1;
     own_release(l, SESSION_AMBIGUOUS, now);
@@ -320,6 +328,7 @@ int own_retry(own_ledger *l)
     if (!session_retry(&l->session)) return 0;
     memset(l->records, 0, sizeof l->records);
     l->setup_retired = l->rand_resent = 0;
+    l->failed_opcode = l->reply_timeout = 0;
     l->transport_closed = l->finalize_claimed = l->finalized = 0;
     l->cleanup_deadline = 0;
     l->epoch++;
@@ -1115,7 +1124,10 @@ void own_tick(own_ledger *l, uint64_t now)
             r->c.ack_by = bounded_add(now, 1000);
             r->c.terminal_by = bounded_add(now, 2000);
             l->waiter = (own_ref){0};
-        } else own_detector_trip(l, now);
+        } else {
+            if (!l->ambiguities) l->reply_timeout = 1;
+            own_detector_trip(l, now);
+        }
         return;
     }
     for (unsigned i = 0; i < OWN_MAX; i++) {
@@ -1338,7 +1350,8 @@ void own_snapshot(const own_ledger *l, own_summary *out)
     *out = (own_summary){ .runtime = l->session, .barriers = l->barrier_count,
         .ambiguity_count = l->ambiguities, .credit_nops = l->credits,
         .transport_closed = l->transport_closed, .finalized = l->finalized,
-        .radio_left = l->radio_left };
+        .radio_left = l->radio_left, .failed_opcode = l->failed_opcode,
+        .reply_timeout = l->reply_timeout };
     for (unsigned i = 0; i < OWN_MAX; i++) {
         out->records += l->records[i].state != OWN_FREE;
         out->quarantined += l->records[i].state == OWN_QUARANTINED;
@@ -1448,6 +1461,7 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
     N(l->rand_supported); N(l->transport_closed); N(l->finalize_claimed);
     N(l->finalized); N(l->dirty_local); N(l->radio_left);
     N(l->setup_retired); N(l->rand_resent);
+    N(l->failed_opcode); N(l->reply_timeout);
     reference(&w, l->waiter);
     if (l->waiter.serial) N(l->waiting_phase);
     if (l->receipt_issued != l->receipt_seen) {
