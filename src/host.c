@@ -1707,11 +1707,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                         h->hci.ops->yield(h->hci.ctx, T_YIELD);
                     }
                 }
-                for (i = 0; i < HOST_MAX_PADS; i++)
-                    if (h->links[i].used) {
-                        own_release(h->ownership, SESSION_NATIVE, (uint64_t)now_ms());
-                        break;
-                    }
+                /* A different peer's request does not revoke our live links. */
                 break;
             }
             if (!r || r->le) break;                                 /* not ours */

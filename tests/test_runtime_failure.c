@@ -63,27 +63,55 @@ static void reply(int fd, char *out, size_t max, int expected)
     REQUIRE(close(fd) == 0);
 }
 
+static void close_fixture(int lifetimes)
+{
+    web_stop(g_web); g_web = NULL;
+    host_close(g_host); g_host = NULL;
+    REQUIRE(f.closes == lifetimes && f.uninits == lifetimes);
+    REQUIRE(vpad_creds_restore());
+    REQUIRE(close(f.logpipe[0]) == 0 && close(f.logpipe[1]) == 0);
+    f.controller.ops->close(f.controller.ctx);
+    sim_free(f.classic);
+    REQUIRE(unlink(db) == 0 || errno == ENOENT);
+    char irk[180];
+    snprintf(irk, sizeof irk, "%s.irk", db);
+    REQUIRE(unlink(irk) == 0 || errno == ENOENT);
+    REQUIRE(rmdir(directory) == 0);
+}
+
 int main(int argc, char **argv)
 {
     int native = argc == 2 && !strcmp(argv[1], "native");
-    if (argc > 2 || (argc == 2 && !native)) return 2;
+    int failed = argc == 2 && !strcmp(argv[1], "failed");
+    int generic = argc == 2 && !strcmp(argv[1], "coexist-generic");
+    int coexist = generic || (argc == 2 && !strcmp(argv[1], "coexist"));
+    if (argc > 2 || (argc == 2 && !native && !failed && !coexist)) return 2;
     signal(SIGPIPE, SIG_IGN);
     snprintf(directory, sizeof directory, "/tmp/runtime-failure-XXXXXX");
     REQUIRE(mkdtemp(directory) != NULL);
     snprintf(db, sizeof db, "%s/bonds", directory);
     g_tune.ps_light = 0; /* Marvell also skips page-scan tuning: no runtime restore here. */
-    begin(0);
-    if (native) {
+    begin(generic ? 1 : 0);
+    if (native || coexist) {
         REQUIRE(host_pair(f.host, 60));
         long end = now_ms() + 30000;
-        while (!f.connects && host_admits(f.host) && now_ms() < end) host_poll(f.host, 4);
-        REQUIRE(f.connects == 1 && host_connected(f.host, 0));
+        while ((!f.connects || !f.inputs) && host_admits(f.host) && now_ms() < end) {
+            host_poll(f.host, 4);
+            vpad_poll(now_ms());
+        }
+        REQUIRE(f.connects == 1 && f.inputs > 0 && host_connected(f.host, 0));
         REQUIRE(host_pair(f.host, 0));
-        const unsigned char quiet[] = {0};
-        sim_set_report(f.classic, quiet, 0); /* No fresh-input Disconnect lease at takeover. */
+        if (native) {
+            const unsigned char quiet[] = {0};
+            sim_set_report(f.classic, quiet, 0);
+        }
         end = now_ms() + T_YIELD + 1;
-        while (host_admits(f.host) && now_ms() < end) host_poll(f.host, 20);
+        while (host_admits(f.host) && now_ms() < end) {
+            host_poll(f.host, 20);
+            vpad_poll(now_ms());
+        }
         REQUIRE(host_admits(f.host) && !attrib_get()->timeout && !attrib_get()->unanswered);
+        REQUIRE(f.ndevices == 1 && f.devices[0].identified && !f.devices[0].deletes);
     }
     web_stop(f.web);
     g_host = f.host;
@@ -95,11 +123,55 @@ int main(int argc, char **argv)
     g_web = web_start(&cfg, 0);
     REQUIRE(g_web != NULL);
 
+    if (coexist) {
+        const unsigned char unrelated[] = {0xd6, 0x32, 0xb0, 0x8d, 0x18, 0x48};
+        unsigned inputs = (unsigned)f.inputs;
+        sim_peer_request(f.classic, unrelated, 0x002508);
+        host_poll(g_host, 4);
+        if (host_transport_lost(g_host)) bt_lost();
+        printf("COEXIST generic=%d connected=%d closes=%d disconnects=%d\n",
+               generic, g_host ? host_connected(g_host, 0) : 0, f.closes, f.disconnects);
+        REQUIRE(g_host != NULL);
+        REQUIRE(host_admits(g_host) && !host_transport_lost(g_host));
+        REQUIRE(host_connected(g_host, 0) && !f.disconnects && !f.closes);
+        REQUIRE(host_pause_left(g_host) > 0);
+        char out[20000];
+        reply(http_request("GET", "/api/state"), out, sizeof out, 200);
+        REQUIRE(strstr(out, "\"bluetooth\":\"ok\"") && strstr(out, "\"pads\":[{"));
+        reply(http_request("POST", "/api/pair"), out, sizeof out, 200);
+        REQUIRE(host_pair_wait_left(g_host) > 0);
+        reply(http_request("GET", "/api/state"), out, sizeof out, 200);
+        REQUIRE(strstr(out, "\"pairing\":0") && !strstr(out, "\"pairwait\":0"));
+        long end = now_ms() + T_YIELD + 20;
+        while (host_admits(g_host) && now_ms() < end) {
+            host_poll(g_host, 4);
+            web_run(g_web);
+            vpad_poll(now_ms());
+        }
+        REQUIRE(host_admits(g_host) && !host_transport_lost(g_host));
+        REQUIRE(host_connected(g_host, 0) && f.connects == 1 && !f.disconnects);
+        REQUIRE((unsigned)f.inputs > inputs && !f.closes && f.opens == 1);
+        REQUIRE(f.devices[0].identified && !f.devices[0].deletes);
+        REQUIRE(!host_pause_left(g_host) && !host_pair_wait_left(g_host));
+        REQUIRE(host_pairing_left(g_host) > 0);
+        unsigned reads = 0;
+        for (unsigned i = 0; i < 40; i++) reads += f.busy[i] != 0;
+        REQUIRE(reads > 0 && !attrib_get()->timeout && !attrib_get()->unanswered);
+        reply(http_request("GET", "/api/state"), out, sizeof out, 200);
+        REQUIRE(strstr(out, "\"bluetooth\":\"ok\"") && strstr(out, "\"pads\":[{"));
+        REQUIRE(strstr(out, "\"pairwait\":0") && strstr(out, "\"pause\":0"));
+        close_fixture(1);
+        REQUIRE(f.devices[0].deletes == 1 && f.disconnects == 1);
+        printf("%u coexistence checks, 0 failures (generic=%d)\n", checks, generic);
+        return 0;
+    }
+
     unsigned long from = log_seq();
     if (native) {
-        const unsigned char peer[] = {0xd6, 0x32, 0xb0, 0x8d, 0x18, 0x48};
-        sim_peer_request(f.classic, peer, 0x002508);
-        host_poll(g_host, 4);
+        /* An explicit handoff of this bridge, not another peer asking to connect. */
+        REQUIRE(own_release(host_ownership(g_host), SESSION_NATIVE, (uint64_t)now_ms()));
+    } else if (failed) {
+        own_fail(host_ownership(g_host), (uint64_t)now_ms(), 1);
     } else {
         /* Lose only the runtime scan reply, after the real USB token commit. */
         REQUIRE(host_pair(g_host, 60));
@@ -113,6 +185,9 @@ int main(int argc, char **argv)
     if (native) {
         REQUIRE(summary.runtime.reason == SESSION_NATIVE && !summary.quarantined);
         REQUIRE(!attrib_get()->timeout && !attrib_get()->unanswered);
+    } else if (failed) {
+        REQUIRE(summary.runtime.state == SESSION_FAILED && !summary.quarantined);
+        REQUIRE(summary.runtime.reason == SESSION_NONE && !summary.ambiguity_count);
     } else {
         REQUIRE(summary.quarantined && summary.failed_opcode == 0x200c && summary.reply_timeout);
     }
@@ -122,11 +197,14 @@ int main(int argc, char **argv)
     char out[20000];
     reply(http_request("GET", "/api/state"), out, sizeof out, 200);
     REQUIRE(g_bt_state == WEB_BT_OK); /* Idle can serve before the outer close. */
-    const char *reason = native ? "native_takeover" : "reply_timeout";
+    const char *reason = native ? "native_takeover" : failed ? "admission_closed" : "reply_timeout";
     REQUIRE(strstr(out, "\"bluetooth\":\"failed\"") && strstr(out, reason));
     REQUIRE(strstr(out, "\"pairing\":0") && strstr(out, "\"pairwait\":0"));
     REQUIRE(strstr(out, "\"pads\":[]") && strstr(out, "\"running\":false"));
     reply(http_request("POST", "/api/pair"), out, sizeof out, 503);
+    int inquiry_length = g_tune.inq_len;
+    reply(http_request("POST", "/api/tune?inq_len=4"), out, sizeof out, 503);
+    REQUIRE(g_tune.inq_len == inquiry_length);
     if (g_host && host_transport_lost(g_host)) bt_lost();
     f.host = NULL;
     REQUIRE(!g_host && g_bt_state == WEB_BT_FAILED && f.closes == 1);
@@ -135,7 +213,8 @@ int main(int argc, char **argv)
     REQUIRE(strstr(out, "\"bluetooth\":\"failed\"") != NULL);
     REQUIRE(strstr(out, "\"reason\":\"\"") == NULL && strstr(out, reason));
     log_since(from, out, sizeof out);
-    REQUIRE(strstr(out, native ? "reason=native_takeover" : "opcode=0x200c reason=reply_timeout"));
+    REQUIRE(strstr(out, native ? "reason=native_takeover" :
+                  failed ? "reason=admission_closed" : "opcode=0x200c reason=reply_timeout"));
     unsigned long logged = log_seq();
     web_run(g_web);
     REQUIRE(log_seq() == logged); /* A dead session is logged once, not every poll. */
@@ -181,18 +260,7 @@ int main(int argc, char **argv)
         REQUIRE(host_admits(g_host) && host_connected(g_host, 0));
     }
 
-    web_stop(g_web); g_web = NULL;
-    host_close(g_host); g_host = NULL;
-    REQUIRE(f.closes == 2 && f.uninits == 2);
-    REQUIRE(vpad_creds_restore());
-    REQUIRE(close(f.logpipe[0]) == 0 && close(f.logpipe[1]) == 0);
-    f.controller.ops->close(f.controller.ctx);
-    sim_free(f.classic);
-    REQUIRE(unlink(db) == 0 || errno == ENOENT);
-    char irk[180];
-    snprintf(irk, sizeof irk, "%s.irk", db);
-    REQUIRE(unlink(irk) == 0 || errno == ENOENT);
-    REQUIRE(rmdir(directory) == 0);
-    printf("%u runtime failure checks, 0 failures (native=%d)\n", checks, native);
+    close_fixture(2);
+    printf("%u runtime failure checks, 0 failures (native=%d failed=%d)\n", checks, native, failed);
     return 0;
 }

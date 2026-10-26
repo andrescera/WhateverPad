@@ -363,6 +363,9 @@ test: test-runtime-failure
 test-runtime-failure: $(BUILD)/test_runtime_failure
 	./$(BUILD)/test_runtime_failure
 	./$(BUILD)/test_runtime_failure native
+	./$(BUILD)/test_runtime_failure failed
+	./$(BUILD)/test_runtime_failure coexist
+	./$(BUILD)/test_runtime_failure coexist-generic
 
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
