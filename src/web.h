@@ -1,7 +1,7 @@
 /* WhateverPad PS5's web page: status, pairing, forgetting pads, stopping, the log.
  *
  * Served from the main loop without threads or blocking: at most WEB_CLIENTS
- * connections, requests of at most 8 KB, three seconds to read/admit and
+ * connections, requests of at most 8 KB, a bounded read/admission budget and
  * one bounded second to write the reply.
  *
  * There is no PIN, by the user's choice: anyone on the local network can
@@ -16,6 +16,8 @@
 #include <stddef.h>
 
 #define WEB_PORT 8095
+/* One host poll: page-scan read + write, 2 * 2000 ms + 1000 ms pump/dispatch margin. */
+#define WEB_REQUEST_MS (HOST_POLL_SYNC_WAITS * HOST_COMMAND_WAIT_MS + 1000)
 
 typedef struct web web_t;
 

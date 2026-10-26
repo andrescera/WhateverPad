@@ -18,7 +18,6 @@
 
 #define WEB_CLIENTS     8
 #define REQ_MAX         8192
-#define T_REQUEST       3000    /* ms for a client to send its request */
 #define LOG_TAIL        6144
 #define T_WRITE         1000
 #define RESPONSE_MAX    (8192 + ATTRIB_JSON_MAX)
@@ -728,12 +727,12 @@ static void web_poll_once(web_t *w, long now)
             client *c = &w->rejected;
             memset(c, 0, sizeof *c);
             c->fd = fd;
-            c->deadline = now + T_REQUEST;
+            c->deadline = now + WEB_REQUEST_MS;
             break;
         }
         memset(&w->c[slot], 0, sizeof w->c[slot]);
         w->c[slot].fd = fd;
-        w->c[slot].deadline = now + T_REQUEST;
+        w->c[slot].deadline = now + WEB_REQUEST_MS;
         w->c[slot].id = ++g_next_id;
     }
 
