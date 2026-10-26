@@ -256,7 +256,7 @@ bond_result bond_store_save(const char *path, const bond_store *s)
     char name[256], temp[80];
     bond_store old;
     bond_result result = bond_store_encode(s, b, &len);
-    int dir, fd;
+    int dir, fd, missing;
     FILE *f;
     static unsigned sequence;
     if (result != BOND_COMMITTED) return result;
@@ -264,6 +264,8 @@ bond_result bond_store_save(const char *path, const bond_store *s)
     if (dir < 0) return BOND_ERROR;
     result = load_at(dir, name, &s->adapter, &old);
     if (result != BOND_COMMITTED && result != BOND_MISSING) { close(dir); return result; }
+    /* Do not replace a file created after the missing-file preflight. */
+    missing = result == BOND_MISSING;
     snprintf(temp, sizeof temp, ".bond-%ld-%u.tmp", (long)getpid(), ++sequence);
     fd = store_openat(dir, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) { close(dir); return BOND_ERROR; }
@@ -273,8 +275,10 @@ bond_result bond_store_save(const char *path, const bond_store *s)
     if (fchmod(fd, 0600) || fault(BOND_STAGE_WRITE) || fwrite(b, 1, len, f) != len ||
         fault(BOND_STAGE_FLUSH) || fflush(f) || fault(BOND_STAGE_FILE_FSYNC) || fsync(fd)) {
         fclose(f);
-    } else if (fclose(f) == 0 && !fault(BOND_STAGE_RENAME) && renameat(dir, temp, dir, name) == 0) {
-        result = fault(BOND_STAGE_DIR_FSYNC) || fsync(dir) ? BOND_UNCERTAIN : BOND_COMMITTED;
+    } else if (fclose(f) == 0 && !fault(BOND_STAGE_RENAME) &&
+               (missing ? linkat(dir, temp, dir, name, 0) : renameat(dir, temp, dir, name)) == 0) {
+        result = (missing && unlinkat(dir, temp, 0)) || fault(BOND_STAGE_DIR_FSYNC) ||
+                 fsync(dir) ? BOND_UNCERTAIN : BOND_COMMITTED;
     }
     if (result == BOND_ERROR) unlinkat(dir, temp, 0);
     close(dir);

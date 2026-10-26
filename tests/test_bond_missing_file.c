@@ -4,21 +4,40 @@
 #undef main
 #include "../src/host_int.h"
 #include <fcntl.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <sys/stat.h>
 
 static int posix_mode, final_errno, wrong_owner, force_fd2, final_fd = -1;
 static int bogus_fd = -1, bogus_stats, bogus_reads, bogus_closes, fd2_reads;
+static int private_fd = -1;
+static int race_publish, temp_collision, fail_sync, fail_temp_unlink;
+static char collision_name[80];
+static const char corrupt[] = "concurrent-corrupt", collision[] = "colliding-temp";
 
 int __real_openat(int, const char *, int, ...);
 int __real_fstat(int, struct stat *);
 ssize_t __real_read(int, void *, size_t);
 int __real_close(int);
+int __real_fsync(int);
+int __real_renameat(int, const char *, int, const char *);
+int __real_linkat(int, const char *, int, const char *, int);
+int __real_unlinkat(int, const char *, int);
 
 long bond_store_test_openat(int dir, const char *name, int flags, mode_t mode,
                            unsigned char *failed)
 {
     int fd;
+    if (temp_collision && !strncmp(name, ".bond-", 6)) {
+        temp_collision = 0;
+        snprintf(collision_name, sizeof collision_name, "%s", name);
+        fd = __real_openat(dir, name, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+            CHECK(write(fd, collision, sizeof collision - 1) == sizeof collision - 1);
+            CHECK(__real_close(fd) == 0);
+        }
+    }
     if (final_errno && !strcmp(name, "pads.db")) {
         errno = final_errno;
         fd = -1;
@@ -31,7 +50,15 @@ long bond_store_test_openat(int dir, const char *name, int flags, mode_t mode,
     }
     if (!strcmp(name, "pads.db")) {
         if (force_fd2) {
-            CHECK(dup2(fd, 2) == 2);
+            /* Logical fd 2 maps to a private file, never the process's stderr. */
+            private_fd = fcntl(fd, F_DUPFD_CLOEXEC, 64);
+            CHECK(private_fd >= 0);
+            if (private_fd < 0) {
+                int error = errno;
+                CHECK(__real_close(fd) == 0);
+                *failed = 1;
+                return error;
+            }
             CHECK(__real_close(fd) == 0);
             fd = 2;
         }
@@ -68,7 +95,7 @@ int __wrap_fstat(int fd, struct stat *st)
         bogus_stats++;
         return 0;
     }
-    int result = __real_fstat(fd, st);
+    int result = __real_fstat(fd == 2 && private_fd >= 0 ? private_fd : fd, st);
     if (!result && wrong_owner && fd == final_fd) st->st_uid = geteuid() ^ 1u;
     return result;
 }
@@ -76,7 +103,7 @@ int __wrap_fstat(int fd, struct stat *st)
 ssize_t __wrap_read(int fd, void *buf, size_t len)
 {
     if (fd == bogus_fd) { bogus_reads++; errno = EIO; return -1; }
-    if (fd == 2) fd2_reads++;
+    if (fd == 2 && private_fd >= 0) { fd2_reads++; fd = private_fd; }
     return __real_read(fd, buf, len);
 }
 
@@ -88,21 +115,128 @@ int __wrap_close(int fd)
         return 0; /* Never close an unrelated descriptor in the RED run. */
     }
     if (fd == final_fd) final_fd = -1;
+    if (fd == 2 && private_fd >= 0) {
+        int owned = private_fd;
+        private_fd = -1;
+        return __real_close(owned);
+    }
     return __real_close(fd);
+}
+
+int __wrap_fsync(int fd)
+{
+    struct stat st;
+    if (fail_sync && __real_fstat(fd, &st) == 0 &&
+        (S_ISDIR(st.st_mode) ? fail_sync == 2 : fail_sync == 1)) {
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
+
+static void concurrent_destination(int dir, const char *name)
+{
+    int kind = race_publish;
+    race_publish = 0;
+    if (kind == 1) {
+        int fd = __real_openat(dir, name, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+            CHECK(write(fd, corrupt, sizeof corrupt - 1) == sizeof corrupt - 1);
+            CHECK(__real_close(fd) == 0);
+        }
+    } else if (kind == 2) CHECK(mkdirat(dir, name, 0700) == 0);
+    else if (kind == 3) CHECK(symlinkat("absent", dir, name) == 0);
+}
+
+int __wrap_renameat(int from, const char *temp, int to, const char *name)
+{
+    concurrent_destination(to, name);
+    return __real_renameat(from, temp, to, name);
+}
+
+int __wrap_linkat(int from, const char *temp, int to, const char *name, int flags)
+{
+    concurrent_destination(to, name);
+    return __real_linkat(from, temp, to, name, flags);
+}
+
+int __wrap_unlinkat(int dir, const char *name, int flags)
+{
+    if (fail_temp_unlink && !strncmp(name, ".bond-", 6)) {
+        fail_temp_unlink = 0;
+        errno = EIO;
+        return -1;
+    }
+    return __real_unlinkat(dir, name, flags);
+}
+
+static int descriptors(void)
+{
+    DIR *dir = opendir("/dev/fd");
+    struct dirent *entry;
+    int count = 0;
+    CHECK(dir != NULL);
+    if (!dir) return -1;
+    while ((entry = readdir(dir))) if (entry->d_name[0] != '.') count++;
+    CHECK(closedir(dir) == 0);
+    return count;
+}
+
+static int temp_files(const char *path, int remove)
+{
+    DIR *dir = opendir(path);
+    struct dirent *entry;
+    int count = 0;
+    CHECK(dir != NULL);
+    if (!dir) return -1;
+    while ((entry = readdir(dir))) if (!strncmp(entry->d_name, ".bond-", 6)) {
+        count++;
+        if (remove) CHECK(unlinkat(dirfd(dir), entry->d_name, 0) == 0);
+    }
+    CHECK(closedir(dir) == 0);
+    return count;
+}
+
+static void same_bytes(const char *path, const char *bytes, size_t len)
+{
+    char got[BOND_FILE_MAX + 1];
+    int fd = open(path, O_RDONLY | O_NOFOLLOW);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    CHECK(read(fd, got, sizeof got) == (ssize_t)len && !memcmp(got, bytes, len));
+    CHECK(close(fd) == 0);
+}
+
+static int same_store(const bond_store *a, const bond_store *b)
+{
+    if (memcmp(a->adapter.addr, b->adapter.addr, 6) || a->adapter.vid != b->adapter.vid ||
+        a->adapter.pid != b->adapter.pid || a->count != b->count || a->has_irk != b->has_irk ||
+        memcmp(a->local_irk, b->local_irk, 16)) return 0;
+    for (int i = 0; i < BOND_MAX; i++) {
+        const db_rec *x = &a->records[i], *y = &b->records[i];
+        if (memcmp(x->addr, y->addr, 6) || memcmp(x->key, y->key, 16) || x->type != y->type ||
+            x->vid != y->vid || x->pid != y->pid || x->le != y->le ||
+            x->addr_type != y->addr_type || x->ediv != y->ediv || memcmp(x->rand, y->rand, 8) ||
+            memcmp(x->irk, y->irk, 16) || x->has_irk != y->has_irk ||
+            x->complete != y->complete || x->sc != y->sc || x->repair_needed != y->repair_needed)
+            return 0;
+    }
+    return 1;
 }
 
 static void rejected(const char *path, const bond_store *saved, bond_result want)
 {
     bond_store out = *saved;
     CHECK(bond_store_load(path, &saved->adapter, &out) == want);
-    CHECK(!memcmp(&out, saved, sizeof out));
+    CHECK(same_store(&out, saved));
     CHECK(bond_store_save(path, saved) == want);
 }
 
 static void store_cases(const char *dir, const char *path)
 {
     bond_adapter adapter = {.addr = {1,2,3,4,5,6}, .vid = 1, .pid = 2};
-    bond_store empty = {.adapter = adapter}, out = empty, saved = empty, reopened;
+    bond_store empty = {.adapter = adapter}, out = empty, saved = empty, reopened = {0};
     db_rec record = {.addr = {7,8,9,10,11,12}, .complete = 1, .type = 4};
     struct stat st;
     char absent[256], parent[256], bytes[8] = {0};
@@ -110,46 +244,43 @@ static void store_cases(const char *dir, const char *path)
 
     out.count = 9;
     CHECK(bond_store_load(path, &out.adapter, &out) == BOND_MISSING);
-    CHECK(!memcmp(&out, &empty, sizeof out));
+    CHECK(same_store(&out, &empty));
     CHECK(bogus_stats == 0 && bogus_reads == 0 && bogus_closes == 0);
     CHECK(lstat(path, &st) == -1 && errno == ENOENT);
     if (g_fail) return; /* Do not use a failed snapshot in the later transactions. */
     snprintf(parent, sizeof parent, "%s/missing", dir);
     snprintf(absent, sizeof absent, "%s/missing/pads.db", dir);
     CHECK(bond_store_load(absent, &adapter, &out) == BOND_MISSING);
-    CHECK(!memcmp(&out, &empty, sizeof out));
+    CHECK(same_store(&out, &empty));
     memset(record.key, 0x42, sizeof record.key);
     CHECK(bond_store_put(&saved, &record) == BOND_COMMITTED);
     saved.has_irk = 1;
     memset(saved.local_irk, 0x31, sizeof saved.local_irk);
     CHECK(bond_store_save(absent, &saved) == BOND_COMMITTED);
     CHECK(bond_store_load(absent, &adapter, &reopened) == BOND_COMMITTED);
-    CHECK(!memcmp(&saved, &reopened, sizeof saved));
+    CHECK(same_store(&saved, &reopened));
     unlink(absent);
     rmdir(parent);
     CHECK(bond_store_save(path, &saved) == BOND_COMMITTED);
     CHECK(bond_store_load(path, &adapter, &reopened) == BOND_COMMITTED);
-    CHECK(!memcmp(&saved, &reopened, sizeof saved));
+    CHECK(same_store(&saved, &reopened));
     CHECK(stat(dir, &st) == 0 && (st.st_mode & 0777) == 0700);
     CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
 
-    /* Carry clear with a real fd 2 is not ENOENT, even with stale errno. */
-    int stderr_copy = fcntl(2, F_DUPFD_CLOEXEC, 64);
-    CHECK(stderr_copy >= 0);
-    if (stderr_copy >= 0) {
-        force_fd2 = 1;
-        errno = ENOENT;
-        CHECK(bond_store_load(path, &adapter, &reopened) == BOND_COMMITTED);
-        CHECK(!memcmp(&saved, &reopened, sizeof saved) && fd2_reads > 0);
-        CHECK(dup2(stderr_copy, 2) == 2);
-        force_fd2 = 0;
-        CHECK(close(stderr_copy) == 0);
-    }
+    /* Carry clear with logical fd 2 is not ENOENT, even with stale errno. */
+    int before = fd2_reads;
+    force_fd2 = 1;
+    errno = ENOENT;
+    CHECK(bond_store_load(path, &adapter, &reopened) == BOND_COMMITTED);
+    CHECK(same_store(&saved, &reopened));
+    CHECK(fd2_reads > before && private_fd == -1);
+    if (private_fd >= 0) { CHECK(__real_close(private_fd) == 0); private_fd = -1; }
+    force_fd2 = 0;
     wrong_owner = 1;
     rejected(path, &saved, BOND_ERROR);
     wrong_owner = 0;
     CHECK(bond_store_load(path, &adapter, &reopened) == BOND_COMMITTED);
-    CHECK(!memcmp(&saved, &reopened, sizeof saved));
+    CHECK(same_store(&saved, &reopened));
     unlink(path);
     CHECK(mkdir(path, 0700) == 0);
     rejected(path, &saved, BOND_ERROR);
@@ -181,7 +312,7 @@ static void store_cases(const char *dir, const char *path)
     bond_adapter invalid = {0};
     out = saved;
     CHECK(bond_store_load(path, &invalid, &out) == BOND_ADAPTER);
-    CHECK(!memcmp(&out, &saved, sizeof out));
+    CHECK(same_store(&out, &saved));
     CHECK(bogus_stats == 0 && bogus_reads == 0 && bogus_closes == 0);
 }
 
@@ -237,15 +368,94 @@ static void paired_state(const char *path)
     unlink(path);
 }
 
+static void transactions(const char *dir, const char *path)
+{
+    bond_adapter adapter = {.addr = {1,2,3,4,5,6}, .vid = 1, .pid = 2};
+    bond_store saved = {.adapter = adapter}, next, out = {0};
+    db_rec record = {.addr = {7,8,9,10,11,12}, .complete = 1, .type = 4};
+    struct stat st;
+    char temp[512];
+    int initial = descriptors();
+    CHECK(bond_store_put(&saved, &record) == BOND_COMMITTED);
+    for (int kind = 1; kind <= 3; kind++) {
+        race_publish = kind;
+        bond_result result = bond_store_save(path, &saved);
+        CHECK(result == BOND_ERROR && !race_publish);
+        if (kind == 1) {
+            same_bytes(path, corrupt, sizeof corrupt - 1);
+            CHECK(unlink(path) == 0);
+        } else if (kind == 2) {
+            CHECK(lstat(path, &st) == 0 && S_ISDIR(st.st_mode));
+            CHECK(rmdir(path) == 0);
+        } else {
+            CHECK(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
+            CHECK(unlink(path) == 0);
+        }
+        CHECK(temp_files(dir, 0) == 0);
+        CHECK(descriptors() == initial);
+    }
+
+    CHECK(chmod(dir, 0777) == 0);
+    CHECK(bond_store_save(path, &saved) == BOND_COMMITTED);
+    CHECK(stat(dir, &st) == 0 && (st.st_mode & 0777) == 0700);
+    next = saved;
+    next.records[0].key[0] = 0x42;
+    for (int missing = 0; missing <= 1; missing++) {
+        if (missing) CHECK(unlink(path) == 0);
+        fail_sync = 1;
+        CHECK(bond_store_save(path, &next) == BOND_ERROR);
+        fail_sync = 0;
+        if (missing) CHECK(lstat(path, &st) == -1 && errno == ENOENT);
+        else {
+            CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+            CHECK(same_store(&saved, &out));
+        }
+        fail_sync = 2;
+        CHECK(bond_store_save(path, &next) == BOND_UNCERTAIN);
+        fail_sync = 0;
+        CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+        CHECK(same_store(&next, &out));
+        CHECK(temp_files(dir, 0) == 0);
+        CHECK(descriptors() == initial);
+    }
+    temp_collision = 1;
+    CHECK(bond_store_save(path, &saved) == BOND_ERROR);
+    CHECK(!temp_collision);
+    snprintf(temp, sizeof temp, "%s/%s", dir, collision_name);
+    same_bytes(temp, collision, sizeof collision - 1);
+    CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+    CHECK(same_store(&next, &out));
+    CHECK(unlink(temp) == 0);
+    CHECK(unlink(path) == 0);
+
+    fail_temp_unlink = 1;
+    CHECK(bond_store_save(path, &saved) == BOND_UNCERTAIN);
+    fail_temp_unlink = 0;
+    CHECK(bond_store_load(path, &adapter, &out) == BOND_COMMITTED);
+    CHECK(same_store(&saved, &out));
+    CHECK(temp_files(dir, 1) == 1);
+    CHECK(unlink(path) == 0);
+    CHECK(descriptors() == initial);
+}
+
 int main(int argc, char **argv)
 {
-    char dir[] = "/tmp/whateverpad-bond-missing-XXXXXX", path[256];
+    char dir[] = "/tmp/whateverpad-bond-missing-XXXXXX", path[256], log[256];
     setvbuf(stdout, NULL, _IOLBF, 0);
     posix_mode = argc == 2 && !strcmp(argv[1], "--posix");
     CHECK(mkdtemp(dir) != NULL);
     snprintf(path, sizeof path, "%s/pads.db", dir);
     store_cases(dir, path);
-    paired_state(path);
+    transactions(dir, path);
+    /* A closed stderr may become a socket; keep host logging on its own file. */
+    snprintf(log, sizeof log, "%s/host.log", dir);
+    int logging = log_open(log);
+    CHECK(logging);
+    if (logging) {
+        paired_state(path);
+        log_close();
+        CHECK(unlink(log) == 0);
+    }
     CHECK(rmdir(dir) == 0);
     printf("bond missing file: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail != 0;
