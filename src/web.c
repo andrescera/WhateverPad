@@ -36,7 +36,7 @@ typedef struct {
     int len;
     char buf[REQ_MAX + 1];
     enum action_kind action;
-    int slot, plen, retry_reserved;
+    int slot, plen, retry_reserved, diagnostic;
     unsigned opcode;
     long value;
     unsigned char params[255], addr[6];
@@ -50,7 +50,7 @@ typedef struct {
 struct web {
     web_cfg cfg;
     int fd;
-    int polling, applying;
+    int polling, applying, diagnostic_used;
     client c[WEB_CLIENTS];
     client rejected; /* Response only; never a ninth request/action slot. */
 };
@@ -496,6 +496,7 @@ static void handle(web_t *w, client *c)
         if (errno || *end || eq[1] == ' ' || eq[1] == '+') goto invalid;
         strcpy(c->text, query);
         c->action = TUNE;
+        c->diagnostic = !strcmp(query, "mask_conn");
     } else if (!strcmp(path, "/api/hci")) {
         char *params = query ? strstr(query, "&p=") : NULL;
         if (params) *params = 0;
@@ -513,6 +514,7 @@ static void handle(web_t *w, client *c)
             }
         }
         c->action = RAW_HCI;
+        c->diagnostic = 1;
     } else {
         respond_text(c, 404, "{\"error\":\"not found\"}");
         return;
@@ -567,7 +569,8 @@ int web_take_pending(web_t *w, web_action *action)
             }
             close_client(w, c);
         } else if (c->phase == ACTION_PENDING && admit(w, c) &&
-                   (!pending || c->id < pending->id)) pending = c;
+                   (!pending || c->diagnostic < pending->diagnostic ||
+                    (c->diagnostic == pending->diagnostic && c->id < pending->id))) pending = c;
     }
     if (!pending) return 0;
     pending->phase = ACTION_TAKEN;
@@ -587,6 +590,7 @@ void web_apply_pending(web_t *w, web_action action)
         host_t *h = w->cfg.host ? *w->cfg.host : NULL;
         /* Claim before callbacks: reentry cannot apply this action twice. */
         c->phase = ACTION_RUNNING;
+        if (c->diagnostic) w->diagnostic_used = 1;
         switch (c->action) {
         case PAIR:
             if (!h) unavailable(c, 503);
@@ -699,7 +703,12 @@ void web_run(web_t *w)
 {
     web_action action;
     web_poll(w);
-    while (web_take_pending(w, &action)) web_apply_pending(w, action);
+    if (!w || w->polling || w->applying) return;
+    w->diagnostic_used = 0;
+    while (web_take_pending(w, &action)) {
+        web_apply_pending(w, action);
+        if (w->diagnostic_used) break;
+    }
 }
 
 static void web_poll_once(web_t *w, long now)

@@ -32,49 +32,56 @@ static void usb_service(void *ledger)
     service_bt(ledger); /* The actual product path through on_idle. */
 }
 
-static int post_pair(void)
+static int post_request(const char *path)
 {
     struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(f.port),
         .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     REQUIRE(fd >= 0 && connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0);
-    const char request[] = "POST /api/pair HTTP/1.1\r\n"
-        "Host: localhost\r\nX-WhateverPad: 1\r\n\r\n";
-    REQUIRE(sendto(fd, request, sizeof request - 1, 0, NULL, 0) == sizeof request - 1);
+    char request[256];
+    int n = snprintf(request, sizeof request, "POST %s HTTP/1.1\r\n"
+        "Host: localhost\r\nX-WhateverPad: 1\r\n\r\n", path);
+    REQUIRE(sendto(fd, request, (size_t)n, 0, NULL, 0) == n);
     REQUIRE(shutdown(fd, SHUT_WR) == 0);
     return fd;
 }
 
-static void pair_reply(int fd, int code)
+static int read_reply(int fd, char *reply, size_t max)
 {
-    unsigned before = pair_calls;
-    web_run(g_web);
-    web_run(g_web);
-    char reply[2048];
     int bytes = 0, actual = 0;
     struct pollfd ready = {.fd = fd, .events = POLLIN};
     for (;;) {
         REQUIRE(poll(&ready, 1, 1000) > 0);
-        int n = (int)recv(fd, reply + bytes, sizeof reply - 1 - (size_t)bytes, 0);
+        int n = (int)recv(fd, reply + bytes, max - 1 - (size_t)bytes, 0);
         REQUIRE(n >= 0);
         if (!n) break;
         bytes += n;
-        REQUIRE(bytes < (int)sizeof reply - 1);
+        REQUIRE(bytes < (int)max - 1);
     }
     reply[bytes] = 0;
-    REQUIRE(sscanf(reply, "HTTP/1.1 %d", &actual) == 1 && actual == code);
+    REQUIRE(sscanf(reply, "HTTP/1.1 %d", &actual) == 1);
+    REQUIRE(close(fd) == 0);
+    return actual;
+}
+
+static void pair_reply(int fd, int code, unsigned before)
+{
+    web_run(g_web);
+    web_run(g_web);
+    char reply[2048];
+    REQUIRE(read_reply(fd, reply, sizeof reply) == code);
     REQUIRE(strstr(reply, code == 200 ? "{\"ok\":true}" : "{\"error\":") != NULL);
     REQUIRE(pair_calls == before + (code == 200));
     REQUIRE((host_pairing_left(g_host) > 0) == (code == 200));
     f.controller.ops->pump(f.controller.ctx, 1);
     web_run(g_web);
     REQUIRE(pair_calls == before + (code == 200)); /* A consumed Pair never repeats. */
-    REQUIRE(close(fd) == 0);
 }
 
 int main(int argc, char **argv)
 {
-    if (argc > 2 || (argc == 2 && strcmp(argv[1], "inside") && strcmp(argv[1], "outside")))
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "inside") && strcmp(argv[1], "outside") &&
+                     strcmp(argv[1], "at") && strcmp(argv[1], "backlog")))
         return 2;
     signal(SIGPIPE, SIG_IGN);
     snprintf(directory, sizeof directory, "/tmp/web-usb-idle-XXXXXX");
@@ -123,10 +130,27 @@ int main(int argc, char **argv)
     REQUIRE(f.connects == 1);
     REQUIRE(host_pair(f.host, 0));
     REQUIRE(host_pairing_left(f.host) == 0 && host_pair_wait_left(f.host) == 0);
-    fd = post_pair();
+    int raw[7], backlog = argc == 2 && !strcmp(argv[1], "backlog");
+    if (backlog) {
+        for (int i = 0; i < 7; i++) {
+            raw[i] = post_request("/api/hci?op=0C1B");
+            on_idle(NULL);
+        }
+    }
+    fd = post_request("/api/pair");
     unsigned calls = pair_calls;
     before = now_ms();
-    if (argc == 1) {
+    if (backlog) {
+        on_idle(NULL);
+        delay_events(0x0e, 7, 1960);
+        commands = f.commands;
+        web_run(g_web);
+        printf("PAIR_BACKLOG first_turn_ms=%ld commands=%d pair_calls=%u\n",
+               now_ms() - before, f.commands - commands, pair_calls - calls);
+        REQUIRE(now_ms() - before <= HOST_COMMAND_WAIT_MS);
+        REQUIRE(f.commands == commands + 1);
+        REQUIRE(pair_calls == calls + 1);
+    } else if (argc == 1) {
         sim_set_page_scan(f.classic, 0x0800, 0x0400);
         f.host->ps_check_at = 0;
         int lightened = f.host->ps_lightened;
@@ -139,14 +163,32 @@ int main(int argc, char **argv)
     } else {
         on_idle(NULL); /* Real product polling admits but never applies the request. */
         int inside = !strcmp(argv[1], "inside");
-        f.controller.ops->pump(f.controller.ctx, WEB_REQUEST_MS + (inside ? -1 : 1));
+        int age = inside ? 6999 : !strcmp(argv[1], "at") ? 7000 : 7001;
+        f.controller.ops->pump(f.controller.ctx, age);
     }
     own_snapshot(host_ownership(f.host), &summary);
     REQUIRE(summary.runtime.state == SESSION_ACTIVE && !summary.runtime.cleanup_pending);
-    REQUIRE(pair_calls == calls);
+    REQUIRE(pair_calls == calls + backlog);
     printf("PAIR_WAIT mode=%s age_ms=%ld budget_ms=%d\n",
            argc == 1 ? "slow-replies" : argv[1], now_ms() - before, WEB_REQUEST_MS);
-    pair_reply(fd, argc == 1 || !strcmp(argv[1], "inside") ? 200 : 503);
+    pair_reply(fd, argc == 1 || backlog || !strcmp(argv[1], "inside") ? 200 : 503, calls);
+    if (backlog) {
+        for (int i = 0; i < 7; i++) {
+            host_poll(f.host, 4);
+            before = now_ms();
+            commands = f.commands;
+            web_run(g_web);
+            REQUIRE(now_ms() - before <= HOST_COMMAND_WAIT_MS);
+            REQUIRE(f.commands - commands <= 1);
+        }
+        web_poll(g_web);
+        for (int i = 0; i < 7; i++) {
+            int code = read_reply(raw[i], reply, sizeof reply);
+            REQUIRE(code == 200 || code == 503);
+            REQUIRE(strstr(reply, code == 200 ? "\"reply\":\"0000081200\"" : "\"error\":"));
+        }
+        REQUIRE(pair_calls == calls + 1 && host_admits(f.host));
+    }
 
     g_host = NULL; g_web = NULL;
     web_stop(f.web);

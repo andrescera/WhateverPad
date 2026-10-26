@@ -16,8 +16,8 @@
 #include <stddef.h>
 
 #define WEB_PORT 8095
-/* One host poll: page-scan read + write, 2 * 2000 ms + 1000 ms pump/dispatch margin. */
-#define WEB_REQUEST_MS (HOST_POLL_SYNC_WAITS * HOST_COMMAND_WAIT_MS + 1000)
+/* One turn: two page-scan waits + one diagnostic, 3 * 2000 + 1000 ms margin = 7000. */
+#define WEB_REQUEST_MS ((HOST_POLL_SYNC_WAITS + 1) * HOST_COMMAND_WAIT_MS + 1000)
 
 typedef struct web web_t;
 
@@ -62,9 +62,11 @@ web_t *web_start(const web_cfg *cfg, int port);
 /* Poll only: callers may deliberately defer mutations. */
 void   web_poll(web_t *w);
 /* Outer product loop only, after host/USB operations unwind; idle uses web_poll.
+ * Nonwaiting page actions first, then at most one diagnostic wait per turn.
  * Nested calls can poll, but cannot take/apply while polling or applying. */
 void   web_run(web_t *w);
-/* Take one action, then apply it exactly once. Both boundaries recheck admission.
+/* Nonwaiting actions precede diagnostics; each class keeps request order.
+ * Take one action, then apply it exactly once. Both boundaries recheck admission.
  * Retry is applied by a subsequent take, after its complete reply was written.
  * The owner observes cfg.retry and starts initialization outside this call. */
 int    web_take_pending(web_t *w, web_action *action);

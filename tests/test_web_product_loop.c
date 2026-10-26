@@ -3,11 +3,24 @@
 #include "test_web.c"
 #undef main
 
-static int checking_raw;
+static int checking_raw, raw_ps_fd = -1;
+static int diagnostic_commands;
+
+static int count_diagnostic(void *ctx, unsigned opcode, const void *params, int len)
+{
+    if (opcode == 0x0c01 || opcode == 0x0c1b) diagnostic_commands++;
+    return count_command(ctx, opcode, params, len);
+}
 
 static void product_idle(void *ud)
 {
     (void)ud;
+    if (checking_raw && raw_ps_fd >= 0) {
+        static const char request[] = "POST /api/ps?slot=1 HTTP/1.1\r\n"
+            "Host: localhost\r\nX-WhateverPad: 1\r\n\r\n";
+        CHECK(sendto(raw_ps_fd, request, sizeof request - 1, 0, NULL, 0) == sizeof request - 1);
+        raw_ps_fd = -1;
+    }
     web_poll(g_web);
     if (checking_raw) CHECK(g_ps_calls == 0);
 }
@@ -100,6 +113,7 @@ int main(void)
     sim_pad pad = {.mode = SIM_WAIT_PAIRING, .cod = 0x002508,
         .vid = 0x054c, .pid = 0x05c4, .addr = {1, 2, 3, 4, 5, 6}};
     sim_t *sim = sim_new(&pad);
+    sim_output_hooks(sim, count_diagnostic, NULL);
     host_events events = {.idle = product_idle};
     char out[2048];
     signal(SIGPIPE, SIG_IGN);
@@ -127,7 +141,8 @@ int main(void)
     CHECK(strstr(out, "\"ok\":true") != NULL);
 
     int raw = post_pending("/api/hci?op=0C1B");
-    int ps = post_pending("/api/ps?slot=1");
+    int ps = idle_client();
+    raw_ps_fd = ps; /* Arrive during the raw wait, not before its priority selection. */
     checking_raw = 1;
     product_reply(raw, out, sizeof out, 200);
     checking_raw = 0;
@@ -152,6 +167,15 @@ int main(void)
     web_run(g_web);
     CHECK(g_ps_calls == before + 1); /* Poll before draining in the same turn. */
     product_reply(unread, out, sizeof out, 200);
+
+    int tuning = post_pending("/api/tune?mask_conn=1");
+    int query = post_pending("/api/hci?op=0C1B");
+    int commands = diagnostic_commands;
+    web_run(g_web);
+    CHECK(diagnostic_commands == commands + 1); /* Do not count automatic Rand barriers as waits. */
+    product_reply(tuning, out, sizeof out, 200);
+    product_reply(query, out, sizeof out, 200);
+    product_reply(post_pending("/api/tune?mask_conn=0"), out, sizeof out, 200);
 
     product_reply(post_pending("/api/pscombo?slot=1&combo=none"), out, sizeof out, 200);
     CHECK(combo_calls == 1);

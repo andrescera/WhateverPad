@@ -352,7 +352,9 @@ test: test-web-usb-idle
 test-web-usb-idle: $(BUILD)/test_web_usb_idle
 	./$(BUILD)/test_web_usb_idle
 	./$(BUILD)/test_web_usb_idle inside
+	./$(BUILD)/test_web_usb_idle at
 	./$(BUILD)/test_web_usb_idle outside
+	./$(BUILD)/test_web_usb_idle backlog
 
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
