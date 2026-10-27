@@ -108,6 +108,7 @@ void   sim_peer_request(sim_t *s, const unsigned char addr[6], uint32_t cod);
 int    sim_system_event(sim_t *s, unsigned char *out, int max);
 int    sim_consumed_requests(const sim_t *s);
 int    sim_foreign_commands(const sim_t *s);
+int    sim_ledger_dropped(const sim_t *s);
 sim_lifetime sim_resources(const sim_t *s);
 
 /* What the host did. */

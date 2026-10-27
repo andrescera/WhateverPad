@@ -484,7 +484,9 @@ void attrib_log_summary(void)
 enum attrib_class attrib_observe_receipt(const unsigned char *e, int len, long now,
                                          own_provenance provenance)
 {
-    if (provenance == OWN_RECEIPT_RETIRED) return ATTRIB_IGNORED;
+    /* Answers nothing of ours: the host's counter check must not mistake it for ambiguity. */
+    if (provenance == OWN_RECEIPT_RETIRED || provenance == OWN_RECEIPT_FOREIGN)
+        return ATTRIB_IGNORED;
     unsigned ev, op;
     if (provenance == OWN_RECEIPT_SEQUENCED || len <= 0 ||
         (e[0] != 0x0e && e[0] != 0x0f))

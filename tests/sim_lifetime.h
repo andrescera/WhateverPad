@@ -28,7 +28,8 @@ struct sim;
 void sim_set_handle(struct sim *, unsigned);
 
 /* Match hci_usb.c:event_done after delivery faults, without oracle provenance.
- * Returns 0 for an Inquiry Status the ledger retired: the host never sees it. */
+ * Returns 0 for an Inquiry Status the ledger retired or another owner's reply it ignored:
+ * the host never sees either. */
 static inline int sim_ownership_event(own_ledger *ledger, const unsigned char *ev,
                                       int len, long now)
 {
@@ -63,6 +64,7 @@ static inline int sim_ownership_event(own_ledger *ledger, const unsigned char *e
         } else {
             a.opcode = le16(ev + (ev[0] == OWN_CC ? 3 : 4));
             a.status = ev[ev[0] == OWN_CC ? 5 : 2];
+            if (ev[0] == OWN_CC) a.returned = (uint8_t)(len - 6);
             if (a.opcode == 0x2018 && ev[0] == OWN_CC) {
                 a.random_len = (uint8_t)(len - 6);
                 if (a.random_len == 8) memcpy(a.random, ev + 6, 8);
@@ -71,7 +73,8 @@ static inline int sim_ownership_event(own_ledger *ledger, const unsigned char *e
         own_provenance provenance = own_backend_receipt(ledger, &a, (uint64_t)now, &receipt);
         attrib_observe_receipt(ev, len, now, provenance);
         own_receive(ledger, &receipt, (uint64_t)now);
-        retired = ev[0] == OWN_CS && provenance == OWN_RECEIPT_RETIRED;
+        retired = (ev[0] == OWN_CS && provenance == OWN_RECEIPT_RETIRED) ||
+                  provenance == OWN_RECEIPT_FOREIGN;
     }
 #if !WHATEVERPAD_PROBE
     attrib_check(ledger);

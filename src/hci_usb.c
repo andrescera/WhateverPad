@@ -95,6 +95,10 @@ typedef struct {
     unsigned events_seen, acl_seen;
 #if !WHATEVERPAD_PROBE
     unsigned discovery_dropped;
+    unsigned foreign_replies, torn_dropped;
+    int overlap;                    /* a command was in flight while a half event was open */
+    long last_discovery;            /* when the last discovery event completed */
+    int seen_discovery;
 #endif
 #if WHATEVERPAD_PROBE
     unsigned probe_opens, probe_empty_completes;
@@ -186,6 +190,13 @@ static void attribution_loss(usb_ctx *c)
 static int discovery_event(unsigned code)
 {
     return code == 0x02 || code == 0x22 || code == 0x2f;
+}
+
+/* Results of an inquiry or an LE scan: what streams in while one runs. */
+static int discovery_traffic(const unsigned char *ev, int len)
+{
+    return discovery_event(ev[0]) ||
+           (ev[0] == 0x3e && len >= 3 && (ev[2] == 0x02 || ev[2] == 0x0d));
 }
 
 static void discovery_dropped(void)
@@ -313,8 +324,15 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
 
 #if !WHATEVERPAD_PROBE
     attrib_event_seen(ev, len, now_ms());
+    if (discovery_traffic(ev, len)) {
+        c->last_discovery = now_ms();
+        c->seen_discovery = 1;
+    }
 #endif
-    int retired = 0;
+    int retired = 0, foreign = 0;
+#if !WHATEVERPAD_PROBE
+    unsigned foreign_op = 0, foreign_status = 0;
+#endif
     if (c->ledger) {
         long now = now_ms();
 #if !WHATEVERPAD_PROBE
@@ -346,6 +364,7 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
             } else {
                 a.opcode = le16(ev + (ev[0] == OWN_CC ? 3 : 4));
                 a.status = ev[ev[0] == OWN_CC ? 5 : 2];
+                if (ev[0] == OWN_CC) a.returned = (uint8_t)(len - 6);
                 if (a.opcode == 0x2018 && ev[0] == OWN_CC) {
                     a.random_len = (uint8_t)(len - 6);
                     if (a.random_len == 8) memcpy(a.random, ev + 6, 8);
@@ -356,6 +375,11 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
             own_receive(c->ledger, &receipt, (uint64_t)now);
 #if !WHATEVERPAD_PROBE
             retired = ev[0] == OWN_CS && provenance == OWN_RECEIPT_RETIRED;
+            if (provenance == OWN_RECEIPT_FOREIGN) {
+                foreign = 1;
+                foreign_op = a.opcode;
+                foreign_status = a.status;
+            }
 #endif
         }
 #if !WHATEVERPAD_PROBE
@@ -365,12 +389,62 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
     /* A Status the ledger retired answers nothing live. Queued, it would be taken for
      * the answer of whichever Inquiry is current when the host reaches it. */
     if (retired) return;
+    /* Another owner's reply to a command we cannot send: it answers nothing of ours, so
+     * the host must not see it either. Logged by count, never by content. */
+    if (foreign) {
+#if !WHATEVERPAD_PROBE
+        unsigned n = ++c->foreign_replies;
+        if (!(n & (n - 1)))
+            log_line("usb: foreign reply %#06x ignored: status %#04x, nothing pending (%u so far)",
+                     foreign_op, foreign_status, n);
+#endif
+        return;
+    }
     c->events_seen++;
     if (c->n_sample < 12) {
         c->sample_len[c->n_sample++] = len;
     }
     ring_put(&c->events, ev, len);
 }
+
+#if !WHATEVERPAD_PROBE
+#define DISCOVERY_RECENT_MS 12000   /* one inquiry (10.24 s) and a margin */
+
+static void latch_overlap(usb_ctx *c)
+{
+    if (c->overlap) return;
+    c->overlap = 1;
+    log_line("usb: a command overlapped an open half event; a torn event ends the session "
+             "from here on");
+}
+
+/* A half event was given up on. If nothing of ours is in flight, no link or lease is held
+ * and discovery results were streaming, what was lost can only be a result nobody needs:
+ * every reply, link event and terminal the ledger relies on is either absent or covered
+ * by its own deadline. Otherwise the loss may hide one of them.
+ *
+ * "Nothing in flight" must also have held while the stream may have been misframed, not
+ * just now: bytes of a later event can complete the stuck half event, and a reply could
+ * be taken or mimicked there, after which the ledger looks quiet again. The parser cannot
+ * tell such a reply from a real one, but it can remember that a command and an open half
+ * event overlapped (see split_read and command_start). That memory is never cleared by a
+ * stream that merely ends on a boundary; only a reopened transport starts clean. */
+static int torn_discovery(const usb_ctx *c)
+{
+    return c->ledger && !c->overlap && own_quiet(c->ledger) &&
+           (discovery_event(c->es.buf[0]) ||
+            (c->seen_discovery && c->es.t_last - c->last_discovery <= DISCOVERY_RECENT_MS));
+}
+
+static void torn_dropped(usb_ctx *c)
+{
+    unsigned n = ++c->torn_dropped;
+    if (!(n & (n - 1)))
+        log_line("usb: torn event dropped during discovery: code=%u held=%d declared=%d; "
+                 "resynchronized, nothing pending (%u so far)", c->es.buf[0], c->es.len,
+                 c->es.len >= 2 ? 2 + c->es.buf[1] : -1, n);
+}
+#endif
 
 static void split_read(usb_ctx *c, int index)
 {
@@ -380,15 +454,23 @@ static void split_read(usb_ctx *c, int index)
     if (index < N_EVENT_RD) {           /* a piece of the event stream */
 #if !WHATEVERPAD_PROBE
         long now = now_ms();
+        int awaited = c->ledger && own_reply_awaited(c->ledger);
         /* Revoke before new bytes can answer anything; the old partial header
          * is lost evidence, not the replacement event about to be parsed. */
         if (c->es.len && now - c->es.t_last > EVSTREAM_TIMEOUT && n > 0) {
-            attrib_watch(c->ledger, "stream_gap", c->es.buf, c->es.len, now);
-            attrib_overflow();
-            attribution_loss(c);
-            attrib_check(c->ledger);
+            if (torn_discovery(c)) {
+                torn_dropped(c);
+            } else {
+                attrib_watch(c->ledger, "stream_gap", c->es.buf, c->es.len, now);
+                attrib_overflow();
+                attribution_loss(c);
+                attrib_check(c->ledger);
+            }
         }
         evstream_feed(&c->es, p, n, now, event_done, c);
+        /* A reply was owed when this piece arrived and an event is left open: from here on
+         * the stream cannot be trusted to have framed that reply. */
+        if (c->es.len && awaited) latch_overlap(c);
 #else
         unsigned dropped = c->es.dropped;
         evstream_feed(&c->es, p, n, now_ms(), event_done, c);
@@ -569,6 +651,9 @@ static int command_start(usb_ctx *c, unsigned opcode, const void *params, int pl
         return 0;
     }
     c->busy[X_CMD] = 1;
+#if !WHATEVERPAD_PROBE
+    if (c->es.len) latch_overlap(c);    /* sent into a stream that may be misframed */
+#endif
     return 1;
 }
 

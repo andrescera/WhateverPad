@@ -28,7 +28,10 @@ typedef enum {
 } own_state;
 typedef enum { OWN_NOT_SENT, OWN_SENT, OWN_SEND_UNCERTAIN } own_submit_result;
 typedef enum { OWN_FORWARD, OWN_BARRIER, OWN_UNDO } own_phase;
-typedef enum { OWN_RECEIPT_NONE, OWN_RECEIPT_SEQUENCED, OWN_RECEIPT_RETIRED } own_provenance;
+typedef enum {
+    OWN_RECEIPT_NONE, OWN_RECEIPT_SEQUENCED, OWN_RECEIPT_RETIRED,
+    OWN_RECEIPT_FOREIGN /* another HCI owner's reply to a command we cannot send */
+} own_provenance;
 typedef enum { OWN_CC = 0x0e, OWN_CS = 0x0f } own_ack_event;
 typedef enum {
     OWN_TERM_COMMAND, OWN_TERM_INQUIRY, OWN_TERM_CONNECTION, OWN_TERM_DISCONNECT,
@@ -65,6 +68,7 @@ typedef struct {
     own_ack_event event;
     uint16_t opcode;
     uint8_t status, random_len, random[8], malformed, overflow;
+    uint8_t returned; /* Command Complete only: return-parameter bytes after the status. */
 } own_ack;
 
 typedef struct {
@@ -106,6 +110,13 @@ void own_detector_trip(own_ledger *, uint64_t now);
 void own_transport_closed(own_ledger *, uint64_t now);
 void own_finalized(own_ledger *, enum cleanup_result);
 void own_snapshot(const own_ledger *, own_summary *);
+/* True when no reply is awaited, no link, lease or unfinished command is held, and the
+ * session is still admitting: a lost event cannot change anything the ledger relies on.
+ * An Inquiry waiting for its terminal does not count, its own deadline covers that loss.
+ * Read-only; it never grants authority. */
+int own_quiet(const own_ledger *);
+/* True while a reply, fence or resend is still owed, or a record is quarantined. */
+int own_reply_awaited(const own_ledger *);
 
 own_result own_prepare(own_ledger *, const own_command *, own_ref *);
 own_result own_reclaim(own_ledger *, own_ref);

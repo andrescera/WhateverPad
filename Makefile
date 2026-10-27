@@ -202,6 +202,13 @@ test: test-ambiguity-evidence
 test-ambiguity-evidence: $(BUILD)/test_ambiguity_evidence
 	./$(BUILD)/test_ambiguity_evidence
 
+$(BUILD)/test_foreign_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_foreign_usb.c tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
+
+test: test-foreign-usb
+test-foreign-usb: $(BUILD)/test_foreign_usb
+	./$(BUILD)/test_foreign_usb
+
 $(BUILD)/test_ambiguity_acl: $(CORE) tests/sim.c tests/test_ambiguity_acl.c tests/test_host.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_host.c,$^)
 
@@ -319,7 +326,7 @@ $(BUILD)/test_hearbridge: $(CORE) tests/sim.c tests/test_hearbridge.c tests/test
 OWN_HEADERS := src/ownership.h src/session.h
 OWN_EXPLORE ?= 1
 OWN_EXPLORE_WORKERS ?= 4
-OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_session_policy
+OWN_TESTS := $(BUILD)/test_ownership $(BUILD)/test_session_policy $(BUILD)/test_foreign_reply
 ifeq ($(OWN_EXPLORE),1)
 OWN_TESTS += $(BUILD)/test_ownership_explore $(BUILD)/test_explorer_key_storage
 endif
@@ -333,6 +340,7 @@ ifeq ($(OWN_EXPLORE),1)
 	./$(BUILD)/test_ownership_explore
 endif
 	./$(BUILD)/test_session_policy
+	./$(BUILD)/test_foreign_reply
 
 sanitize-ownership:
 	$(MAKE) test-ownership BUILD=build/san HOST_CFLAGS="$(HOST_CFLAGS) $(SAN)"
@@ -352,6 +360,9 @@ $(BUILD)/test_explorer_key_storage: $(OWN_CORE) tests/test_explorer_key_storage.
 	cc $(HOST_CFLAGS) -O2 -o $@ $(OWN_CORE) tests/test_explorer_key_storage.c
 
 $(BUILD)/test_ownership: $(OWN_CORE) tests/test_ownership.c $(OWN_HEADERS) | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
+
+$(BUILD)/test_foreign_reply: $(OWN_CORE) tests/test_foreign_reply.c $(OWN_HEADERS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
 $(BUILD)/test_ownership_explore: $(OWN_CORE) tests/test_ownership_explore.c $(OWN_HEADERS) | $(BUILD)
@@ -384,10 +395,11 @@ check-link-generation-mutation: $(BUILD)/mutation-drop_link_generation
 	  printf 'drop_link_generation killed in lost-terminal handle reuse (exit %s)\n' "$$status"
 
 check-mutations: test-ownership check-peer-reply-mutation check-link-generation-mutation
-	@set -eu; for id in ack_by_opcode ownership_on_sent resend_missing_ack deadline_is_teardown rearm_undo_duplicate readback_is_lease claims_after_callback deadline_only_idle expired_retry failed_http_deadline retry_without_cleanup; do \
+	@set -eu; for id in ack_by_opcode ownership_on_sent resend_missing_ack deadline_is_teardown rearm_undo_duplicate readback_is_lease claims_after_callback deadline_only_idle expired_retry failed_http_deadline retry_without_cleanup foreign_with_waiter foreign_any_opcode quiet_ignores_pending quiet_with_link quiet_with_lease; do \
 	  case $$id in \
 	    ack_by_opcode) test=test_ownership_explore;; \
 	    expired_retry|failed_http_deadline|retry_without_cleanup) test=test_session_policy;; \
+	    foreign_with_waiter|foreign_any_opcode|quiet_ignores_pending|quiet_with_link|quiet_with_lease) test=test_foreign_reply;; \
 	    *) test=test_ownership;; \
 	  esac; \
 	  cc $(HOST_CFLAGS) -O2 -DOWN_MUTATION=$$id $(OWN_CORE) tests/$$test.c -o $(BUILD)/mutation-$$id; \

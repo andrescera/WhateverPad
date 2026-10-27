@@ -92,6 +92,58 @@ static void inquiry_case(unsigned complete, unsigned unsolicited, unsigned cance
     sim_free(s);
 }
 
+/* The system's own Inquiry Cancel reaches our reads while we pair. The recorded event is
+ * a Command Complete, status 0. With nothing in flight it is another owner's reply; while
+ * our Inquiry's Status is still awaited, the reply we wait for may be the one confused.
+ * (Right behind that Status it would find the next command in flight, also fatal by
+ * design: only an idle moment is covered.) The host's own counter check must stay quiet
+ * too, so the case runs the whole host, and a witness proves the reply was delivered. */
+static unsigned foreign_pending;
+static long last_command;
+static const unsigned char cancelled[] = {1, 0x02, 0x04, 0x00};
+static int foreign_command(void *ctx, unsigned op, const void *p, int n)
+{
+    last_command = sim_now();
+    if (op != OP_INQUIRY) return sim_model_command(ctx, op, p, n);
+    inquiries++;
+    if (foreign_pending) sim_inject_event(ctx, 0x0e, cancelled, sizeof cancelled);
+    return sim_model_command(ctx, op, p, n);
+}
+
+static void foreign_case(unsigned pending)
+{
+    sim_pad pad = {.addr = {1, 2, 3, 4, 5, 6}, .cod = 0x002508,
+                   .vid = 0x054c, .pid = 0x05c4, .seed = 1};
+    sim_t *s = sim_new(&pad);
+    attrib_reset();
+    inquiries = 0; foreign_pending = pending; last_command = 0;
+    sim_output_hooks(s, foreign_command, NULL);
+    host_t *h = sim_open_host(s, "build/inquiry-foreign-absent.db", NULL);
+    CHECK(h != NULL);
+    if (!h) { sim_free(s); return; }
+    long begin = sim_now();
+    CHECK(host_pair(h, 60));
+    if (pending) {
+        while (host_admits(h) && !sim_calls(s) && sim_now() - begin < 14000)
+            host_poll(h, 20);
+        CHECK(!host_admits(h) || host_transport_lost(h));
+    } else {
+        /* Pad called, then half a second with no command: nothing is awaited. */
+        while (host_admits(h) && sim_now() - begin < 14000 &&
+               !(sim_calls(s) && sim_now() - last_command >= 500))
+            host_poll(h, 20);
+        CHECK(host_admits(h) && sim_calls(s) == 1 && sim_ledger_dropped(s) == 0);
+        sim_inject_event(s, 0x0e, cancelled, sizeof cancelled);
+        for (unsigned step = 0; step < 10 && host_admits(h); step++) host_poll(h, 20);
+        CHECK(sim_ledger_dropped(s) == 1);          /* delivered, and ignored */
+        CHECK(host_admits(h) && !host_transport_lost(h));
+        CHECK(inquiries == 1);
+        CHECK(own_invariant(host_ownership(h)) == NULL);
+    }
+    host_close(h);
+    sim_free(s);
+}
+
 int main(void)
 {
     log_open("/dev/null");
@@ -105,6 +157,8 @@ int main(void)
     inquiry_case(2, 0, 0, 3); /* Three refusals, each followed by the old Complete. */
     inquiry_case(0, 0, 0, 3); /* Three refusals, every Complete lost: timed waits. */
     inquiry_case(3, 0, 0, 1000); /* Always refused: its results still find the pad. */
+    foreign_case(0); /* Console death 2: a foreign Inquiry Cancel Complete, nothing pending. */
+    foreign_case(1); /* The same event while our Inquiry's Status is awaited stays fatal. */
     printf("inquiry refusal: policy=%d checks=%u failures=%u\n",
            WHATEVERPAD_ATTRIB_POLICY, checks, failures);
     log_close();

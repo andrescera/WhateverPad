@@ -826,6 +826,25 @@ void own_submitted(own_ledger *l, const own_token *t, own_submit_result result, 
     }
 }
 
+/* Replies of the system's own discovery housekeeping that can reach our reads: Inquiry
+ * Cancel (status only), Remote Name Request Cancel (status and address), Remote Name
+ * Request. None is in commands[] (every Cancel is denied), so none is ours, late or copied;
+ * the exact size keeps a mis-framed byte string out. Anything else stays unmatched. */
+static int foreign_reply(const own_ack *a)
+{
+    static const struct { uint16_t opcode; uint8_t event, returned; } known[] = {
+        {0x0402, OWN_CC, 0}, {0x041a, OWN_CC, 6}, {0x0419, OWN_CS, 0},
+    };
+    if (a->malformed || a->overflow) return 0;
+    if (mutation("foreign_any_opcode")) return a->event == OWN_CC || a->event == OWN_CS;
+    for (unsigned d = 0; d < sizeof commands / sizeof *commands; d++)
+        if (a->opcode == commands[d].opcode) return 0;
+    for (unsigned k = 0; k < sizeof known / sizeof *known; k++)
+        if (a->opcode == known[k].opcode && a->event == known[k].event &&
+            a->returned == known[k].returned) return 1;
+    return 0;
+}
+
 own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now,
                                   own_receipt *out)
 {
@@ -864,6 +883,11 @@ own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now
                  (a->opcode == 0x2018 && l->rand_resent)))
                 p.provenance = OWN_RECEIPT_RETIRED;
     }
+    /* Another owner's reply, with nothing of ours pending: it answers nothing, grants
+     * nothing and settles nothing. With a reply awaited it may be the one confused. */
+    if (!p.provenance && !p.credit && foreign_reply(a) &&
+        (!l->waiter.serial || mutation("foreign_with_waiter")))
+        p.provenance = OWN_RECEIPT_FOREIGN;
     memset(out, 0, sizeof *out);
     memcpy(out, &p, sizeof p);
     l->issued_receipt = *out;
@@ -916,7 +940,7 @@ void own_receive(own_ledger *l, const own_receipt *receipt, uint64_t now)
     l->receipt_seen = p.sequence;
     own_tick(l, now);
     if (p.credit) { l->credits++; return; }
-    if (p.provenance == OWN_RECEIPT_RETIRED) return;
+    if (p.provenance == OWN_RECEIPT_RETIRED || p.provenance == OWN_RECEIPT_FOREIGN) return;
     own_ref ref = {p.attempt, p.serial};
     own_record *r = record(l, ref);
     if (p.provenance == OWN_RECEIPT_SEQUENCED && r &&
@@ -1381,6 +1405,33 @@ void own_snapshot(const own_ledger *l, own_summary *out)
                                             !r->terminal_failed && !r->undo_terminal));
         out->unidentified += p->add_ok && !p->device_id;
     }
+}
+
+int own_reply_awaited(const own_ledger *l)
+{
+    /* The waiter and the record states say the same thing twice; the mutant drops both. */
+    if (mutation("quiet_ignores_pending")) return 0;
+    if (l->waiter.serial) return 1;
+    for (unsigned i = 0; i < OWN_MAX; i++) {
+        const own_record *r = &l->records[i];
+        if (r->submit_pending || r->barrier_pending || r->retry_pending ||
+            r->state == OWN_SUBMITTED || r->state == OWN_UNDO_SUBMITTED ||
+            r->state == OWN_QUARANTINED) return 1;
+    }
+    return 0;
+}
+
+int own_quiet(const own_ledger *l)
+{
+    if (!admits(l) || l->ambiguities || own_reply_awaited(l)) return 0;
+    for (unsigned i = 0; i < OWN_MAX; i++) {
+        /* Retained authority, such as a restorable setting, is revoked when a reply about
+         * it arrives unmatched. A lost reply would leave it standing, nothing to expire it. */
+        if (l->records[i].lease && !mutation("quiet_with_lease")) return 0;
+    }
+    for (unsigned i = 0; i < OWN_LINK_MAX; i++)
+        if (l->links[i].state != LINK_FREE && !mutation("quiet_with_link")) return 0;
+    return 1;
 }
 
 const char *own_invariant(const own_ledger *l)

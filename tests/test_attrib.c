@@ -687,6 +687,12 @@ static void test_receipt_provenance(void)
     CHECK(attrib_get()->classes[ATTRIB_UNMATCHED] == 1 &&
           attrib_get()->classes[ATTRIB_SOLICITED] == 1 && attrib_get()->unanswered == 0);
     metadata_only();
+    {   /* Another owner's reply is not ambiguity: the host's counter sum must not move. */
+        static const unsigned char cancel[] = {0x0e, 4, 1, 0x02, 0x04, 0};
+        attrib_reset();
+        CHECK(attrib_observe_receipt(cancel, sizeof cancel, 104, OWN_RECEIPT_FOREIGN) == ATTRIB_IGNORED);
+        CHECK(attrib_get()->classes[ATTRIB_UNMATCHED] == 0 && attrib_get()->overflow == 0);
+    }
 }
 
 static void test_credit_event_forms(void)

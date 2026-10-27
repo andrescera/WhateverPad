@@ -52,7 +52,7 @@ struct sim {
     unsigned invocations, refuse_op;
     int refuse_status;
     unsigned schedule_order;
-    int delay_code, delay_left, delay_ms, foreign_commands, consumed_requests;
+    int delay_code, delay_left, delay_ms, foreign_commands, consumed_requests, ledger_dropped;
     sim_lifetime life;
     own_ledger *ledger;
     uint64_t random_value;
@@ -956,7 +956,7 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
         n = q_get(&s->ev, out, max);
         if (out[0] != 0x13 || !lose(s)) {
             if (out[0] == 0x04) s->consumed_requests++;
-            if (!sim_ownership_event(s->ledger, out, n, sim_now())) continue;
+            if (!sim_ownership_event(s->ledger, out, n, sim_now())) { s->ledger_dropped++; continue; }
             if (s->observer) s->observer(s->observer_context, SIM_DELIVERED, origin, out[0], out + 2, n - 2);
             return n;
         }
@@ -1216,6 +1216,8 @@ void sim_delay_events(sim_t *s, int code, int count, int delay_ms)
 int sim_system_event(sim_t *s, unsigned char *out, int max) { return q_get(&s->system, out, max); }
 int sim_consumed_requests(const sim_t *s) { return s->consumed_requests; }
 int sim_foreign_commands(const sim_t *s) { return s->foreign_commands; }
+/* Replies the ledger path ignored before the host saw them (retired or foreign). */
+int sim_ledger_dropped(const sim_t *s) { return s->ledger_dropped; }
 sim_lifetime sim_resources(const sim_t *s)
 {
     sim_lifetime life = s->life;
