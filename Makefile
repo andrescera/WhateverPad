@@ -202,7 +202,7 @@ test: test-ambiguity-evidence
 test-ambiguity-evidence: $(BUILD)/test_ambiguity_evidence
 	./$(BUILD)/test_ambiguity_evidence
 
-$(BUILD)/test_foreign_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_foreign_usb.c tests/test_hci_usb.c | $(BUILD)
+$(BUILD)/test_foreign_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c $(CORE) tests/sim.c tests/test_foreign_usb.c tests/test_hci_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
 
 test: test-foreign-usb

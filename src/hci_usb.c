@@ -97,6 +97,7 @@ typedef struct {
     unsigned discovery_dropped;
     unsigned foreign_replies, torn_dropped;
     int overlap;                    /* a command was in flight while a half event was open */
+    int framing_lost;               /* only a fresh transport may trust control events again */
     long last_discovery;            /* when the last discovery event completed */
     int seen_discovery;
 #endif
@@ -323,6 +324,9 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
     usb_ctx *c = ctx;
 
 #if !WHATEVERPAD_PROBE
+    /* A continuation can impersonate any reply or link event. Discovery remains an
+     * observation only: no control evidence or output is admitted on this transport. */
+    if (c->framing_lost && !discovery_traffic(ev, len)) return;
     attrib_event_seen(ev, len, now_ms());
     if (discovery_traffic(ev, len)) {
         c->last_discovery = now_ms();
@@ -426,9 +430,9 @@ static void latch_overlap(usb_ctx *c)
  * "Nothing in flight" must also have held while the stream may have been misframed, not
  * just now: bytes of a later event can complete the stuck half event, and a reply could
  * be taken or mimicked there, after which the ledger looks quiet again. The parser cannot
- * tell such a reply from a real one, but it can remember that a command and an open half
- * event overlapped (see split_read and command_start). That memory is never cleared by a
- * stream that merely ends on a boundary; only a reopened transport starts clean. */
+ * tell such a reply from a real one, but it can remember cross-event overlap. An awaited
+ * reply's own Complete/Status header is not such an overlap; its tear is still fatal
+ * because own_quiet refuses a waiter. Only a reopened transport starts clean. */
 static int torn_discovery(const usb_ctx *c)
 {
     return c->ledger && !c->overlap && own_quiet(c->ledger) &&
@@ -439,9 +443,10 @@ static int torn_discovery(const usb_ctx *c)
 static void torn_dropped(usb_ctx *c)
 {
     unsigned n = ++c->torn_dropped;
+    c->framing_lost = 1;
     if (!(n & (n - 1)))
         log_line("usb: torn event dropped during discovery: code=%u held=%d declared=%d; "
-                 "resynchronized, nothing pending (%u so far)", c->es.buf[0], c->es.len,
+                 "control framing untrusted until reopen (%u so far)", c->es.buf[0], c->es.len,
                  c->es.len >= 2 ? 2 + c->es.buf[1] : -1, n);
 }
 #endif
@@ -470,7 +475,8 @@ static void split_read(usb_ctx *c, int index)
         evstream_feed(&c->es, p, n, now, event_done, c);
         /* A reply was owed when this piece arrived and an event is left open: from here on
          * the stream cannot be trusted to have framed that reply. */
-        if (c->es.len && awaited) latch_overlap(c);
+        if (c->es.len && awaited && c->es.buf[0] != OWN_CC && c->es.buf[0] != OWN_CS)
+            latch_overlap(c);
 #else
         unsigned dropped = c->es.dropped;
         evstream_feed(&c->es, p, n, now_ms(), event_done, c);
@@ -683,6 +689,18 @@ static own_submit_result submit_command(usb_ctx *c, const own_token *token)
 #endif
     reap(c, deadline, &completed);
     if (c->dead || c->busy[X_CMD] || now_ms() >= deadline) return OWN_NOT_SENT;
+#if !WHATEVERPAD_PROBE
+    /* Draining may have discovered a tear. Refuse before consuming the token:
+     * neither a short transfer nor a plausible header proves continuity on this pipe.
+     * The product's existing empty-session Retry can acquire a fresh transport. */
+    if (c->framing_lost && accepts(c)) {
+        log_line("usb: command refused after torn event; fresh transport required");
+        attrib_watch(c->ledger, "stream_gap", NULL, 0, now_ms());
+        own_detector_trip(c->ledger, (uint64_t)now_ms());
+        attrib_check(c->ledger);
+        return OWN_NOT_SENT;
+    }
+#endif
 #ifndef USB_MUTATE_NO_FINAL_CHECK
     if (own_commit_hci(c->ledger, token, (uint64_t)now_ms(), &effect, &ack_by) != OWN_OK)
         return OWN_NOT_SENT;
