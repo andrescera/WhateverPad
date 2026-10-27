@@ -100,6 +100,22 @@ int host_admits(const host_t *h)
            (s.runtime.state == SESSION_STARTING || s.runtime.state == SESSION_ACTIVE);
 }
 
+static void check_framing(host_t *h)
+{
+#if !WHATEVERPAD_PROBE
+    /* Discovery may still be queued after a tear, but cannot justify a new
+     * link reservation. Fail while empty so the product can Retry immediately. */
+    if (host_admits(h) && h->hci.ops->needs_reopen &&
+        h->hci.ops->needs_reopen(h->hci.ctx)) {
+        log_line("usb: torn discovery stream requires automatic Retry before pairing");
+        attrib_watch(h->ownership, "stream_gap", NULL, 0, now_ms());
+        own_detector_trip(h->ownership, (uint64_t)now_ms());
+    }
+#else
+    (void)h;
+#endif
+}
+
 void host_flush(host_t *h)
 {
     own_token token;
@@ -1344,7 +1360,8 @@ static void pair_with(host_t *h, const unsigned char *rec)
     unsigned char p[13];
     link_t *l;
 
-    if (h->discovery_blocked || is_banned(h, rec) || link_by_peer(h, rec, 0, 0) ||
+    check_framing(h); /* Changing event-read count after pump can also reap a tear. */
+    if (!host_admits(h) || h->discovery_blocked || is_banned(h, rec) || link_by_peer(h, rec, 0, 0) ||
         (h->collision_blocked && memcmp(h->collision_addr, rec, 6) == 0)) return;
     if (db_find(h, rec)) {
         log_line("pad %s: in pairing mode again, forgetting its old key", addr_str(rec));
@@ -2121,6 +2138,7 @@ static void pump(host_t *h, int timeout_ms)
     attrib_watch(h->ownership, "deadline", NULL, 0, now_ms());
 #endif
     if (h->hci.ops->pump(h->hci.ctx, timeout_ms) < 0) h->dead = 1;
+    check_framing(h);
 #if !WHATEVERPAD_PROBE
     attrib_watch(h->ownership, "deadline", NULL, 0, now_ms());
 #endif

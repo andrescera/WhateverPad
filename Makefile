@@ -443,6 +443,13 @@ test: test-runtime-recovery
 test-runtime-recovery: $(BUILD)/test_runtime_recovery
 	./$(BUILD)/test_runtime_recovery
 
+$(BUILD)/test_pair_tear: $(INTEGRATION_SRCS) tests/test_pair_tear.c tests/test_runtime_failure.c src/ps5_main.c src/config.c src/hotkey.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out tests/test_integration_gen.c tests/test_runtime_failure.c src/ps5_main.c,$(filter %.c %.o,$^))
+
+test: test-pair-tear
+test-pair-tear: $(BUILD)/test_pair_tear
+	./$(BUILD)/test_pair_tear
+
 $(BUILD)/test_ambiguity_web: $(INTEGRATION_SRCS) tests/test_ambiguity_web.c tests/test_runtime_failure.c src/ps5_main.c src/config.c src/hotkey.c | $(BUILD)
 	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out tests/test_integration_gen.c tests/test_runtime_failure.c src/ps5_main.c,$(filter %.c %.o,$^))
 

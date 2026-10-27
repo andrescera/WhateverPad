@@ -1058,10 +1058,22 @@ static void default_endpoints(usb_ctx *c)
 static int op_chip_vendor(void *ctx);
 static int op_chip_product(void *ctx);
 
+#if !WHATEVERPAD_PROBE
+static int op_needs_reopen(void *ctx)
+{
+    return ((usb_ctx *)ctx)->framing_lost;
+}
+#endif
+
 static const hci_ops k_usb_ops = {
     op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, op_missing_reads,
     op_event_reads, op_event_len, op_chip_vendor, op_chip_product,
     op_submit,
+#if !WHATEVERPAD_PROBE
+    op_needs_reopen,
+#else
+    NULL,
+#endif
 };
 
 /* Opens one device node and reads its device descriptor. */

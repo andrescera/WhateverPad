@@ -60,6 +60,9 @@ typedef struct hci_ops {
     int  (*chip_product)(void *ctx);
     /* Token-only final output boundary. Legacy operations remain until migration. */
     own_submit_result (*op_submit)(void *ctx, const hci_submission *);
+    /* Optional: framing is lost; abandon this transport before dispatch can
+     * reserve a link. This is not a physical device loss. NULL: no such signal. */
+    int (*needs_reopen)(void *ctx);
 } hci_ops;
 
 typedef struct {
