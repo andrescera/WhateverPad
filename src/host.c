@@ -119,7 +119,7 @@ void host_flush(host_t *h)
 }
 
 static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int len,
-                           const void *original, int original_len, own_ref *out)
+                           const void *original, int original_len, int idle_probe, own_ref *out)
 {
     if (!host_admits(h) || !h->hci.ops->op_submit || op > 0xffff ||
         len < 0 || len > 255 || (len && !p)) return 0;
@@ -130,6 +130,7 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
     own_command c = {.opcode = (uint16_t)op, .plen = (uint8_t)len,
                      .ack_by = (uint64_t)now_ms() + (h->setup_retry ? OWN_SETUP_MS : HOST_COMMAND_WAIT_MS),
                      .setup_retry = (uint8_t)h->setup_retry,
+                     .idle_probe = (uint8_t)idle_probe,
                      .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
 #if WHATEVERPAD_PROBE
     c.ack_by = (uint64_t)probe_deadline_ms;
@@ -147,6 +148,7 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
             own_state state;
             own_status(h->ownership, h->commands[slot].ref, &state);
             int retained = same_ref(h->commands[slot].ref, h->sync) ||
+                           same_ref(h->commands[slot].ref, h->idle_probe) ||
                            same_ref(h->commands[slot].ref, h->p256);
             for (unsigned i = 0; i < HOST_MAX_PADS; i++)
                 retained |= h->links[i].used && !h->links[i].create.serial &&
@@ -194,13 +196,13 @@ int send_link_cmd(host_t *h, link_t *l, unsigned op, const void *p, int len)
             if (state != OWN_ACKNOWLEDGED) return 0;
         } else {
             static const unsigned char off[2] = {0, 0};
-            int prepared = command_prepare(h, NULL, 0x200c, off, 2, NULL, 0, &ref);
+            int prepared = command_prepare(h, NULL, 0x200c, off, 2, NULL, 0, 0, &ref);
             if (!prepared) return 0;
             h->le_scan_want = 0;
             if (prepared == 1) { l->scan_off = ref; return 0; }
         }
     }
-    int prepared = command_prepare(h, l, op, p, len, NULL, 0, &ref);
+    int prepared = command_prepare(h, l, op, p, len, NULL, 0, 0, &ref);
     if (prepared && l &&
         (op == OP_CREATE_CONNECTION || op == OP_ACCEPT_CONNECTION || op == 0x200d))
         l->scan_off = (own_ref){0};
@@ -327,6 +329,7 @@ link_t *link_new(host_t *h, const unsigned char *addr, int le, unsigned type)
     memcpy(peer.identity, addr, 6);
     memcpy(peer.wire, addr, 6);
     if (own_reserve_link(h->ownership, &peer, &ref) == OWN_OK) {
+        h->had_link = 1;
         link_t *l = &h->links[ref.slot];
         memset(l, 0, sizeof *l);
         l->ref = ref;
@@ -1635,6 +1638,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     switch (ev[0]) {
     case 0x01:  /* Inquiry Complete */
         if (len != 3) break;            /* a damaged event: not an end of inquiry */
+        h->inq_retry_at = 0;
         log_line("inquiry: finished (status %#04x)", ev[2]);
         host_terminal(h, OWN_TERM_INQUIRY, NULL, 0, ev[2]);
         /* Something is always in range (at home, a TV at least): a whole
@@ -1847,11 +1851,11 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (len >= 6 && le16(ev + 4) == OP_INQUIRY) {
             log_line("inquiry: controller answered status %#04x", ev[2]);
             if (ev[2] == 0x0C) {
-                /* Command disallowed: an inquiry is already running, probably one
-                 * an earlier run left on the chip. Stop it and wait for its end
-                 * instead of asking again at once. */
+                /* It may be an older inquiry. Wait one requested window, but
+                 * do not depend on its terminal reaching our shared reads. */
                 h->inquiring = 1;
                 h->inq_started = now_ms();
+                h->inq_retry_at = now_ms() + (long)g_tune.inq_len * 1280 + 1000;
             } else if (ev[2] != 0) {
                 h->inquiring = 0;
             }
@@ -2123,6 +2127,7 @@ static void start_inquiry(host_t *h)
     inq[3] = (unsigned char)g_tune.inq_len;
 
     if (send_cmd(h, OP_INQUIRY, inq, 5)) {
+        h->inq_retry_at = 0;
         h->round_heard = 0;
         h->inquiring = 1;
         h->inq_started = now_ms();
@@ -2271,20 +2276,14 @@ void host_poll(host_t *h, int timeout_ms)
     /* While the events are left to the system on purpose (see yield), the
      * silence is ours: no probing, or the controller would be declared lost
      * and Bluetooth reopened in the middle of a search. */
-    if (h->yield_at && now - h->yield_at < T_YIELD + T_PROBE_IDLE) {
-        h->probes = 0;
-    } else if (now - h->last_rx > T_PROBE_IDLE) {
-        if (h->probes >= PROBE_TRIES && now - h->probe_at > T_PROBE_WAIT) {
-            if (!h->dead) log_line("controller silent after %d probes: transport lost", h->probes);
-            h->dead = 1;
-        } else if (h->probes < PROBE_TRIES && now - h->probe_at > T_PROBE_WAIT) {
-            send_cmd(h, OP_READ_BUFFER_SIZE, NULL, 0);     /* any reply will do */
-            h->probe_at = now;
-            h->probes++;
-        }
-    } else {
-        h->probes = 0;
+    if (h->idle_probe.serial) {
+        own_state state;
+        own_status(h->ownership, h->idle_probe, &state);
+        if (state == OWN_CLOSED) h->idle_probe = (own_ref){0};
     }
+    if (!h->idle_probe.serial && now - h->last_rx > T_PROBE_IDLE &&
+        !(h->yield_at && now - h->yield_at < T_YIELD + T_PROBE_IDLE))
+        command_prepare(h, NULL, OP_READ_BUFFER_SIZE, NULL, 0, NULL, 0, 1, &h->idle_probe);
 
     /* Keep searching through the pairing window, one pad at a time. */
     if (h->defer_at && now >= h->pair_until) {
@@ -2322,7 +2321,12 @@ void host_poll(host_t *h, int timeout_ms)
         log_line("pairing: the pause for the system is over");
         host_pair(h, s);
     }
-    if (now < h->pair_until && !h->inquiring && !linking && !h->repage_at) start_inquiry(h);
+    if (h->inq_retry_at && now >= h->inq_retry_at) {
+        h->inquiring = 0;
+        h->inq_retry_at = 0;
+    }
+    if (now < h->pair_until && !h->inquiring && !h->inq_retry_at && !linking && !h->repage_at)
+        start_inquiry(h);
     if (now >= h->pair_until && h->inquiring) {
         h->inquiring = 0;
     }
@@ -2396,7 +2400,32 @@ int host_connected(const host_t *h, int slot)
            h->links[slot].ready && !h->links[slot].disconnecting;
 }
 
+void host_resume_pair(host_t *h, long until)
+{
+    long left = until - now_ms();
+    if (left > 0 && host_pair(h, (int)((left + 999) / 1000)))
+        h->pair_until = until;
+}
+
 int host_paired_count(const host_t *h) { return h->committed.count; }
+
+int host_auto_retry(const host_t *h, long *pair_until)
+{
+    own_summary s;
+    own_snapshot(h->ownership, &s);
+    if (h->dead || h->had_link || h->store.count || h->committed.count ||
+        h->store_error != BOND_COMMITTED || s.links || s.unidentified || s.radio_left ||
+        s.runtime.reason != SESSION_AMBIGUOUS ||
+        (h->yield_at && now_ms() - h->yield_at < T_YIELD)) return 0;
+    for (unsigned i = 0; i < HOST_MAX_PADS; i++)
+        if (h->links[i].used) return 0;
+    switch (s.failed_opcode) {
+    case 0: case 0x0401: case 0x200c: case 0x1005: case 0x0c1b:
+        *pair_until = h->pair_until;
+        return 1;
+    default: return 0;
+    }
+}
 
 int host_transport_lost(const host_t *h)
 {
@@ -2575,7 +2604,7 @@ int host_setting(host_t *h, unsigned op, const void *p, int len,
 {
     own_ref ref;
     if (h->sync.serial) return 0;
-    int prepared = command_prepare(h, NULL, op, p, len, original, original_len, &ref);
+    int prepared = command_prepare(h, NULL, op, p, len, original, original_len, 0, &ref);
     if (prepared == 2) return 1;
     if (!prepared) return 0;
     return command_wait(h, ref);

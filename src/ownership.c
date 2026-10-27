@@ -388,7 +388,10 @@ own_result own_prepare(own_ledger *l, const own_command *c, own_ref *out)
         (c->original_known && c->original_len != c->plen)) return OWN_INVALID;
     if (c->opcode == 0x1004 && c->params[0] != 1) return OWN_INVALID;
     /* HCI has no invocation ID: surplus replies are safe only if reuse is denied. */
-    if (l->setup_retired & (UINT64_C(1) << d)) return OWN_NO_PROOF;
+    if ((l->setup_retired & (UINT64_C(1) << d)) && !c->idle_probe) return OWN_NO_PROOF;
+    if (c->idle_probe && (c->opcode != 0x1005 || c->setup_retry ||
+        l->session.state != SESSION_ACTIVE || c->link.generation ||
+        c->original_known || c->original_len)) return OWN_INVALID;
     if (c->setup_retry && (l->session.state != SESSION_STARTING || l->generation ||
         (commands[d].class != QUERY && commands[d].class != SETTING))) return OWN_INVALID;
     own_result target = target_valid(l, c, &commands[d]);
@@ -586,6 +589,12 @@ static int local_kind(const own_ledger *l, const own_link *p)
     return -1;
 }
 
+static int bounded_retry(const own_ledger *l, const own_record *r)
+{
+    return (r->c.idle_probe && l->session.state == SESSION_ACTIVE) ||
+           (r->c.setup_retry && l->session.state == SESSION_STARTING && !l->generation);
+}
+
 own_result own_next_local(own_ledger *l, uint64_t now, own_token *out)
 {
     if (l->finalized) return OWN_STOPPED;
@@ -669,7 +678,8 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
         if ((r->state != OWN_PREPARED && !retry) ||
             (!admitted && !(mutation("deadline_is_teardown") && l->session.deadline)))
             return OWN_STOPPED;
-        if (l->setup_retired & (UINT64_C(1) << r->desc) && !retry) return OWN_NO_PROOF;
+        if ((l->setup_retired & (UINT64_C(1) << r->desc)) && !retry && !r->c.idle_probe)
+            return OWN_NO_PROOF;
         own_result target = target_valid(l, &r->c, d);
         if (target != OWN_OK) {
             r->state = OWN_CLOSED;
@@ -729,8 +739,7 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
             memcpy(e.params, r->c.original, e.plen);
         }
     }
-    if (r->c.setup_retry && l->session.state == SESSION_STARTING &&
-        !l->generation && e.phase != OWN_UNDO) {
+    if (bounded_retry(l, r) && e.phase != OWN_UNDO) {
         if (!retry) {
             r->setup_sends = 0;
             r->setup_by = bounded_add(now, OWN_SETUP_MS);
@@ -740,7 +749,8 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
         e.resend = r->setup_sends++;
         r->phase_ack_by = bounded_add(now, r->setup_sends == 3 ? 3000 : 1000);
         if (r->phase_ack_by > r->setup_by) r->phase_ack_by = r->setup_by;
-        if (retry) {
+        /* Probe replies can prove only traffic, never later buffer-size data. */
+        if (retry || r->c.idle_probe) {
             if (e.phase == OWN_BARRIER) l->rand_resent = 1;
             else l->setup_retired |= UINT64_C(1) << r->desc;
         }
@@ -1113,7 +1123,7 @@ void own_tick(own_ledger *l, uint64_t now)
     if (l->transport_closed) return;
     own_record *r = record(l, l->waiter);
     if (r && (now >= r->phase_ack_by || !before_cutoff(l, now))) {
-        if (r->c.setup_retry && l->session.state == SESSION_STARTING && !l->generation &&
+        if (bounded_retry(l, r) &&
             admits(l) && l->waiting_phase != OWN_UNDO &&
             r->setup_sends < 3 && now < r->setup_by) {
             if (!r->retry_pending) { r->retry_pending = 1; r->revision++; }
@@ -1381,8 +1391,11 @@ const char *own_invariant(const own_ledger *l)
         const own_record *r = &l->records[i];
         if (r->state == OWN_FREE) continue;
         if (!r->ref.serial || !r->ref.attempt) return "I6: absent record identity";
-        if (r->setup_sends > 3 || (r->retry_pending && !r->c.setup_retry))
+        if (r->setup_sends > 3 || (r->retry_pending && !r->c.setup_retry && !r->c.idle_probe))
             return "setup retry escaped its budget";
+        if (r->c.idle_probe && (r->c.opcode != 0x1005 || r->c.link.generation ||
+            r->lease || r->barrier_pending || r->undo_consumed))
+            return "idle probe acquired authority";
         if (r->acked && (!r->sent || !r->forward_receipt))
             return "I1: acknowledgement without own sequenced receipt";
         if (r->state == OWN_QUARANTINED && r->lease) return "I7: quarantined lease";
@@ -1501,7 +1514,7 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
         }
         bytes(&w, (const uint8_t *)&r->c.peer, sizeof r->c.peer);
         link_reference(&w, r->c.link); N(r->c.ack_by); N(r->c.terminal_by);
-        N(r->c.setup_retry); N(r->setup_by); N(r->setup_sends); N(r->retry_pending);
+        N(r->c.setup_retry); N(r->c.idle_probe); N(r->setup_by); N(r->setup_sends); N(r->retry_pending);
         N(r->sent); N(r->acked); N(r->terminal_seen); N(r->terminal_failed);
         N(r->lease); N(r->barrier_done); N(r->barrier_pending);
         N(r->undo_consumed); N(r->undo_ack); N(r->undo_terminal);
@@ -1658,8 +1671,8 @@ own_result own_commit_hci(own_ledger *l, const own_token *token, uint64_t now,
     own_result result = own_commit(l, token, now, out);
     if (result == OWN_OK) {
         own_record *r = record(l, out->owner);
-        *ack_by = r->c.setup_retry && out->phase != OWN_UNDO &&
-                  l->session.state == SESSION_STARTING ? r->setup_by : r->phase_ack_by;
+        *ack_by = bounded_retry(l, r) && out->phase != OWN_UNDO ?
+                  r->setup_by : r->phase_ack_by;
     }
     return result;
 }

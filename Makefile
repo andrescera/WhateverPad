@@ -80,6 +80,20 @@ test: test-setup-reopen
 test-setup-reopen: $(BUILD)/test_setup_reopen
 	./$(BUILD)/test_setup_reopen
 
+$(BUILD)/test_runtime_query_loss: $(CORE) tests/sim.c tests/test_runtime_query_loss.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: test-runtime-query-loss
+test-runtime-query-loss: $(BUILD)/test_runtime_query_loss
+	./$(BUILD)/test_runtime_query_loss
+
+$(BUILD)/test_inquiry_refusal: $(CORE) tests/sim.c tests/test_inquiry_refusal.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: test-inquiry-refusal
+test-inquiry-refusal: $(BUILD)/test_inquiry_refusal
+	./$(BUILD)/test_inquiry_refusal
+
 $(BUILD)/test_compat: $(CORE) tests/sim.c tests/test_compat.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
@@ -158,6 +172,14 @@ $(BUILD)/test_hci_usb.o: src/hci_usb.c src/hci_usb.h src/hci.h src/ownership.h s
 
 $(BUILD)/test_hci_usb: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_hci_usb.c tests/usb_standin/dev/usb/usb.h tests/usb_standin/dev/usb/usb_ioctl.h | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)
+
+$(BUILD)/test_event_burst: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_event_burst.c tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
+
+test: test-event-burst
+test-event-burst: $(BUILD)/test_event_burst
+	./$(BUILD)/test_event_burst
+	./$(BUILD)/test_event_burst single
 
 $(BUILD)/test_usb_handle_reassignment: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_usb_handle_reassignment.c tests/test_hci_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
@@ -373,6 +395,13 @@ test-runtime-failure: $(BUILD)/test_runtime_failure
 	./$(BUILD)/test_runtime_failure failed
 	./$(BUILD)/test_runtime_failure coexist
 	./$(BUILD)/test_runtime_failure coexist-generic
+
+$(BUILD)/test_runtime_recovery: $(INTEGRATION_SRCS) tests/test_runtime_recovery.c tests/test_runtime_failure.c src/ps5_main.c src/config.c src/hotkey.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out tests/test_integration_gen.c tests/test_runtime_failure.c src/ps5_main.c,$(filter %.c %.o,$^))
+
+test: test-runtime-recovery
+test-runtime-recovery: $(BUILD)/test_runtime_recovery
+	./$(BUILD)/test_runtime_recovery
 
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)

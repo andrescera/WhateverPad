@@ -53,6 +53,7 @@ void host_poll(host_t *h, int timeout_ms);
 
 /* Searches for pads in pairing mode for `seconds`. */
 int  host_pair(host_t *h, int seconds);
+void host_resume_pair(host_t *h, long until);
 
 /* Sends rumble and lights to the pad in `slot`. Returns 0 if it is not
  * connected or takes no output. */
@@ -64,6 +65,8 @@ int  host_paired_count(const host_t *h);
 /* Transport loss or ledger failure: close locally before offering Retry. */
 int  host_transport_lost(const host_t *h);
 void host_failure_reason(const host_t *h, char *out, size_t max);
+/* Only a failed, never-linked, empty session may restart without owner input. */
+int host_auto_retry(const host_t *h, long *pair_until);
 
 /* ---- for the web page ---- */
 

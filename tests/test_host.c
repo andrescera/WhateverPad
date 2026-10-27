@@ -1036,7 +1036,7 @@ static void test_transport_lost(void)
     CHECK(!host_transport_lost(h));     /* idle but answering probes */
     sim_go_deaf(sim);
     run(h, 30000);
-    CHECK(!host_pair(h, 30)); /* The first missing command answer closes admission. */
+    CHECK(!host_pair(h, 30)); /* All three unanswered liveness sends close admission. */
     host_close(h);
     sim_free(sim);
 }

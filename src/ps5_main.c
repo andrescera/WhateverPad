@@ -101,6 +101,10 @@ static int g_vpad_ok;                   /* virtual pads are possible */
 static int g_bt_attempt;                /* Bluetooth tries made in this round */
 static long g_bt_next;                  /* when the next one is due */
 static int g_bt_plain_creds;            /* the chip answered only without raised credentials */
+#if !WHATEVERPAD_PROBE
+static int g_auto_retry;
+static long g_auto_retry_at[3], g_auto_pair_until;
+#endif
 
 /* Stopping must never hang: while this process lives it holds reads on the
  * Bluetooth chip, and the console's DualSense cannot reconnect. If the
@@ -280,6 +284,12 @@ static void bt_try(long now)
 #endif
             log_line("Bluetooth ready after %d tr%s%s", attempt, attempt == 1 ? "y" : "ies",
                      g_bt_plain_creds ? ", answering only with the original credentials" : "");
+#if !WHATEVERPAD_PROBE
+            if (g_auto_pair_until) {
+                host_resume_pair(g_host, g_auto_pair_until);
+                g_auto_pair_until = 0;
+            }
+#endif
             if (hci.ops->missing_reads && hci.ops->missing_reads(hci.ctx) > 0)
                 notify(TR("WhateverPad PS5: otro programa usa el Bluetooth (otro payload sigue en marcha?). Paralo desde su menu: WhateverPad se recupera solo",
                           "WhateverPad PS5: another program is using Bluetooth (is another payload still running?). Stop it from its menu: WhateverPad recovers by itself"));
@@ -321,12 +331,59 @@ static void bt_try(long now)
 
 static void bt_lost(void)
 {
+#if !WHATEVERPAD_PROBE
+    g_auto_retry = g_vpad_ok && !g_stop && !g_web_stop && g_bt_state == WEB_BT_OK &&
+                   host_auto_retry(g_host, &g_auto_pair_until);
+    for (unsigned i = 0; i < HOST_MAX_PADS; i++)
+        if (g_pad_id[i].vid || g_pad_id[i].link.generation) g_auto_retry = 0;
+    if (!g_auto_retry) g_auto_pair_until = 0;
+#endif
     host_failure_reason(g_host, g_bt_reason, sizeof g_bt_reason);
     log_line("Bluetooth failed: %s", g_bt_reason);
     g_bt_state = WEB_BT_FAILED;
     host_close(g_host);                 /* drops every pad and its virtual pad */
     g_host = NULL;
+#if !WHATEVERPAD_PROBE
+    if (g_auto_retry && !vpad_creds_restore()) {
+        g_auto_retry = 0;
+        g_auto_pair_until = 0;
+    }
+#endif
     notify(TR("WhateverPad PS5: se perdio el Bluetooth.\nPulsa Reintentar en el menu", "WhateverPad PS5: Bluetooth was lost.\nPress Retry in the menu"));
+}
+
+/* Manual and automatic Retry share the same close-before-open product path. */
+static void bt_retry(void)
+{
+#if !WHATEVERPAD_PROBE
+    int automatic = g_auto_retry && !g_retry;
+    if (!g_retry && !g_auto_retry) return;
+    g_auto_retry = 0;
+    if (!automatic) g_auto_pair_until = 0;
+#else
+    if (!g_retry) return;
+#endif
+    g_retry = 0; /* Claim once, before startup can service another web request. */
+    if (!g_vpad_ok || g_host || g_stop || g_web_stop || g_bt_state != WEB_BT_FAILED) return;
+#if !WHATEVERPAD_PROBE
+    if (automatic) {
+        long now = now_ms();
+        unsigned used = 0, free_slot = 0;
+        for (unsigned i = 0; i < 3; i++) {
+            if (g_auto_retry_at[i] && now - g_auto_retry_at[i] < 60000) used++;
+            else free_slot = i;
+        }
+        if (used == 3) {
+            g_auto_pair_until = 0;
+            log_line("automatic Retry limit reached; Bluetooth stays failed");
+            return;
+        }
+        g_auto_retry_at[free_slot] = now;
+        log_line("auto-retry %u of 3: %s", used + 1, g_bt_reason);
+    } else
+#endif
+        log_line("retrying Bluetooth at the user's request");
+    bt_begin();
 }
 
 /* ---- flags ---------------------------------------------------------------- */
@@ -511,15 +568,7 @@ int main(void)
 
         /* The Bluetooth: tries, loss, and the menu's retry button. */
         if (g_bt_state == WEB_BT_TRYING && now >= g_bt_next) bt_try(now);
-        if (g_retry) {
-            g_retry = 0;
-            if (g_vpad_ok && g_bt_state == WEB_BT_FAILED) {
-                log_line("retrying Bluetooth at the user's request");
-                bt_begin();
-            } else {
-                log_line("retry ignored (virtual pads not available, or not failed)");
-            }
-        }
+        bt_retry();
 
         check_flags(now);
     }

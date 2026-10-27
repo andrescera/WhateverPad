@@ -93,6 +93,9 @@ typedef struct {
     int dd_ok;
     unsigned reads_done, reads_empty, status_hist[48];
     unsigned events_seen, acl_seen;
+#if !WHATEVERPAD_PROBE
+    unsigned discovery_dropped;
+#endif
 #if WHATEVERPAD_PROBE
     unsigned probe_opens, probe_empty_completes;
     unsigned probe_event_completes[2], probe_acl_completes[2];
@@ -173,15 +176,46 @@ static void attribution_loss(usb_ctx *c)
 
 /* ---- packet rings -------------------------------------------------------- */
 
+#if !WHATEVERPAD_PROBE
+static int discovery_event(unsigned code)
+{
+    return code == 0x02 || code == 0x22 || code == 0x2f;
+}
+
+static void discovery_dropped(void)
+{
+    unsigned n = ++g_ctx.discovery_dropped;
+    if (!(n & (n - 1)))
+        log_line("usb: discovery backlog dropped %u inquiry results; control events retained", n);
+}
+#endif
+
 static void ring_put(ring *r, const unsigned char *p, int n)
 {
     if (n > HCI_PKT_MAX) n = HCI_PKT_MAX;
-    if (r->count == RING) {             /* full: the oldest goes */
+    if (r->count == RING) {
+        int discard = 0;
         if (r == &g_ctx.events) {
-            attrib_overflow();
-            attribution_loss(&g_ctx);
+#if !WHATEVERPAD_PROBE
+            /* Discovery may lose a result; never sacrifice a control event for it. */
+            if (discovery_event(p[0])) { discovery_dropped(); return; }
+            for (discard = 0; discard < RING; discard++)
+                if (discovery_event(r->pkt[(r->head + discard) % RING][0])) break;
+            if (discard < RING) discovery_dropped();
+            else
+#endif
+            {
+                discard = 0;
+                attrib_overflow();
+                attribution_loss(&g_ctx);
+            }
         }
-        r->head = (r->head + 1) % RING;
+        if (!discard) r->head = (r->head + 1) % RING;
+        else for (int i = discard; i < RING - 1; i++) {
+            int to = (r->head + i) % RING, from = (to + 1) % RING;
+            r->len[to] = r->len[from];
+            memcpy(r->pkt[to], r->pkt[from], (size_t)r->len[from]);
+        }
         r->count--;
     }
     {

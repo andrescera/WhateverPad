@@ -105,7 +105,6 @@
 #define FRESH_LINK_TRIES    1   /* links dropped and made again in one search when the pad has no resources for a channel */
 #define T_FRESH_LINK     3000   /* between dropping such a link and calling again */
 #define T_EIR_WAIT     20000    /* a pad found with an empty answer: wait this long for a complete one before calling it */
-#define T_PROBE_WAIT    2000    /* between probes */
 #define PROBE_TRIES        3
 
 /* ACL flow control on the shared controller: a few Number Of Completed
@@ -302,7 +301,7 @@ struct host {
     long pair_until;
     long purge_at;                  /* when stale links were last cleared */
     long yield_at;                  /* when events were last left to the system */
-    int inquiring;
+    int inquiring, had_link;
     unsigned char defer_rec[14];    /* a pad found whose extended answer came empty (cut short) */
     long defer_at;                  /* since when it waits for a complete one; 0: none */
     unsigned char last_call[14];    /* the answer the last call was made from */
@@ -312,6 +311,7 @@ struct host {
     long pair_wait_until;           /* when that pause ends */
     long search_started;            /* when the current search really began (to time how long finding a pad takes) */
     long inq_started;               /* when the inquiry in progress began, for the watchdog */
+    long inq_retry_at;              /* bounded wait after an explicit Inquiry refusal */
     int dead;               /* the transport is gone */
     int diag_done;          /* the transport's self-report was logged */
     long ps_check_at;        /* when to look at the page scan again while pairing */
@@ -323,8 +323,8 @@ struct host {
     int fresh_left;          /* links that may still be made again in this search */
     int reject_pending;      /* one of them was just turned down: is it really a call? */
     unsigned char reject_addr[6];
-    long last_rx, probe_at; /* liveness: anything heard, last probe */
-    int probes;
+    long last_rx; /* liveness: anything heard */
+    own_ref idle_probe;
 };
 
 

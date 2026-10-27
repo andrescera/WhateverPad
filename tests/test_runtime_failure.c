@@ -79,7 +79,7 @@ static void close_fixture(int lifetimes)
     REQUIRE(rmdir(directory) == 0);
 }
 
-int main(int argc, char **argv)
+int runtime_failure_main(int argc, char **argv)
 {
     int native = argc == 2 && !strcmp(argv[1], "native");
     int failed = argc == 2 && !strcmp(argv[1], "failed");
@@ -264,3 +264,7 @@ int main(int argc, char **argv)
     printf("%u runtime failure checks, 0 failures (native=%d failed=%d)\n", checks, native, failed);
     return 0;
 }
+
+#ifndef RUNTIME_FAILURE_FIXTURE
+int main(int argc, char **argv) { return runtime_failure_main(argc, argv); }
+#endif
