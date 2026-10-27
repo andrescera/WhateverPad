@@ -111,8 +111,9 @@ static void runtime_loss(unsigned op, int command_lost)
         REQUIRE(!ok);
         fault_opcode = 0;
         f.controller.ops = original;
-        if (fault_sends != 1) fprintf(stderr, "fault opcode=0x%04x sends=%u\n", op, fault_sends);
-        REQUIRE(fault_sends == 1); /* No new scan/inquiry retransmission. */
+        unsigned expected_sends = op == 0x0401 ? 3 : 1;
+        if (fault_sends != expected_sends) fprintf(stderr, "fault opcode=0x%04x sends=%u\n", op, fault_sends);
+        REQUIRE(fault_sends == expected_sends); /* Scan remains one-shot; Inquiry has its bounded exception. */
     } else {
         if (command_lost == 2) REQUIRE(sim_foreign_command(f.classic, 0x1001, NULL, 0));
         else attrib_overflow();

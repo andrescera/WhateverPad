@@ -58,6 +58,7 @@ typedef struct {
     uint64_t ack_by, terminal_by; /* Absolute deadlines, supplied by the owner. */
     uint8_t setup_retry; /* Explicit pre-link startup only; never runtime/undo. */
     uint8_t idle_probe; /* Active-session 0x1005 liveness only; no returned data or authority. */
+    uint8_t inquiry_retry; /* Identical active-session Inquiry only; never a lease or undo. */
 } own_command;
 
 typedef struct {

@@ -70,7 +70,13 @@ static void attribution_check(host_t *h)
     unsigned long seen = ambiguities();
     if (seen != h->ambiguity_seen) {
         h->ambiguity_seen = seen;
+#if !WHATEVERPAD_PROBE
+        attrib_watch(h->ownership, "counter", NULL, 0, now_ms());
+#endif
         own_detector_trip(h->ownership, (uint64_t)now_ms());
+#if !WHATEVERPAD_PROBE
+        attrib_check(h->ownership);
+#endif
     }
 }
 
@@ -98,14 +104,27 @@ void host_flush(host_t *h)
 {
     own_token token;
     if (h->submitting || h->dead) return;
-    if (own_next_hci(h->ownership, (uint64_t)now_ms(), &token) != OWN_OK) return;
+#if !WHATEVERPAD_PROBE
+    attrib_watch(h->ownership, "deadline", NULL, 0, now_ms());
+#endif
+    own_result next = own_next_hci(h->ownership, (uint64_t)now_ms(), &token);
+#if !WHATEVERPAD_PROBE
+    attrib_check(h->ownership);
+#endif
+    if (next != OWN_OK) return;
     if (h->reads_now < HOST_EV_READS) {
         h->full_reads_until = now_ms() + 2000;
         reads_for(h, HOST_EV_READS);
     }
     h->submitting = 1;
     hci_submission submission = {.kind = HCI_SUBMIT_COMMAND, .token.command = &token};
+#if !WHATEVERPAD_PROBE
+    attrib_watch(h->ownership, "dispatch", NULL, 0, now_ms());
+#endif
     own_submit_result result = h->hci.ops->op_submit(h->hci.ctx, &submission);
+#if !WHATEVERPAD_PROBE
+    attrib_check(h->ownership);
+#endif
     h->submitting = 0;
 #if WHATEVERPAD_PROBE
     log_line("probe command_result attempts=%u submitted=%lu sent=%d mono_ms=%ld",
@@ -131,6 +150,7 @@ static int command_prepare(host_t *h, link_t *l, unsigned op, const void *p, int
                      .ack_by = (uint64_t)now_ms() + (h->setup_retry ? OWN_SETUP_MS : HOST_COMMAND_WAIT_MS),
                      .setup_retry = (uint8_t)h->setup_retry,
                      .idle_probe = (uint8_t)idle_probe,
+                     .inquiry_retry = (uint8_t)(!h->setup_retry && op == OP_INQUIRY),
                      .terminal_by = (uint64_t)now_ms() + T_SETUP_TIMEOUT};
 #if WHATEVERPAD_PROBE
     c.ack_by = (uint64_t)probe_deadline_ms;
@@ -2096,8 +2116,18 @@ static void pump(host_t *h, int timeout_ms)
     unsigned char buf[HCI_PKT_MAX];
     int n;
 
+#if !WHATEVERPAD_PROBE
+    attrib_host_context(h->ready_at, h->inquiring, h->le_scan_want);
+    attrib_watch(h->ownership, "deadline", NULL, 0, now_ms());
+#endif
     if (h->hci.ops->pump(h->hci.ctx, timeout_ms) < 0) h->dead = 1;
+#if !WHATEVERPAD_PROBE
+    attrib_watch(h->ownership, "deadline", NULL, 0, now_ms());
+#endif
     own_tick(h->ownership, (uint64_t)now_ms());
+#if !WHATEVERPAD_PROBE
+    attrib_check(h->ownership);
+#endif
     attrib_poll(now_ms());
     attribution_check(h);
     if (h->ev.idle) h->ev.idle(h->ev.ud);
@@ -2105,14 +2135,26 @@ static void pump(host_t *h, int timeout_ms)
         h->last_rx = now_ms();
         attribution_check(h);
         h->dispatching++;
+#if !WHATEVERPAD_PROBE
+        attrib_watch(h->ownership, "dispatch", buf, n, now_ms());
+#endif
         on_event(h, buf, n);
+#if !WHATEVERPAD_PROBE
+        attrib_check(h->ownership);
+#endif
         h->dispatching--;
     }
     while ((n = h->hci.ops->next_acl(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
         if (!WHATEVERPAD_PROBE && host_admits(h)) {
             h->dispatching++;
+#if !WHATEVERPAD_PROBE
+            attrib_watch(h->ownership, "dispatch", NULL, 0, now_ms());
+#endif
             on_acl(h, buf, n);
+#if !WHATEVERPAD_PROBE
+            attrib_check(h->ownership);
+#endif
             h->dispatching--;
         }
     }
@@ -2567,7 +2609,7 @@ static int command_wait(host_t *h, own_ref ref)
     long previous = now_ms();
     unsigned stalled = 0;
     while (!h->sync_done && host_admits(h)) {
-        if (h->setup_retry) deadline = (long)own_wait_deadline(h->ownership, ref);
+        deadline = (long)own_wait_deadline(h->ownership, ref);
         if (now_ms() >= deadline) break;
         pump(h, 20);
         long now = now_ms();
@@ -2576,7 +2618,13 @@ static int command_wait(host_t *h, own_ref ref)
             own_fail(h->ownership, (uint64_t)now, 0);
         previous = now;
     }
+#if !WHATEVERPAD_PROBE
+    attrib_watch(h->ownership, "deadline", NULL, 0, now_ms());
+#endif
     own_tick(h->ownership, (uint64_t)now_ms());
+#if !WHATEVERPAD_PROBE
+    attrib_check(h->ownership);
+#endif
     int ok = h->sync_done && h->sync_ok && host_admits(h);
 #if WHATEVERPAD_PROBE
     if (!ok && now_ms() >= deadline) {
@@ -2790,7 +2838,10 @@ int host_start(host_t *h)
     long previous = now_ms();
     unsigned stalled = 0;
     while (host_admits(h)) {
-        if (own_activate(h->ownership)) return 1;
+        if (own_activate(h->ownership)) {
+            h->ready_at = now_ms();
+            return 1;
+        }
         if (now_ms() >= deadline) break;
         pump(h, 20);
         long now = now_ms();

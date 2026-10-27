@@ -94,6 +94,20 @@ test: test-inquiry-refusal
 test-inquiry-refusal: $(BUILD)/test_inquiry_refusal
 	./$(BUILD)/test_inquiry_refusal
 
+$(BUILD)/test_inquiry_retry: $(CORE) tests/sim.c tests/test_inquiry_retry.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: test-inquiry-retry
+test-inquiry-retry: $(BUILD)/test_inquiry_retry
+	./$(BUILD)/test_inquiry_retry
+
+$(BUILD)/test_le_support: $(CORE) tests/sim.c tests/test_le_support.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: test-le-support
+test-le-support: $(BUILD)/test_le_support
+	./$(BUILD)/test_le_support
+
 $(BUILD)/test_compat: $(CORE) tests/sim.c tests/test_compat.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
@@ -180,6 +194,20 @@ test: test-event-burst
 test-event-burst: $(BUILD)/test_event_burst
 	./$(BUILD)/test_event_burst
 	./$(BUILD)/test_event_burst single
+
+$(BUILD)/test_ambiguity_evidence: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_ambiguity_evidence.c tests/test_hci_usb.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
+
+test: test-ambiguity-evidence
+test-ambiguity-evidence: $(BUILD)/test_ambiguity_evidence
+	./$(BUILD)/test_ambiguity_evidence
+
+$(BUILD)/test_ambiguity_acl: $(CORE) tests/sim.c tests/test_ambiguity_acl.c tests/test_host.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_host.c,$^)
+
+test: test-ambiguity-acl
+test-ambiguity-acl: $(BUILD)/test_ambiguity_acl
+	./$(BUILD)/test_ambiguity_acl
 
 $(BUILD)/test_usb_handle_reassignment: $(USB_STANDIN) src/usb_desc.c src/evstream.c src/log.c src/util.c src/attrib.c src/probe.c $(OWN_CORE) tests/test_usb_handle_reassignment.c tests/test_hci_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter-out tests/test_hci_usb.c,$(filter %.c %.o,$^))
@@ -402,6 +430,13 @@ $(BUILD)/test_runtime_recovery: $(INTEGRATION_SRCS) tests/test_runtime_recovery.
 test: test-runtime-recovery
 test-runtime-recovery: $(BUILD)/test_runtime_recovery
 	./$(BUILD)/test_runtime_recovery
+
+$(BUILD)/test_ambiguity_web: $(INTEGRATION_SRCS) tests/test_ambiguity_web.c tests/test_runtime_failure.c src/ps5_main.c src/config.c src/hotkey.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out tests/test_integration_gen.c tests/test_runtime_failure.c src/ps5_main.c,$(filter %.c %.o,$^))
+
+test: test-ambiguity-web
+test-ambiguity-web: $(BUILD)/test_ambiguity_web
+	./$(BUILD)/test_ambiguity_web
 
 $(BUILD)/test_integration_gen: $(INTEGRATION_SRCS) | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $(filter %.c %.o,$^)

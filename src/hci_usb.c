@@ -142,7 +142,13 @@ static void service(usb_ctx *c)
 {
     if (c->service) c->service(c->service_ud);
     if (c->ledger) {
+#if !WHATEVERPAD_PROBE
+        attrib_watch(c->ledger, "deadline", NULL, 0, now_ms());
+#endif
         own_tick(c->ledger, (uint64_t)now_ms());
+#if !WHATEVERPAD_PROBE
+        attrib_check(c->ledger);
+#endif
         attrib_poll(now_ms());
     }
 }
@@ -206,8 +212,15 @@ static void ring_put(ring *r, const unsigned char *p, int n)
 #endif
             {
                 discard = 0;
+#if !WHATEVERPAD_PROBE
+                attrib_watch(g_ctx.ledger, "event_ring", r->pkt[r->head],
+                             r->len[r->head], now_ms());
+#endif
                 attrib_overflow();
                 attribution_loss(&g_ctx);
+#if !WHATEVERPAD_PROBE
+                attrib_check(g_ctx.ledger);
+#endif
             }
         }
         if (!discard) r->head = (r->head + 1) % RING;
@@ -298,8 +311,15 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
 {
     usb_ctx *c = ctx;
 
+#if !WHATEVERPAD_PROBE
+    attrib_event_seen(ev, len, now_ms());
+#endif
+    int retired = 0;
     if (c->ledger) {
         long now = now_ms();
+#if !WHATEVERPAD_PROBE
+        attrib_watch(c->ledger, "event", ev, len, now);
+#endif
         if (ev[0] != OWN_CC && ev[0] != OWN_CS) attrib_observe(ev, len, now);
         /* Failure events do not provide a usable connection identity tuple. */
         if (ev[0] == 3 && len == 13 && ev[2] == 0 && ev[11] == 1)
@@ -334,8 +354,17 @@ static void event_done(void *ctx, const uint8_t *ev, int len)
             own_provenance provenance = own_backend_receipt(c->ledger, &a, (uint64_t)now, &receipt);
             attrib_observe_receipt(ev, len, now, provenance);
             own_receive(c->ledger, &receipt, (uint64_t)now);
+#if !WHATEVERPAD_PROBE
+            retired = ev[0] == OWN_CS && provenance == OWN_RECEIPT_RETIRED;
+#endif
         }
+#if !WHATEVERPAD_PROBE
+        attrib_check(c->ledger);
+#endif
     }
+    /* A Status the ledger retired answers nothing live. Queued, it would be taken for
+     * the answer of whichever Inquiry is current when the host reaches it. */
+    if (retired) return;
     c->events_seen++;
     if (c->n_sample < 12) {
         c->sample_len[c->n_sample++] = len;
@@ -349,12 +378,25 @@ static void split_read(usb_ctx *c, int index)
     int n = (int)c->lenp[index][0], off = 0;
 
     if (index < N_EVENT_RD) {           /* a piece of the event stream */
+#if !WHATEVERPAD_PROBE
+        long now = now_ms();
+        /* Revoke before new bytes can answer anything; the old partial header
+         * is lost evidence, not the replacement event about to be parsed. */
+        if (c->es.len && now - c->es.t_last > EVSTREAM_TIMEOUT && n > 0) {
+            attrib_watch(c->ledger, "stream_gap", c->es.buf, c->es.len, now);
+            attrib_overflow();
+            attribution_loss(c);
+            attrib_check(c->ledger);
+        }
+        evstream_feed(&c->es, p, n, now, event_done, c);
+#else
         unsigned dropped = c->es.dropped;
         evstream_feed(&c->es, p, n, now_ms(), event_done, c);
         if (c->es.dropped != dropped) {
             attrib_overflow();
             attribution_loss(c);
         }
+#endif
         return;
     }
     while (off + 4 <= n) {              /* ACL: whole packets */
@@ -383,7 +425,15 @@ static int reap(usb_ctx *c, long deadline, unsigned *completed)
         if (done.ep_index == X_CMD) {
             if (c->ep[X_CMD].status) {
                 c->dead = 1;
-                if (c->ledger) own_detector_trip(c->ledger, (uint64_t)now_ms());
+                if (c->ledger) {
+#if !WHATEVERPAD_PROBE
+                    attrib_watch(c->ledger, "dispatch", NULL, 0, now_ms());
+#endif
+                    own_detector_trip(c->ledger, (uint64_t)now_ms());
+#if !WHATEVERPAD_PROBE
+                    attrib_check(c->ledger);
+#endif
+                }
             }
             continue;
         }
@@ -392,7 +442,13 @@ static int reap(usb_ctx *c, long deadline, unsigned *completed)
                 log_line("usb: ACL out status %u", (unsigned)c->ep[done.ep_index].status);
                 if (c->ledger) {
                     c->dead = 1;
+#if !WHATEVERPAD_PROBE
+                    attrib_watch(c->ledger, "dispatch", NULL, 0, now_ms());
+#endif
                     own_detector_trip(c->ledger, (uint64_t)now_ms());
+#if !WHATEVERPAD_PROBE
+                    attrib_check(c->ledger);
+#endif
                 }
             } else if (!c->out_done_logged) {
                 c->out_done_logged = 1;

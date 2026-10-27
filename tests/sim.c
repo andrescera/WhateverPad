@@ -956,7 +956,7 @@ static int op_next_event(void *ctx, unsigned char *out, int max)
         n = q_get(&s->ev, out, max);
         if (out[0] != 0x13 || !lose(s)) {
             if (out[0] == 0x04) s->consumed_requests++;
-            sim_ownership_event(s->ledger, out, n, sim_now());
+            if (!sim_ownership_event(s->ledger, out, n, sim_now())) continue;
             if (s->observer) s->observer(s->observer_context, SIM_DELIVERED, origin, out[0], out + 2, n - 2);
             return n;
         }

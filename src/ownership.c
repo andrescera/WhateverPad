@@ -388,8 +388,12 @@ own_result own_prepare(own_ledger *l, const own_command *c, own_ref *out)
         (c->original_known && c->original_len != c->plen)) return OWN_INVALID;
     if (c->opcode == 0x1004 && c->params[0] != 1) return OWN_INVALID;
     /* HCI has no invocation ID: surplus replies are safe only if reuse is denied. */
-    if ((l->setup_retired & (UINT64_C(1) << d)) && !c->idle_probe) return OWN_NO_PROOF;
+    if ((l->setup_retired & (UINT64_C(1) << d)) && !c->idle_probe && !c->inquiry_retry)
+        return OWN_NO_PROOF;
     if (c->idle_probe && (c->opcode != 0x1005 || c->setup_retry ||
+        l->session.state != SESSION_ACTIVE || c->link.generation ||
+        c->original_known || c->original_len)) return OWN_INVALID;
+    if (c->inquiry_retry && (c->opcode != 0x0401 || c->setup_retry || c->idle_probe ||
         l->session.state != SESSION_ACTIVE || c->link.generation ||
         c->original_known || c->original_len)) return OWN_INVALID;
     if (c->setup_retry && (l->session.state != SESSION_STARTING || l->generation ||
@@ -591,7 +595,7 @@ static int local_kind(const own_ledger *l, const own_link *p)
 
 static int bounded_retry(const own_ledger *l, const own_record *r)
 {
-    return (r->c.idle_probe && l->session.state == SESSION_ACTIVE) ||
+    return ((r->c.idle_probe || r->c.inquiry_retry) && l->session.state == SESSION_ACTIVE) ||
            (r->c.setup_retry && l->session.state == SESSION_STARTING && !l->generation);
 }
 
@@ -678,7 +682,8 @@ own_result own_commit(own_ledger *l, const own_token *t, uint64_t now, own_effec
         if ((r->state != OWN_PREPARED && !retry) ||
             (!admitted && !(mutation("deadline_is_teardown") && l->session.deadline)))
             return OWN_STOPPED;
-        if ((l->setup_retired & (UINT64_C(1) << r->desc)) && !retry && !r->c.idle_probe)
+        if ((l->setup_retired & (UINT64_C(1) << r->desc)) && !retry &&
+            !r->c.idle_probe && !r->c.inquiry_retry)
             return OWN_NO_PROOF;
         own_result target = target_valid(l, &r->c, d);
         if (target != OWN_OK) {
@@ -851,7 +856,8 @@ own_provenance own_backend_receipt(own_ledger *l, const own_ack *a, uint64_t now
             p.phase = l->waiting_phase;
         }
     }
-    if (!p.provenance && !a->malformed && !a->overflow && !a->status && a->event == OWN_CC) {
+    if (!p.provenance && !a->malformed && !a->overflow &&
+        ((!a->status && a->event == OWN_CC) || (a->opcode == 0x0401 && a->event == OWN_CS))) {
         for (unsigned d = 0; d < sizeof commands / sizeof *commands; d++)
             if (a->opcode == commands[d].opcode &&
                 ((l->setup_retired & (UINT64_C(1) << d)) ||
@@ -1391,8 +1397,12 @@ const char *own_invariant(const own_ledger *l)
         const own_record *r = &l->records[i];
         if (r->state == OWN_FREE) continue;
         if (!r->ref.serial || !r->ref.attempt) return "I6: absent record identity";
-        if (r->setup_sends > 3 || (r->retry_pending && !r->c.setup_retry && !r->c.idle_probe))
+        if (r->setup_sends > 3 || (r->retry_pending && !r->c.setup_retry &&
+            !r->c.idle_probe && !r->c.inquiry_retry))
             return "setup retry escaped its budget";
+        if (r->c.inquiry_retry && (r->c.opcode != 0x0401 || r->c.link.generation ||
+            r->lease || r->barrier_pending || r->undo_consumed))
+            return "inquiry acquired authority";
         if (r->c.idle_probe && (r->c.opcode != 0x1005 || r->c.link.generation ||
             r->lease || r->barrier_pending || r->undo_consumed))
             return "idle probe acquired authority";
@@ -1514,7 +1524,8 @@ size_t own_canonical(const own_ledger *l, uint8_t *out, size_t capacity)
         }
         bytes(&w, (const uint8_t *)&r->c.peer, sizeof r->c.peer);
         link_reference(&w, r->c.link); N(r->c.ack_by); N(r->c.terminal_by);
-        N(r->c.setup_retry); N(r->c.idle_probe); N(r->setup_by); N(r->setup_sends); N(r->retry_pending);
+        N(r->c.setup_retry); N(r->c.idle_probe); N(r->c.inquiry_retry);
+        N(r->setup_by); N(r->setup_sends); N(r->retry_pending);
         N(r->sent); N(r->acked); N(r->terminal_seen); N(r->terminal_failed);
         N(r->lease); N(r->barrier_done); N(r->barrier_pending);
         N(r->undo_consumed); N(r->undo_ack); N(r->undo_terminal);

@@ -11,6 +11,7 @@
 
 #define ATTRIB_RULES_VERSION 1
 #define ATTRIB_JSON_MAX 65536
+#define ATTRIB_EVIDENCE_MAX 2048
 
 enum attrib_class {
     ATTRIB_IGNORED, ATTRIB_SOLICITED, ATTRIB_NOP, ATTRIB_DUPLICATE,
@@ -40,6 +41,19 @@ const attrib_counts *attrib_get(void);
  * reports omitted rows. Non-solicited samples retain the first 64 arrivals. */
 size_t attrib_json(char *out, size_t capacity);
 void attrib_log_summary(void);
+
+/* Observations only; call watch before a possible detector transition and check
+ * immediately after it. Sources are event, event_ring, stream_gap, deadline,
+ * dispatch and counter. Only the first ambiguity per try freezes/logs evidence.
+ * begin_try clears live context/history but retains the previous frozen report. */
+void attrib_host_context(long ready_at, int inquiry, int scan);
+void attrib_event_seen(const unsigned char *, int len, long now);
+void attrib_watch(own_ledger *, const char *source, const unsigned char *, int len, long now);
+void attrib_check(own_ledger *);
+/* Compact JSON or null; includes its terminator within ATTRIB_EVIDENCE_MAX.
+ * Insufficient capacity returns 0 and an empty string, never partial JSON.
+ * since_ready_ms is -1 until a positive ready_at has been supplied. */
+size_t attrib_evidence_json(char *, size_t capacity);
 
 /* NONE is unmatched authority: count the observation without answering a
  * pending local command. NOP/malformed observations keep their wire classes. */

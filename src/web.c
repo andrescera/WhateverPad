@@ -20,7 +20,7 @@
 #define REQ_MAX         8192
 #define LOG_TAIL        6144
 #define T_WRITE         1000
-#define RESPONSE_MAX    (8192 + ATTRIB_JSON_MAX)
+#define RESPONSE_MAX    (8192 + ATTRIB_JSON_MAX + ATTRIB_EVIDENCE_MAX)
 
 extern const unsigned char web_page_html[];
 extern const unsigned int web_page_html_len;
@@ -232,7 +232,8 @@ static void api_state(web_t *w, client *c)
         { PAD_TOUCHPAD, "touchpad" },
     };
     host_t *h = w->cfg.host ? *w->cfg.host : NULL;
-    char out[8192 + ATTRIB_JSON_MAX], a[18], combo[100];
+    char out[RESPONSE_MAX], a[18], combo[100];
+    _Static_assert(sizeof out <= sizeof c->body, "state response capacity");
     size_t n = 0;
     int i, first = 1;
 
@@ -268,7 +269,9 @@ static void api_state(web_t *w, client *c)
                 PUT("%s\"%s\"", fb ? "" : ",", names[b].name);
                 fb = 0;
             }
-        PUT("]},\"pads\":[");
+        char evidence[ATTRIB_EVIDENCE_MAX];
+        attrib_evidence_json(evidence, sizeof evidence);
+        PUT("]},\"evidence\":%s,\"pads\":[", evidence);
     }
     for (i = 0; h && i < HOST_MAX_PADS; i++) {
         pad_info info;

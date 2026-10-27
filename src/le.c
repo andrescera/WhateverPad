@@ -171,11 +171,19 @@ void le_setup(host_t *h)
     /* Active scanning (names come in scan responses), 60 ms every 60 ms. */
     static const uint8_t scan[7] = { 0x01, 0x60, 0x00, 0x60, 0x00, 0x00, 0x00 };
 
+    h->le_support = 0;
     if (!hci_sync(h, OP_LE_SET_EVENT_MASK, mask, 8)) {
-        log_line("le: the controller does not do LE");
+        if (host_admits(h) && h->cc_op == OP_LE_SET_EVENT_MASK && h->cc_len >= 6 &&
+            (h->cc[5] == 0x01 || h->cc[5] == 0x11)) {
+            h->le_support = -1;
+            log_line("le: controller explicitly reports unsupported (status 0x%02x)", h->cc[5]);
+        } else {
+            log_line("le: support unconfirmed; setup was unanswered or refused");
+        }
         h->le_ok = 0;
         return;
     }
+    h->le_support = 1;
     h->le_ok = 1;
     if (hci_sync(h, OP_LE_READ_BUFFER_SIZE, NULL, 0) && h->cc_len >= 9 &&
         h->cc[8] && le16(h->cc + 6)) {

@@ -286,6 +286,7 @@ struct host {
 
     /* Bluetooth LE (le.c) */
     int le_ok;                      /* the controller does LE */
+    int le_support;                 /* 0 unconfirmed, 1 supported, -1 explicit unsupported */
     int le_separate;                /* LE has its own buffers */
     unsigned le_mtu;
     acl_pool lep;
@@ -324,6 +325,7 @@ struct host {
     int reject_pending;      /* one of them was just turned down: is it really a call? */
     unsigned char reject_addr[6];
     long last_rx; /* liveness: anything heard */
+    long ready_at; /* diagnostic origin; zero while startup is unconfirmed */
     own_ref idle_probe;
 };
 

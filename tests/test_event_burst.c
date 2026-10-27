@@ -98,6 +98,51 @@ static void burst(own_policy policy, int critical_only, int with_read)
     own_free(l);
 }
 
+/* An Inquiry Status the ledger retired answers nothing live, so the host must
+ * never see it: the ring decouples ingress from dispatch, and a late Status would
+ * otherwise be taken for the answer of whichever Inquiry is current by then. */
+static void retired_inquiry_status(own_policy policy)
+{
+    static const unsigned char inquiry[] = {0x33, 0x8b, 0x9e, 8, 0};
+    static const unsigned char refused[] = {0x0f, 4, 0x0c, 1, 0x01, 0x04};
+    static const unsigned char late[] = {0x0f, 4, 0x00, 1, 0x01, 0x04};
+    unsigned char out[HCI_PKT_MAX];
+    own_token token;
+    own_state state;
+    own_summary summary;
+    own_ref first, next;
+    reset(); attrib_reset();
+    hci_t h = start();
+    own_ledger *l = bound(&h, policy);
+    own_command c = {.opcode = 0x0401, .plen = 5, .inquiry_retry = 1,
+                     .ack_by = (uint64_t)clock_ms + 2000, .terminal_by = (uint64_t)clock_ms + 9000};
+    memcpy(c.params, inquiry, sizeof inquiry);
+    CHECK(own_prepare(l, &c, &first) == OWN_OK);
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    clock_ms += 1000;                           /* unanswered: sent again */
+    own_tick(l, (uint64_t)clock_ms);
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    receive_event(h, refused, sizeof refused);  /* the genuine answer is delivered */
+    CHECK(own_status(l, first, &state) == OWN_REFUSED && state == OWN_CLOSED);
+    CHECK(own_prepare(l, &c, &next) == OWN_OK); /* the next Inquiry, not yet sent */
+    h.ops->pump(h.ctx, 0);
+    completion(0, late, sizeof late);           /* the first one's late success */
+    h.ops->pump(h.ctx, 0);
+    CHECK(test_usb_receipts.last == OWN_RECEIPT_RETIRED);
+    CHECK(h.ops->next_event(h.ctx, out, sizeof out) == 0);
+    CHECK(own_status(l, next, &state) == OWN_OK && state == OWN_PREPARED);
+    CHECK(own_next_hci(l, (uint64_t)clock_ms, &token) == OWN_OK);
+    CHECK(hci_usb_submit(&h, &token) == OWN_SENT);
+    receive_event(h, refused, sizeof refused);  /* its own refusal is still delivered */
+    CHECK(own_status(l, next, &state) == OWN_REFUSED && state == OWN_CLOSED);
+    own_snapshot(l, &summary);
+    CHECK(summary.runtime.reason == SESSION_NONE && !summary.quarantined);
+    CHECK(own_invariant(l) == NULL);
+    closed_once(h); own_free(l);
+}
+
 int main(int argc, char **argv)
 {
     own_policy policy = argc == 2 && !strcmp(argv[1], "single") ?
@@ -105,6 +150,7 @@ int main(int argc, char **argv)
     burst(policy, 0, 0);
     burst(policy, 0, 1);
     burst(policy, 1, 0); /* No discovery to discard: real critical loss stays fatal. */
+    retired_inquiry_status(policy);
     printf("event burst: policy=%d checks=%d failures=%d\n", policy, checks, failures);
     return failures ? 1 : 0;
 }
