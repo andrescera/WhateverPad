@@ -29,7 +29,8 @@ typedef struct hci_ops {
     void (*diag)(void *ctx);
     /* Optional: stops taking the controller's events for ms milliseconds, so
      * that the system's driver, which reads the same endpoint, gets them all
-     * meanwhile (ACL data keeps coming). NULL: not supported. */
+     * meanwhile (ACL data keeps coming). ms=0 resumes without stopping reads.
+     * NULL: not supported. */
     void (*yield)(void *ctx, int ms);
     /* Optional: how many of the reads it wanted could not be opened because
      * another process holds the controller's transfers (0: all of them, or

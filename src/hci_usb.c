@@ -351,8 +351,9 @@ static int op_pump(void *ctx, int timeout_ms)
         int any;
 
         if (c->dead) return -1;
-        keep_reads_pending(c);
         any = reap(c);
+        /* Reap cancellations first: a zero-time pump must post replacement reads. */
+        keep_reads_pending(c);
         if (c->events.count || c->acl.count) return 1;
         if (any) continue;
         if (now_ms() >= deadline) return 0;
@@ -409,6 +410,10 @@ static void op_yield(void *ctx, int ms)
     struct usb_fs_stop st;
     int i;
 
+    if (ms <= 0) {
+        c->yield_until = 0;
+        return;
+    }
     c->yield_until = now_ms() + ms;
     for (i = 0; i < c->n_event; i++) {
         if (!c->busy[i]) continue;

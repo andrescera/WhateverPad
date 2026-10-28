@@ -53,10 +53,27 @@ static void reads_for(host_t *h, int n)
     h->reads_now = n;
 }
 
+static void apply_event_reads(host_t *h, long now)
+{
+    int n = event_reads_wanted(h, now, g_tune.idle_reads);
+
+    if (n > 0 && h->yield_at) {
+        h->yield_at = 0;
+        if (h->hci.ops->yield) h->hci.ops->yield(h->hci.ctx, 0);
+        log_line("usb: event pause ended; event reads resumed");
+    }
+    reads_for(h, n);
+}
+
 int send_cmd(host_t *h, unsigned op, const void *p, int len)
 {
     h->full_reads_until = now_ms() + 2000;
-    reads_for(h, HOST_EV_READS);
+    apply_event_reads(h, now_ms());
+    /* USB posts reads in pump: do that before the command can produce a reply. */
+    if (h->hci.ops->pump(h->hci.ctx, 0) < 0) {
+        h->dead = 1;
+        return 0;
+    }
     if (g_tune.trace) {
         unsigned char c[64];
         int k = len < (int)sizeof c ? len : (int)sizeof c;
@@ -1431,12 +1448,13 @@ static int inquiry_valid(const unsigned char *ev, int len)
     return 1;
 }
 
-static void on_event(host_t *h, const unsigned char *ev, int len)
+void host_on_event(host_t *h, const unsigned char *ev, int len)
 {
     unsigned char p[32];
     link_t *l;
     int i;
 
+    h->last_rx = now_ms();
     if (len < 2) return;
     if (g_tune.trace && ev[0] != 0x13) {
         unsigned char c[64];
@@ -1511,11 +1529,16 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                     log_line("incoming connection from %s (class %02x%02x%02x): not ours, left to the system",
                              addr_str(ev + 2), ev[10], ev[9], ev[8]);
                 }
-                /* The consumed call cannot be replayed: stop our event reads
-                 * immediately so the system can receive the next attempt. */
-                h->yield_at = now_ms();
-                if (h->hci.ops->yield) h->hci.ops->yield(h->hci.ctx, T_YIELD);
-                reads_for(h, event_reads_wanted(h, h->yield_at, g_tune.idle_reads));
+                /* The call is consumed, not replayed. Never blind our own
+                 * traffic to wait for the native pad's next attempt. */
+                if (event_reads_wanted(h, now_ms(), 0) > 0) {
+                    apply_event_reads(h, now_ms());
+                    log_line("usb: foreign call consumed; event reads kept for own traffic");
+                } else {
+                    h->yield_at = now_ms();
+                    if (h->hci.ops->yield) h->hci.ops->yield(h->hci.ctx, T_YIELD);
+                    apply_event_reads(h, h->yield_at);
+                }
                 break;
             }
             if (!r || r->le) break;                                 /* not ours */
@@ -1891,8 +1914,7 @@ static void pump(host_t *h, int timeout_ms)
     if (h->hci.ops->pump(h->hci.ctx, timeout_ms) < 0) h->dead = 1;
     if (h->ev.idle) h->ev.idle(h->ev.ud);
     while ((n = h->hci.ops->next_event(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
-        h->last_rx = now_ms();
-        on_event(h, buf, n);
+        host_on_event(h, buf, n);
     }
     while ((n = h->hci.ops->next_acl(h->hci.ctx, buf, (int)sizeof buf)) > 0) {
         h->last_rx = now_ms();
@@ -2042,12 +2064,12 @@ void host_poll(host_t *h, int timeout_ms)
 
     if (!h) return;                     /* no Bluetooth: nothing to do */
 
+    if (!h->dead) apply_event_reads(h, now_ms());
     pump(h, timeout_ms);
     now = now_ms();
-    /* Keep one idle event read by default; retain setup/reply reads, but
-     * leave every event read to the system during a foreign-call pause. */
+    /* Only an empty, inactive session can reduce or pause event reads. */
     if (!h->dead) {
-        reads_for(h, event_reads_wanted(h, now, g_tune.idle_reads));
+        apply_event_reads(h, now);
     }
     /* First of all, so that what follows sees any event its replies brought. */
     if (!h->dead && !yielding(h, now)) {
@@ -2158,20 +2180,10 @@ int host_pair(host_t *h, int seconds)
         return 1;
     }
 
-    /* During a pause for the system (see yield) our event reads are stopped:
-     * a search now would hear nothing until it ends and lose that part of
-     * its window. It waits, and then gets its whole window. The pause itself
-     * is kept: it protects the console's DualSense. */
-    if (h->yield_at && now - h->yield_at < T_YIELD) {
-        h->pair_pending_s = seconds;
-        h->pair_wait_until = h->yield_at + T_YIELD;
-        log_line("pairing: waits %ld s for the pause for the system to end, then searches for %d s",
-                 (h->pair_wait_until - now + 999) / 1000, seconds);
-        return 1;
-    }
     h->pair_pending_s = 0;
     h->pair_until = now + (long)seconds * 1000;
     h->search_started = now;
+    apply_event_reads(h, now);
     log_line("pairing: searching for %d s", seconds);
     return 1;
 }
@@ -2311,6 +2323,7 @@ int hci_sync(host_t *h, unsigned op, const void *p, int plen)
 
         h->cc_op = 0;
         if (!send_cmd(h, op, p, plen)) return 0;
+        if (h->full_reads_until < deadline) h->full_reads_until = deadline;
         while (h->cc_op != op && now_ms() < deadline) pump(h, 20);
         if (h->cc_op == op) return h->cc_len > 5 && h->cc[5] == 0;
     }
