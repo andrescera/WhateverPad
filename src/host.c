@@ -55,10 +55,8 @@ static void reads_for(host_t *h, int n)
 
 int send_cmd(host_t *h, unsigned op, const void *p, int len)
 {
-    if (h->reads_now < HOST_EV_READS) {
-        h->full_reads_until = now_ms() + 2000;
-        reads_for(h, HOST_EV_READS);
-    }
+    h->full_reads_until = now_ms() + 2000;
+    reads_for(h, HOST_EV_READS);
     if (g_tune.trace) {
         unsigned char c[64];
         int k = len < (int)sizeof c ? len : (int)sizeof c;
