@@ -161,7 +161,7 @@ WhateverPad PS5 se ejecuta como un payload residente en una PS5 con jailbreak. U
 
 # Cómo usarlo
 
-1. **Carga WhateverPad.** Compila el ELF (mira «Compilar desde el código» más arriba) o descarga `WhateverPad-PS5-0.9.5-beta.elf` desde [Releases](https://github.com/andrescera/WhateverPad/releases), y cárgalo con el cargador de payloads que uses normalmente.
+1. **Carga WhateverPad.** Compila el ELF (mira «Compilar desde el código» más arriba: queda en `dist/`), y cárgalo con el cargador de payloads que uses normalmente.
 2. **Abre la página.** Abre **WhateverPad** en *Contenido multimedia* de la consola, o `http://<ip-de-la-consola>:8095` desde un móvil o un PC de la misma red.
 3. **Empareja.** Pulsa **Emparejar** y después pon el mando en modo emparejamiento, cerca de la consola.
 

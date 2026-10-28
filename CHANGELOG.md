@@ -354,7 +354,7 @@ First build after the first run on a console.
   `0x80920005` (`SCE_PAD_ERROR_NOT_INITIALIZED`) when called first. Now
   `scePadInit` goes first and a privilege answer other than 0 is only a
   warning. Details in
-  [PRUEBAS.md](PRUEBAS.md#registro-de-pruebas-en-consola).
+  PRUEBAS.md.
 - Renamed from "padhost" to **WhateverPad PS5**. The data folder is now
   `/data/whateverpad` (log `whateverpad.log`, flags `pair` and `stop`). The old
   `/data/padhost` is not used any more and can be deleted by hand.

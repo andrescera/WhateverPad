@@ -161,7 +161,7 @@ It does **not** modify games, the PS5 firmware or the jailbreak. Your PS5 must a
 
 # How to use
 
-1. **Load WhateverPad.** Build the ELF (see "Build from source" above) or download `WhateverPad-PS5-0.9.5-beta.elf` from [Releases](https://github.com/andrescera/WhateverPad/releases), then load it with the payload loader you normally use.
+1. **Load WhateverPad.** Build the ELF (see "Build from source" above: it lands in `dist/`), then load it with the payload loader you normally use.
 2. **Open the page.** Open **WhateverPad** in the console's Media row, or open `http://<console-ip>:8095` from a phone or computer on the same network.
 3. **Pair.** Press **Pair**, then put the controller in pairing mode, close to the console.
 
