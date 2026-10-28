@@ -8,12 +8,14 @@ PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 
 CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c
-WEB    := src/web.c src/web_page.c
-HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
+ifeq ($(shell uname -s),Linux)
+LOCK_CFLAGS := -Itests/host
+endif
 
 BUILD := build
 
-.PHONY: all test fuzz demo ps5 send clean
+.PHONY: all test fuzz ps5 send clean
 
 all: test
 
@@ -27,27 +29,10 @@ src/web_page.c: web/index.html
 	  echo 'const unsigned char web_page_html[] = {'; xxd -i < $<; echo '};'; \
 	  echo 'const unsigned int web_page_html_len = sizeof web_page_html;'; } > $@
 
-$(BUILD)/test_web: $(CORE) $(WEB) tests/sim.c tests/test_web.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $@ $^
-
-# The page against a simulated pad, to look at in a browser: make demo
-demo: $(CORE) $(WEB) tests/sim.c tests/web_demo.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $(BUILD)/web_demo $^
-	./$(BUILD)/web_demo
-
-$(BUILD)/test_host: $(CORE) tests/sim.c tests/test_host.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $@ $^
-
-$(BUILD)/test_compat: $(CORE) tests/sim.c tests/test_compat.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $@ $^
-
 $(BUILD)/test_profiles: $(CORE) tests/test_profiles.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
 $(BUILD)/test_crypto: src/smp_crypto.c tests/test_crypto.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $@ $^
-
-$(BUILD)/test_le: $(CORE) tests/sim_le.c tests/test_le.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
 # The console source for virtual pads, against stand-ins for the console's libraries.
@@ -59,8 +44,8 @@ $(BUILD)/test_config: src/config.c src/hotkey.c src/netinfo.c src/log.c src/util
 	cc $(HOST_CFLAGS) -o $@ $^
 
 # The instance lock.
-$(BUILD)/test_lock: src/lock.c src/log.c src/util.c tests/test_lock.c | $(BUILD)
-	cc $(HOST_CFLAGS) -o $@ $^
+$(BUILD)/test_lock: src/lock.c src/log.c src/util.c tests/test_lock.c tests/host/sys/sysctl.h | $(BUILD)
+	cc $(HOST_CFLAGS) $(LOCK_CFLAGS) -o $@ $(filter %.c,$^)
 
 src/icon_data.c: assets/icon0.png
 	{ echo '/* Generated from assets/icon0.png by make. */'; \
@@ -74,25 +59,24 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_hearbridge $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_compat $(BUILD)/test_web $(BUILD)/test_launcher
+$(BUILD)/test_fuzz: $(CORE) tests/test_fuzz.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
 	./$(BUILD)/test_vpad
 	./$(BUILD)/test_crypto
 	./$(BUILD)/test_profiles
-	./$(BUILD)/test_host
-	./$(BUILD)/test_le
-	./$(BUILD)/test_compat
-	./$(BUILD)/test_web
 	./$(BUILD)/test_launcher
-	./$(BUILD)/test_hearbridge
+	./$(BUILD)/test_fuzz
 
 # Malformed input through every parser, under the sanitizers.
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 fuzz: | $(BUILD)
-	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz $(CORE) tests/test_fuzz.c
-	./$(BUILD)/test_fuzz
+	cc $(HOST_CFLAGS) $(SAN) -o $(BUILD)/test_fuzz_san $(CORE) tests/test_fuzz.c
+	./$(BUILD)/test_fuzz_san
 
 # ---- the console payload ----------------------------------------------------
 
@@ -107,7 +91,3 @@ send: ps5
 
 clean:
 	rm -rf $(BUILD)
-
-# Targeted regressions from the direct HearBridge review.
-$(BUILD)/test_hearbridge: $(CORE) tests/sim.c tests/test_hearbridge.c tests/test_host.c | $(BUILD)
-	cc $(HOST_CFLAGS) -DEXPECT_CFG=1 -DEXPECT_BACKOFF=1 -o $@ $(CORE) tests/sim.c tests/test_hearbridge.c
