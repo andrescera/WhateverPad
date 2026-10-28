@@ -11,9 +11,8 @@ the system driver, and presents each pad as a virtual DualSense of the main user
 The DualSense is meant to keep working beside it; rule 8 covers the one case that
 still breaks.
 
-Version comes from `src/version.h` only (currently `0.9.5-beta`). Upstream was
-tested on firmware 10.01. Behaviour on firmware 13.60 is unproven until the
-owner's own console runs say otherwise.
+Version lives in `src/version.h` (currently `0.9.5-beta`). Upstream was tested on
+firmware 10.01; firmware 13.60 is unproven until the owner's console runs say so.
 
 ## Layout
 
@@ -74,8 +73,10 @@ watch|state|settings|set|hci|pair|stop`.
 - Only POST changes anything, and every POST needs the header `X-WhateverPad: 1`.
   Without it the server answers 403.
 - `POST /api/pscombo?slot=N&combo=...` sets the buttons that stand in for PS on
-  that pad: one to three names separated by commas (`l1,l2,options`), `none` to
-  remove it, `capture` to record a new one on the pad for 60 s.
+  that pad: one to three comma-separated names (`l1,l2,options`), or `none`.
+  `combo=capture` records nothing: it stops applying the stored combination for
+  60 s so a client can read the raw buttons; a later POST with the names saves
+  one, which is what the page's Configure PS does.
 - The other routes and methods are in `handle()` in `src/web.c`: `live`, `state`,
   `log`, `pair`, `forget`, `ps`, `retry`, `hci`. `0x0C03` (Reset) is refused.
 
@@ -96,10 +97,10 @@ the virtual pads (see `vpad_choose_user` in `src/ps5_vpad.c`).
 
 ### 1. Only the owner's console accepts a change
 
-Bluetooth and controller behaviour counts as working only after the owner runs
-the exact ELF on his real PS5 and answers a yes/no question. A log line is
-evidence for the next hypothesis, never a yes on its own. No simulator, fixture
-radio, host stand-in, probe kit or generated page counts as proof of behaviour.
+Controller behaviour counts as working only after the owner runs the exact ELF on
+his real PS5 and answers a yes/no question. A log line is evidence for the next
+hypothesis, never a yes. No simulator, fixture radio, host stand-in, probe kit or
+generated page counts as proof.
 
 ### 2. Fresh work, and only the two fixes
 
@@ -118,58 +119,61 @@ owner's decision.
    and watch it fail. RED means an assertion failure. A compile error is not RED.
 3. Change the smallest amount of code, in a pure decision function that takes
    the values and times as arguments and that production actually calls.
-4. The owner checks that ELF on the console and answers yes or no.
-5. Bump the patch in `src/version.h` (`0.9.5-beta` is the baseline; a fix makes
+4. Bump the patch in `src/version.h` (`0.9.5-beta` is the baseline; a fix makes
    `0.9.6-beta`) and add the change to `CHANGELOG.md` in English and Spanish.
+   The version goes into the ELF name and its banner, so this comes before the
+   build the owner will test.
+5. Build the final ELF with `tools/build-elf-docker.sh` from a clean worktree,
+   record its identity, and let the owner check that exact ELF.
 6. Open a pull request for that one fix and merge it with a regular merge commit.
+   Any later code or version change means a new build, and the same questions to
+   the owner again.
 
 If the answer is no, take the next hypothesis from the new log. After three
-failed hypotheses, stop and report instead of guessing again.
+failed hypotheses, stop and report.
 
 ### 4. Tests test real code
 
 `make test` must stay fast, and every test feeds real code: parsers, mappings,
-encoders, decision functions, given bytes or a configuration file, with the
-result checked. No sentence or prose matching tests. `make test` must pass
-before a pull request and on the CI run. Use the targets that exist; do not add a
-framework, and do not add a dependency for a few lines.
+encoders, decision functions, given bytes or a config file, with the result
+checked. No sentence or prose matching tests. It must pass before a pull request
+and on the CI run. Use the targets that exist; add no framework and no
+dependency for a few lines.
 
 ### 5. Console work
 
 One step at a time, each with the owner's go for that step. Before any load that
-can search for pads, the owner answers these, and the answers are recorded:
+can search for pads, the owner answers these, and the answers are recorded. A
+vague "done" or "ok" is not enough.
 
 - "DualSense is off and not pairing", in those exact words.
 - The third-party pad is off.
 - For a baseline run, the PS5 was fully restarted (not Rest Mode) and the
   jailbreak was run again.
 
-A vague "done" or "ok" is not enough; ask again.
-
 Every console step has a run sheet in `.omo/evidence/whateverpad-baseline-reset/`
-(`task-<N>-<name>.md`) holding: the ELF identity (commit, tree, size in bytes,
-SHA-256, the banner line the build prints at startup); the rollback copy path;
-the SHA-256 read back from the console; each owner answer copied verbatim with
-its UTC time; and the log interval from `/data/whateverpad/whateverpad.log`.
+(`task-<N>-<name>.md`) holding: the exact ELF path on the PC and its identity
+(commit, tree, size in bytes, SHA-256, banner); the rollback copy path; the
+SHA-256 read back from the console; the log lines the run must show (the banner
+with its build id, and what the step under test prints); the yes/no questions put
+to the owner word for word; each answer copied verbatim with its UTC time; and
+the log interval from `/data/whateverpad/whateverpad.log`.
 
 To install: copy the installed ELF and its `meta.json` into a new
 `~/ps5/backup/whateverpad-before-<sha12>/`, delete then write the new ELF under
 the same filename, read it back and compare SHA-256. One `/loadpayload` per test;
 the rollback is loading the saved ELF back. Never change the autoload list, never
-edit the system's Bluetooth bonds, never ask for a hypervisor, and never write
-the console's IP address into the repository.
+edit the system's bonds, never ask for a hypervisor, no console IP in the repo.
 
-Build every console ELF with `tools/build-elf-docker.sh` from a clean worktree. An
-ELF the owner accepted from a pull request head stays the released ELF after the
-regular merge only when `git diff --quiet <PR head> <merge commit>` holds;
+An ELF the owner accepted from a pull request head stays the released ELF after
+the regular merge only when `git diff --quiet <PR head> <merge commit>` holds;
 otherwise rebuild from `main` and ask that todo's questions again.
 
 ### 6. Git, branches and what is never deleted
 
-- Every branch is named after what it implements, and every merge is a regular
-  merge commit. No squash, no rebase merge.
-- Plain messages: no `Co-authored-by`, no AI attribution in commits, pull
-  requests or reviews.
+- Every branch is named after what it implements; every merge is a regular merge
+  commit, no squash and no rebase. Messages stay plain: no `Co-authored-by`, no
+  AI attribution in commits, pull requests or reviews.
 - CI runs on push to `main` and on `pull_request`, never twice for one change.
 - Keep the GPL-3.0-or-later notices, the credit to AnyPad PS5 by elmonomalva0,
   and the owner's WhateverPad name and icon.
@@ -187,13 +191,11 @@ otherwise rebuild from `main` and ask that todo's questions again.
 
 Plain words, no jargon, and never make him feel stupid. He tests standing about
 30 m from the PC, so every check is a simple yes/no he can answer from where he
-stands: press this, tell me what you see. No camera, no screen capture, no
-calibration step.
+stands: press this, tell me what you see. No camera, screen capture or calibration.
 
 ### 8. Known issue and firmware
 
 An inherited upstream issue is still open: if the DualSense is switched off while
-WhateverPad is running, it can blink blue and stop responding until the console
-restarts. The README says so in both languages and keeps saying so until the
-owner confirms a fix on his console. Firmware 13.60 support is likewise unproven
-until then.
+WhateverPad runs, it can blink blue and stop responding until the console
+restarts. The README says so in both languages until the owner confirms a fix on
+his console. Firmware 13.60 support is likewise unproven until then.
