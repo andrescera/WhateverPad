@@ -5,6 +5,6 @@
 #ifndef WHATEVERPAD_VERSION_H
 #define WHATEVERPAD_VERSION_H
 
-#define WHATEVERPAD_VERSION "0.9.5-beta"
+#define WHATEVERPAD_VERSION "0.9.6-beta"
 
 #endif

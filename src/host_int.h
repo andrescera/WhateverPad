@@ -340,7 +340,7 @@ typedef struct {
     int mask_conn;              /* leave calls to the console (Connection Request) to the system */
     int inq_len;                /* inquiry length, in units of 1.28 s */
     int trace;                  /* write every HCI event and command to the log */
-    int idle_reads;             /* event reads kept while not pairing (all: 40) */
+    int idle_reads;             /* event reads kept while idle (default: 1, maximum: 40) */
     int ev_len;                 /* bytes asked of each event read (16: one packet, as always) */
 } tune_t;
 extern tune_t g_tune;
@@ -350,6 +350,7 @@ extern tune_t g_tune;
 const char *addr_str(const unsigned char *a);
 int  send_cmd(host_t *h, unsigned op, const void *p, int len);
 int  hci_sync(host_t *h, unsigned op, const void *p, int plen);
+void host_on_event(host_t *h, const unsigned char *ev, int len);
 int  slot_of(host_t *h, const link_t *l);
 link_t *link_by_addr(host_t *h, const unsigned char *a);
 link_t *link_new(host_t *h, const unsigned char *addr);

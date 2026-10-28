@@ -7,7 +7,7 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 
-CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c
+CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c src/event_reads.c
 HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 ifeq ($(shell uname -s),Linux)
 LOCK_CFLAGS := -Itests/host
@@ -59,10 +59,13 @@ $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_event_reads: $(CORE) tests/test_event_reads.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
 $(BUILD)/test_fuzz: $(CORE) tests/test_fuzz.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz
+test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz $(BUILD)/test_event_reads
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
@@ -71,6 +74,7 @@ test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vp
 	./$(BUILD)/test_profiles
 	./$(BUILD)/test_launcher
 	./$(BUILD)/test_fuzz
+	./$(BUILD)/test_event_reads
 
 # Malformed input through every parser, under the sanitizers.
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer

@@ -15,6 +15,14 @@ the start-up notification, on the web page, and in the binary
 - README en inglés y en español (`README.md` y `README.es.md`), cada uno con un enlace al otro.
 - Se eliminan la guía de trabajo con una IA y las README de los demás idiomas.
 
+## 0.9.6-beta (28 October 2026 / 28 octubre 2026)
+
+- Use one idle event read only with no session pads, pairing work or pending command reply interval. Keep 40 reads and refuse a foreign-call pause whenever a pad is linked or remembered: a missed own disconnect or first reconnect request cannot be recovered reliably. Own work ends an active pause; command reads are posted before sending, including the full synchronous retry deadline. ACL reads are unchanged.
+- Captured console events now drive real host transitions as well as the pure selector tests. An unknown incoming request during own traffic is consumed without accepting or rejecting it, and without pausing own events; the native pad may still fail to reconnect. DualSense reconnect and Stop still require the owner's exact-ELF checks. Version 0.9.6-beta remains an unreleased, uninstalled candidate.
+
+- Se usa una sola lectura de eventos en reposo únicamente sin mandos de la sesión, trabajo de emparejado ni intervalo pendiente de respuesta a una orden. Se mantienen 40 lecturas y no se pausa por una llamada ajena mientras haya un mando enlazado o recordado: no se puede recuperar con fiabilidad una desconexión propia o la primera petición de reconexión perdida. El trabajo propio termina una pausa activa; las lecturas se envían antes de la orden, incluido todo el plazo del reintento síncrono. Las lecturas ACL no cambian.
+- Los eventos capturados en consola comprueban ahora las transiciones reales del host además del selector puro. Una petición entrante desconocida durante tráfico propio se consume sin aceptarla ni rechazarla y sin pausar los eventos propios; el mando nativo todavía puede no reconectar. La reconexión del DualSense y Stop siguen pendientes de las comprobaciones del propietario con el ELF exacto. La versión 0.9.6-beta sigue siendo una candidata nunca publicada ni instalada.
+
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
 The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
