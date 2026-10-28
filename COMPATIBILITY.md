@@ -6,13 +6,16 @@ Cada mando de abajo tiene su propia entrada en el código, uno por uno.
 | Symbol | Meaning / Significado |
 |---|---|
 | ✅ | **Verified** on a real PS5 by a person / **Verificado** en una PS5 real por una persona |
-| 🧪 | **Supported, not yet tested**: you can use this controller on the PS5; the support is written and passes the simulator tests, but nobody has tried it on a console yet / **Soportado, aún sin probar**: puedes usar este mando en la PS5; el soporte está escrito y pasa las pruebas con simulador, pero nadie lo ha probado todavía en una consola |
+| 🧪 | **Supported, not yet tested**: you can use this controller on the PS5; the support is written and passes the host unit tests, but nobody has tried it on a console yet / **Soportado, aún sin probar**: puedes usar este mando en la PS5; el soporte está escrito y pasa las pruebas unitarias en el ordenador, pero nadie lo ha probado todavía en una consola |
 
 **Today: 3 verified controllers (DualShock 4 v2, 8BitDo SF30 Pro in Switch mode and GameSir G7 SE), plus the other supported ids listed below, plus the generic profile for any other Bluetooth HID gamepad.**
 **Hoy: 3 mandos verificados (DualShock 4 v2, 8BitDo SF30 Pro en modo Switch y GameSir G7 SE), más los demás ids soportados de la lista, más el perfil genérico para cualquier otro mando HID Bluetooth.**
 
 Verified on a PS5 fat, firmware 10.01, with the latest ShadowMountPlus and kstuff-lite.
 Verificado en una PS5 fat, firmware 10.01, con el último ShadowMountPlus y kstuff-lite.
+
+The list and its statuses below are upstream's report for AnyPad PS5 0.9.5-beta; this fork has not tested them on its own console yet.
+La lista y sus estados son el informe de la versión original para AnyPad PS5 0.9.5-beta; este fork todavía no los ha probado en su propia consola.
 
 ## Sony DualShock 4 family / Familia DualShock 4
 

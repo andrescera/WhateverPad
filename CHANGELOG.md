@@ -5,15 +5,21 @@ version is set in `src/version.h` and is also in the first line of the log, in
 the start-up notification, on the web page, and in the binary
 (`strings WhateverPad-PS5-*.elf | grep whateverpad-version`).
 
-## Sin publicar
+## Unreleased / Sin publicar
 
-- Nuevo logo sin fondo: icono de 512x512 RGBA para la consola y las README, y versión de 96x96 en la cabecera web, sin recuadro ni recorte.
+- Restarted from the AnyPad PS5 0.9.5-beta source with the WhateverPad name and the new logo: a 512x512 RGBA icon for the console and the README, and a 96x96 version in the web page header, with no frame or cropping.
+- README in English and Spanish (`README.md` and `README.es.md`), each linking the other.
+- The AI workflow guide and the READMEs in the other languages are removed.
+
+- Se parte del código de AnyPad PS5 0.9.5-beta con el nombre y el nuevo logo de WhateverPad: icono de 512x512 RGBA para la consola y las README, y versión de 96x96 en la cabecera web, sin recuadro ni recorte.
+- README en inglés y en español (`README.md` y `README.es.md`), cada uno con un enlace al otro.
+- Se eliminan la guía de trabajo con una IA y las README de los demás idiomas.
 
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
-The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `AI-WORKFLOW.md` (how to work on WhateverPad with an AI assistant: connect to the running program, watch the log in real time, change live settings, add a controller, test it and report it), `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
+The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
 
-Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo nuevo es que **todo el código fuente es público** (GPL-3.0-or-later), con `AI-WORKFLOW.md` (cómo trabajar en WhateverPad con un asistente de IA: conectarse al programa en marcha, ver el log en tiempo real, cambiar ajustes en caliente, añadir un mando, probarlo e informar), `tools/live.sh` (las órdenes para hablar con WhateverPad por la red local) y una plantilla de incidencias para informes de mandos.
+Es el mismo programa que la 0.9.1-beta; solo cambia el número de versión. Lo nuevo es que **todo el código fuente es público** (GPL-3.0-or-later), con `tools/live.sh` (las órdenes para hablar con WhateverPad por la red local) y una plantilla de incidencias para informes de mandos.
 
 ## 0.9.1-beta (12 octubre 2026)
 
@@ -348,7 +354,7 @@ First build after the first run on a console.
   `0x80920005` (`SCE_PAD_ERROR_NOT_INITIALIZED`) when called first. Now
   `scePadInit` goes first and a privilege answer other than 0 is only a
   warning. Details in
-  [PRUEBAS.md](PRUEBAS.md#registro-de-pruebas-en-consola).
+  PRUEBAS.md.
 - Renamed from "padhost" to **WhateverPad PS5**. The data folder is now
   `/data/whateverpad` (log `whateverpad.log`, flags `pair` and `stop`). The old
   `/data/padhost` is not used any more and can be deleted by hand.
