@@ -340,7 +340,7 @@ typedef struct {
     int mask_conn;              /* leave calls to the console (Connection Request) to the system */
     int inq_len;                /* inquiry length, in units of 1.28 s */
     int trace;                  /* write every HCI event and command to the log */
-    int idle_reads;             /* event reads kept while not pairing (all: 40) */
+    int idle_reads;             /* event reads kept while idle (default: 1, maximum: 40) */
     int ev_len;                 /* bytes asked of each event read (16: one packet, as always) */
 } tune_t;
 extern tune_t g_tune;

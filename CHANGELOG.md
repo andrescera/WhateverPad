@@ -15,6 +15,14 @@ the start-up notification, on the web page, and in the binary
 - README en inglés y en español (`README.md` y `README.es.md`), cada uno con un enlace al otro.
 - Se eliminan la guía de trabajo con una IA y las README de los demás idiomas.
 
+## 0.9.6-beta (28 October 2026 / 28 octubre 2026)
+
+- Reduce idle event reads from 40 to 1 by default, keeping full reads for pairing, unfinished links, disconnects and the command-reply interval. An incoming call from an address outside this session now pauses all event reads immediately, including during setup. ACL reads are unchanged.
+- A real-code unit test checks the read-count decisions using values from the owner's 19422e9 console log. This is a reconnect experiment, not confirmation that DualSense reconnect or Stop works; those still need the owner's checks on this exact ELF.
+
+- Se reducen de 40 a 1 las lecturas de eventos en reposo por defecto, manteniendo todas durante el emparejado, los enlaces sin terminar, las desconexiones y el intervalo de respuesta a una orden. Una llamada entrante de una dirección ajena a esta sesión pausa de inmediato todas las lecturas de eventos, incluso durante la conexión. Las lecturas ACL no cambian.
+- Una prueba unitaria del código real comprueba las decisiones sobre el número de lecturas con valores del log de la consola del propietario, build 19422e9. Es un experimento de reconexión, no una confirmación de que la reconexión del DualSense o Stop funcionen; siguen pendientes las comprobaciones del propietario con este ELF exacto.
+
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
 The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.

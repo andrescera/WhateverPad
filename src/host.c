@@ -1,4 +1,5 @@
 #include "host_int.h"
+#include "event_reads.h"
 #include "log.h"
 #include "util.h"
 
@@ -30,7 +31,7 @@ const char *addr_str(const unsigned char *a)
 /* mask_conn is off by default: leaving Connection Request out is not proven
  * to hand the call to the system, and could keep a DualSense from reconnecting
  * (external audit, 9 Oct). It stays as a dialog-mode experiment. */
-tune_t g_tune = { 1, PS_PAIR_INTERVAL, PS_PAIR_WINDOW, 0, 8, 0, HOST_EV_READS, 16 };
+tune_t g_tune = { 1, PS_PAIR_INTERVAL, PS_PAIR_WINDOW, 0, 8, 0, 1, 16 };
 
 static void log_hex(const char *what, unsigned op, const unsigned char *p, int len)
 {
@@ -43,8 +44,7 @@ static void log_hex(const char *what, unsigned op, const unsigned char *p, int l
     else log_line("%s: %s(len %d)", what, hex, len);
 }
 
-/* With fewer event reads kept while idle (dialog mode), a command opens them
- * all again for a while, so that its reply is read. */
+/* A command opens all event reads for a while, so that its reply is read. */
 static void reads_for(host_t *h, int n)
 {
     if (n == h->reads_now || !h->hci.ops->event_reads) return;
@@ -1513,22 +1513,11 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
                     log_line("incoming connection from %s (class %02x%02x%02x): not ours, left to the system",
                              addr_str(ev + 2), ev[10], ev[9], ev[8]);
                 }
-                /* This event came to us, so the system never saw the call:
-                 * stand aside for a while, for the system to get the pad's
-                 * next attempt (about 22 s later). Not while one of our pads
-                 * is being linked; once the pause ends, the next call starts another. */
-                /* Never while searching: the pause would blind the search for
-                 * the pad being paired. */
-                if (h->hci.ops->yield && now_ms() >= h->pair_until && !h->pair_pending_s &&
-                    now_ms() - h->yield_at > T_YIELD) {
-                    int k, linking = 0;
-                    for (k = 0; k < HOST_MAX_PADS; k++)
-                        if (h->links[k].used && !h->links[k].ready) linking = 1;
-                    if (!linking) {
-                        h->yield_at = now_ms();
-                        h->hci.ops->yield(h->hci.ctx, T_YIELD);
-                    }
-                }
+                /* The consumed call cannot be replayed: stop our event reads
+                 * immediately so the system can receive the next attempt. */
+                h->yield_at = now_ms();
+                if (h->hci.ops->yield) h->hci.ops->yield(h->hci.ctx, T_YIELD);
+                reads_for(h, event_reads_wanted(h, h->yield_at, g_tune.idle_reads));
                 break;
             }
             if (!r || r->le) break;                                 /* not ours */
@@ -2057,11 +2046,10 @@ void host_poll(host_t *h, int timeout_ms)
 
     pump(h, timeout_ms);
     now = now_ms();
-    /* Event reads: all of them while pairing or waiting for a reply; while
-     * idle, as many as the dialog mode says (all, unless changed). */
+    /* Keep one idle event read by default; retain setup/reply reads, but
+     * leave every event read to the system during a foreign-call pause. */
     if (!h->dead) {
-        int busy = pairing_busy(h, now) || now < h->full_reads_until;
-        reads_for(h, busy ? HOST_EV_READS : g_tune.idle_reads);
+        reads_for(h, event_reads_wanted(h, now, g_tune.idle_reads));
     }
     /* First of all, so that what follows sees any event its replies brought. */
     if (!h->dead && !yielding(h, now)) {
