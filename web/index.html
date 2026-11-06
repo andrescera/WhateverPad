@@ -197,6 +197,7 @@ pre { margin: 12px 0 0; max-height: 360px; overflow: auto; font-size: 12px; colo
           <div class="row" style="margin-top:6px">
             <button id="pair" class="solid" data-t="pairbtn"></button>
           </div>
+          <div class="hint" style="margin-top:14px" data-t="dsrule"></div>
           <div class="hint" style="margin-top:14px" data-t="pairintro" data-html="1"></div>
         </div>
       </div>
@@ -266,16 +267,20 @@ const TEXT = {
     pairintro: "Pulsa <b>Emparejar</b> y pon el mando en modo emparejamiento (DualShock 4: Share + PS). Cuando la consola " +
       "pregunte quién usa el mando, elige <b>Juego rápido / Invitado</b>. Si el mando no tiene botón PS, usa <b>Pulsar PS</b> " +
       "o <b>Configurar PS</b> en «Mandos emparejados». Los mandos solo quedan emparejados mientras WhateverPad está en marcha. " +
-      "No apagues el DualSense mientras WhateverPad está en marcha.",
+      "Enciende el DualSense antes de pulsar Emparejar y déjalo encendido mientras haya un mando conectado. " +
+      "Cuando el Bluetooth se cierre (30 s sin mandos ni búsqueda de Emparejar), prueba a apagarlo y encenderlo; si se queda colgado, reinicia la consola.",
     pairbtn: "Emparejar un mando (60 s)", connected: "Mandos conectados", paired: "Mandos emparejados",
+    btoff: "El Bluetooth está apagado. WhateverPad solo lo usa cuando pulsas Emparejar.",
+    dsrule: "Enciende el DualSense antes de pulsar Emparejar y déjalo encendido mientras haya un mando conectado. El Bluetooth se cierra tras 30 s sin ningún mando conectado ni búsqueda de Emparejar en marcha. Entonces puedes probar a apagar y encender el DualSense; si se queda colgado, reinicia la consola.",
+    saved: (n) => n + " guardados. Pulsa Emparejar y después el botón del mando: no hace falta emparejarlo de nuevo.",
     showlog: "Ver log", hidelog: "Ocultar log", exit: "Salir", exithint: "Cierra esta página; WhateverPad PS5 sigue funcionando.",
     exitfail: "Si no se ha cerrado, pulsa el botón PS del mando para volver al menú de la consola.",
-    stop: "Apagar WhateverPad PS5", stophint: "Desconecta los mandos y deja el Bluetooth como estaba. Hazlo antes de volver a lanzar el ELF.",
+    stop: "Apagar WhateverPad PS5", stophint: "Desconecta los mandos y libera el Bluetooth. Hazlo antes de volver a lanzar el ELF.",
     running: "en marcha", nobt: "sin Bluetooth", starting: "iniciando Bluetooth…", offline: "sin conexión", stopping: "deteniéndose",
     searching: (n) => "Buscando mandos… " + n + " s. Pon el mando en modo emparejamiento.",
     waiting: (n) => "Otro mando acaba de llamar a la consola: la búsqueda empieza en " + n + " s y durará 60 s. Pon el mando en modo emparejamiento cuando empiece.",
     idle: "Pon el mando en modo emparejamiento después de pulsar.",
-    nopads: "Ninguno. Enciende un mando emparejado o empareja uno nuevo.", nopaired: "Ninguno todavía.",
+    nopads: "Ninguno. Pulsa Emparejar primero y después enciende un mando emparejado o empareja uno nuevo.", nopaired: "Ninguno todavía.",
     battery: "Batería", charging: "cargando", pressps: "Pulsar PS",
     presspshint: "Para mandos que no tienen botón PS (los que no son de PlayStation): es como mantener pulsado PS",
     forget: "Olvidar", forgetq: (a) => "¿Olvidar " + a + "? Tendrás que emparejarlo de nuevo.",
@@ -293,16 +298,20 @@ const TEXT = {
     pairintro: "Press <b>Pair</b> and put the controller in pairing mode (DualShock 4: Share + PS). When the console asks " +
       "who uses the controller, choose <b>Quick play / Guest</b>. If the controller has no PS button, use <b>Press PS</b> " +
       "or <b>Configure PS</b> in “Paired controllers”. Controllers stay paired only while WhateverPad is running. " +
-      "Do not switch off the DualSense while WhateverPad is running.",
+      "Switch the DualSense on before pressing Pair and leave it on while a controller is connected. " +
+      "After Bluetooth closes (30 s with no controller or Pair search), try switching it off and on; if it gets stuck, restart the console.",
     pairbtn: "Pair a controller (60 s)", connected: "Connected controllers", paired: "Paired controllers",
+    btoff: "Bluetooth is off. WhateverPad only uses it after you press Pair.",
+    dsrule: "Switch your DualSense on before pressing Pair and leave it on while a controller is connected. Bluetooth closes after 30 s with no controller connected and no Pair search running. Then you can try switching the DualSense off and on; if it gets stuck, restart the console.",
+    saved: (n) => n + " saved. Press Pair, then the controller's button: no need to pair it again.",
     showlog: "Show log", hidelog: "Hide log", exit: "Exit", exithint: "Closes this page; WhateverPad PS5 keeps running.",
     exitfail: "If it did not close, press the PS button on the controller to go back to the console menu.",
-    stop: "Stop WhateverPad PS5", stophint: "Disconnects the controllers and leaves Bluetooth as it was. Do it before running the ELF again.",
+    stop: "Stop WhateverPad PS5", stophint: "Disconnects the controllers and releases Bluetooth. Do it before running the ELF again.",
     running: "running", nobt: "no Bluetooth", starting: "starting Bluetooth…", offline: "offline", stopping: "stopping",
     searching: (n) => "Searching for controllers… " + n + " s. Put the controller in pairing mode.",
     waiting: (n) => "Another controller just called the console: the search starts in " + n + " s and lasts 60 s. Put the controller in pairing mode when it starts.",
     idle: "Put the controller in pairing mode after pressing.",
-    nopads: "None. Switch on a paired controller or pair a new one.", nopaired: "None yet.",
+    nopads: "None. Press Pair first, then switch on a paired controller or pair a new one.", nopaired: "None yet.",
     battery: "Battery", charging: "charging", pressps: "Press PS",
     presspshint: "For controllers without a PS button (not PlayStation ones): like holding PS",
     forget: "Forget", forgetq: (a) => "Forget " + a + "? You will have to pair it again.",
@@ -606,7 +615,7 @@ const MORE = {
       ["Joy-Con (de uno en uno)", "Mantén pulsado el botón de sincronización del rail hasta que las luces corran. Se usa de lado; el izquierdo no tiene botón PS: usa Configurar PS.", "b"],
       ["Wii U Pro y Wiimote", "Pulsa el botón Sync (rojo, detrás o bajo la tapa de las pilas). El Wiimote se usa de lado.", "b"],
       ["Stadia", "Necesita el firmware Bluetooth que publicó Google. Mantén Y + botón Stadia hasta que parpadee.", "b"],
-      ["DualSense", "Es el mando de la consola: WhateverPad no lo empareja. No lo apagues mientras WhateverPad está en marcha.", "x"]]
+      ["DualSense", "Es el mando de la consola: WhateverPad no lo empareja. Enciéndelo antes de pulsar Emparejar y déjalo encendido mientras haya un mando conectado. Cuando el Bluetooth se cierre (30 s sin mandos ni búsqueda de Emparejar), prueba a apagarlo y encenderlo; si se queda colgado, reinicia la consola.", "x"]]
   },
   en: {
     navhome: "Home", navpads: "Controllers", navguide: "Guide", navsys: "System",
@@ -629,7 +638,7 @@ const MORE = {
       ["Joy-Con (one at a time)", "Hold the sync button on the rail until the lights run. It is held sideways; the left one has no PS button: use Configure PS.", "b"],
       ["Wii U Pro and Wii Remote", "Press the Sync button (red, on the back or under the battery cover). The Wii Remote is held sideways.", "b"],
       ["Stadia", "It needs the Bluetooth firmware Google released. Hold Y + the Stadia button until it blinks.", "b"],
-      ["DualSense", "It is the console's own controller: WhateverPad does not pair it. Do not switch it off while WhateverPad is running.", "x"]]
+      ["DualSense", "It is the console's own controller: WhateverPad does not pair it. Switch it on before pressing Pair and leave it on while a controller is connected. After Bluetooth closes (30 s with no controller or Pair search), try switching it off and on; if it gets stuck, restart the console.", "x"]]
   },
   fr: {
     navhome: "Accueil", navpads: "Manettes", navguide: "Guide", navsys: "Système",
@@ -861,6 +870,8 @@ const MORE = {
   }
 };
 for (const k in MORE) if (TEXT[k]) Object.assign(TEXT[k], MORE[k]);
+for (const k in TEXT) if (k !== "en") TEXT[k] = Object.assign({}, TEXT[k]);
+for (const k in TEXT) if (k !== "en") Object.setPrototypeOf(TEXT[k], TEXT.en);
 
 let L = TEXT.es, lang = "";
 function setLang(code) {
@@ -931,10 +942,10 @@ function trigger(v) {
   return t;
 }
 
-function renderPads(pads) {
+function renderPads(pads, empty = L.nopads) {
   const box = $("pads");
   box.replaceChildren();
-  if (!pads.length) { box.appendChild(el("div", "empty", L.nopads)); return; }
+  if (!pads.length) { box.appendChild(el("div", "empty", empty)); return; }
   for (const p of pads) {
     const c = el("div", "pad"), top = el("div", "top"), ico = el("span", "ico");
     ico.innerHTML = PAD_SVG;
@@ -962,10 +973,10 @@ function modelName(vid, pid) {
   if (vid === "0000" && pid === "0000") return L.unknownpad;
   return MODELS[vid + ":" + pid] || L.genericpad;
 }
-function renderPaired(list, pads) {
+function renderPaired(list, pads, empty = L.nopaired) {
   const t = $("paired");
   t.replaceChildren();
-  if (!list.length) { const r = t.insertRow(), d = r.insertCell(); d.className = "empty"; d.textContent = L.nopaired; return; }
+  if (!list.length) { const r = t.insertRow(), d = r.insertCell(); d.className = "empty"; d.textContent = empty; return; }
   for (const p of list) {
     const r = t.insertRow(), a = r.insertCell(), b = r.insertCell(), c = r.insertCell();
     a.append(el("span", "dot" + (p.connected ? " on" : "")), document.createTextNode(p.addr));
@@ -1112,15 +1123,16 @@ async function refresh() {
     const s = await api("GET", "/api/state");
     setLang(TEXT[s.lang] ? s.lang : "en");
     $("ver").textContent = s.version;
-    $("status").textContent = s.running ? L.running : L.nobt;
+    $("status").textContent = s.bluetooth === "off" ? L.btoff : s.running ? L.running : L.nobt;
     $("status").className = s.running ? "on" : "off";
     radar(s);
     $("btfail").hidden = s.bluetooth !== "failed";
     $("btreason").textContent = s.reason || "";
     if (s.bluetooth === "trying") $("status").textContent = L.starting;
-    $("pair").disabled = s.pairing > 0 || s.pairwait > 0 || s.bluetooth !== "ok";
-    renderPads(s.pads);
-    renderPaired(s.paired, s.pads);
+    $("pair").disabled = s.pairing > 0 || s.pairwait > 0 || (s.bluetooth !== "ok" && s.bluetooth !== "off");
+    const saved = s.bluetooth === "off" && Number.isInteger(s.saved) && s.saved > 0 ? L.saved(s.saved) : undefined;
+    renderPads(s.pads, saved);
+    renderPaired(s.paired, s.pads, saved);
   } catch (e) {
     $("status").textContent = L.offline;
     $("status").className = "off";
