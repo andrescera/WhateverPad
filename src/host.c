@@ -123,6 +123,7 @@ link_t *link_new(host_t *h, const unsigned char *addr)
 
 void link_free(host_t *h, link_t *l)
 {
+    if (h->check_out && l->connected && l->handle == h->check_handle) h->check_out = 0;
     if (l->announced && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, slot_of(h, l));
     memset(l, 0, sizeof *l);
 }
@@ -1094,6 +1095,8 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     dlen = (int)le16(pkt + 2);
     l = link_by_handle(h, hdr);
     if (!l || 4 + dlen > len) return;   /* not ours, or cut short */
+    l->last_acl = now_ms();
+    l->check_unanswered = 0;
 
     if (pb == 1) {                      /* continuation */
         if (!l->rx_need || l->rx_len + dlen > (int)sizeof l->rx) {
@@ -1584,6 +1587,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         l->connected = 1;
         l->handle = le16(ev + 3) & 0x0FFF;
         l->t_conn = now_ms();
+        l->last_acl = l->t_conn;
         log_line("pad %s: connected, handle %#05x", addr_str(l->addr), l->handle);
         break;
 
@@ -1634,6 +1638,21 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x0E:  /* Command Complete: credits, opcode, return parameters */
+        if (len >= 5 && le16(ev + 3) == 0x1405) {
+            if (len < 8 || ev[1] + 2 != len || !h->check_out ||
+                le16(ev + 6) != h->check_handle ||
+                !(l = link_by_handle(h, h->check_handle))) {
+                log_line("link check: reply not usable");
+            } else {
+                int gone = radio_rssi_reply_gone(ev, len, h->check_out, h->check_handle);
+                h->check_out = 0;
+                l->check_unanswered = radio_link_unanswered_after(l->check_unanswered, ev[5]);
+                if (gone) {
+                    log_line("pad %s: link is gone (the chip no longer knows it)", addr_str(l->addr));
+                    link_free(h, l);
+                }
+            }
+        }
         if (len < 6) break;
         h->cc_op = le16(ev + 3);
         h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
@@ -2029,6 +2048,16 @@ static int pairing_busy(const host_t *h, long now)
     return 0;
 }
 
+int host_radio_busy(const host_t *h)
+{
+    int i;
+
+    if (pairing_busy(h, now_ms()) || h->pair_pending_s) return 1;
+    for (i = 0; i < HOST_MAX_PADS; i++)
+        if (h->links[i].used) return 1;
+    return 0;
+}
+
 /* The radio is kept light while pairing and while pads of ours are connected:
  * with the system's heavy page scan, a connected pad gets few slots left and
  * lags (console, 9 Oct: the DS4 lagged badly until the page scan was made
@@ -2077,6 +2106,33 @@ void host_poll(host_t *h, int timeout_ms)
             if (h->ps_saved) page_scan_restore(h);
         }
         now = now_ms();
+        if (h->check_out && now - h->check_at >= 2000) {
+            link_t *l = link_by_handle(h, h->check_handle);
+            if (l) l->check_unanswered++;
+            h->check_out = 0;
+        }
+        for (i = 0; !h->check_out && i < HOST_MAX_PADS; i++) {
+            link_t *l = &h->links[i];
+            radio_link_action action;
+            unsigned char p[3];
+
+            if (!l->used || !l->connected) continue;
+            action = radio_link_check(now, l->last_acl, l->last_check, l->check_unanswered);
+            if (action == RADIO_LINK_NOTHING) continue;
+            put16(p, l->handle);
+            if (action == RADIO_LINK_GIVE_UP) {
+                log_line("pad %s: the chip gave no answer about this link, letting it go", addr_str(l->addr));
+                p[2] = 0x13;
+                if (!l->disconnecting) send_cmd(h, OP_DISCONNECT, p, 3);
+                link_free(h, l);
+            } else {
+                h->check_out = 1;
+                h->check_handle = l->handle;
+                h->check_at = l->last_check = now;
+                send_cmd(h, 0x1405, p, 2);
+            }
+            break;
+        }
     }
     for (i = 0; i < HOST_MAX_PADS; i++) {
         if (!h->links[i].used) continue;

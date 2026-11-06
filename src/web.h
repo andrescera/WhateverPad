@@ -17,12 +17,13 @@
 
 typedef struct web web_t;
 
-enum { WEB_BT_TRYING, WEB_BT_OK, WEB_BT_FAILED };
+enum { WEB_BT_TRYING, WEB_BT_OK, WEB_BT_FAILED, WEB_BT_OFF };
 
 typedef struct {
     host_t **host;              /* the host; NULL until Bluetooth is up */
     volatile int *stop;         /* set to 1 to ask WhateverPad PS5 to stop */
-    volatile int *retry;        /* set to 1 to try the Bluetooth again */
+    volatile int *pair_request; /* set to 1 to open Bluetooth and pair */
+    volatile int *saved_pads;   /* pads saved in this session, also while closed */
     volatile int *bt_state;     /* a WEB_BT_* */
     const char *bt_reason;      /* why not, when it failed (plain text) */
     const char *log_path;       /* tail served at /api/log */

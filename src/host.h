@@ -9,9 +9,9 @@
  *   pairing:    host_pair() searches for a pad in pairing mode, connects,
  *               pairs, reads its vendor/product id over SDP and opens the
  *               HID channels. The link key and ids are stored.
- *   reconnect:  a stored pad that is switched on connects by itself; it is
- *               accepted, authenticated with the stored key and its HID
- *               channels accepted or opened.
+ *   reconnect:  press Pair and switch on a pad saved in this session. While
+ *               Bluetooth is open it is accepted, authenticated with its stored
+ *               key and its HID channels accepted or opened.
  */
 #ifndef PH_HOST_H
 #define PH_HOST_H
@@ -51,6 +51,7 @@ int  host_set_output(host_t *h, int slot, const pad_output *out);
 
 int  host_connected(const host_t *h, int slot);
 int  host_paired_count(const host_t *h);
+int  host_radio_busy(const host_t *h);
 
 /* The controller went away (rest mode): close and open again. */
 int  host_transport_lost(const host_t *h);

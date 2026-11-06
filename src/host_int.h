@@ -203,6 +203,8 @@ typedef struct {
     unsigned handle;
     int pairing;            /* we found it in pairing mode */
     long t_create, t_conn;
+    long last_acl, last_check;
+    int check_unanswered;
 
     int auth_sent, auth_ok, enc_sent, enc_on;
     int ssp_stage;                  /* pairing steps we answered: 1 key refused, 2 capabilities given, 3 confirmed */
@@ -330,6 +332,9 @@ struct host {
     int ps_restore_tries;
     long last_rx, probe_at; /* liveness: anything heard, last probe */
     int probes;
+    int check_out;
+    unsigned check_handle;
+    long check_at;
 };
 
 

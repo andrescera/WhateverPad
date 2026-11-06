@@ -460,6 +460,7 @@ void le_on_meta(host_t *h, const unsigned char *ev, int len)
         l->connected = 1;
         l->handle = le16(ev + 2) & 0x0FFF;
         l->t_conn = now_ms();
+        l->last_acl = l->t_conn;
         log_line("le pad %s: connected, handle %#05x", addr_str(l->addr), l->handle);
         break;
 

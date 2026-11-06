@@ -1,6 +1,7 @@
 /* Malformed input: random and mutated bytes through every parser a pad
  * can reach. Run under the sanitizers (make fuzz) it must find nothing. */
 #include "../src/profiles.h"
+#include "../src/radio.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,7 @@ int main(void)
             prof->parse(ctx, buf, n < 80 ? n : 80, &st);
         }
         sdp_find_ids(buf, n, &vid, &pid);
+        radio_rssi_reply_gone(buf, n, i & 1, 0x001);
     }
     printf("fuzz: 200000 inputs, %d descriptors accepted, no fault\n", accepted);
     return 0;

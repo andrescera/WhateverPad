@@ -1,6 +1,28 @@
 #ifndef WHATEVERPAD_RADIO_H
 #define WHATEVERPAD_RADIO_H
 
+typedef enum { RADIO_NOTHING, RADIO_OPEN, RADIO_CLOSE } radio_action;
+#define RADIO_LINGER_MS 30000L
+
+typedef struct {
+    int vpad_ok;
+    int open;
+    int trying;
+    int pair_requested;
+    int busy;
+    long now, last_busy;
+} radio_input;
+
+radio_action radio_decide(radio_input in);
+
+#define RADIO_LINK_SILENT_MS 20000L
+#define RADIO_LINK_CHECK_TRIES 3
+typedef enum { RADIO_LINK_NOTHING, RADIO_LINK_CHECK, RADIO_LINK_GIVE_UP } radio_link_action;
+
+radio_link_action radio_link_check(long now, long last_acl, long last_check, int unanswered);
+int radio_rssi_reply_gone(const unsigned char *ev, int len, int outstanding, unsigned handle);
+int radio_link_unanswered_after(int unanswered, int status);
+
 typedef struct {
     unsigned op;
     unsigned char p[8];
