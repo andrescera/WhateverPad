@@ -60,7 +60,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef STATE_DIR
 #define STATE_DIR    "/data/whateverpad"
+#endif
 #define LOG_PATH     STATE_DIR "/whateverpad.log"
 #define DB_PATH      STATE_DIR "/pads.db"
 #define LOCK_PATH    STATE_DIR "/whateverpad.lock"
@@ -211,6 +213,8 @@ static void on_disconnect(void *ud, int slot)
 
 /* ---- Bluetooth, one try at a time ------------------------------------------ */
 
+static void check_flags(long now);
+
 /* The host calls this whenever it waits for the chip, so the menu answers
  * even while a Bluetooth try is in progress (it used to freeze for ~5 s each
  * time, and the browser's pile-up of connections got "busy"). */
@@ -218,6 +222,7 @@ static void on_idle(void *ud)
 {
     (void)ud;
     web_poll(g_web);
+    check_flags(now_ms());
     if (g_web_stop || g_stop) arm_stop_watchdog();
 }
 

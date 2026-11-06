@@ -65,7 +65,12 @@ $(BUILD)/test_fuzz: $(CORE) tests/test_fuzz.c | $(BUILD)
 $(BUILD)/test_radio: $(CORE) tests/test_radio.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz $(BUILD)/test_radio
+# Actual opening callback; unused console entry points are discarded by the linker.
+$(BUILD)/test_main_flags: tests/test_main_flags.c src/ps5_main.c src/web.c src/web_page.c $(CORE) | $(BUILD)
+	clang $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out src/ps5_main.c,$^)
+
+test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz $(BUILD)/test_radio $(BUILD)/test_main_flags
+	./$(BUILD)/test_main_flags
 	./$(BUILD)/test_radio
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
