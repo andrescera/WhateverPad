@@ -1,11 +1,13 @@
 #include "host_int.h"
 #include "log.h"
+#include "radio.h"
 #include "util.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const pad_output k_player_colours[HOST_MAX_PADS] = {
     { 0, 0, 0x00, 0x00, 0x40, 1 },      /* blue */
@@ -121,6 +123,7 @@ link_t *link_new(host_t *h, const unsigned char *addr)
 
 void link_free(host_t *h, link_t *l)
 {
+    if (h->check_out && l->connected && l->handle == h->check_handle) h->check_out = 0;
     if (l->announced && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, slot_of(h, l));
     memset(l, 0, sizeof *l);
 }
@@ -1092,6 +1095,8 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     dlen = (int)le16(pkt + 2);
     l = link_by_handle(h, hdr);
     if (!l || 4 + dlen > len) return;   /* not ours, or cut short */
+    l->last_acl = now_ms();
+    l->check_unanswered = 0;
 
     if (pb == 1) {                      /* continuation */
         if (!l->rx_need || l->rx_len + dlen > (int)sizeof l->rx) {
@@ -1582,6 +1587,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         l->connected = 1;
         l->handle = le16(ev + 3) & 0x0FFF;
         l->t_conn = now_ms();
+        l->last_acl = l->t_conn;
         log_line("pad %s: connected, handle %#05x", addr_str(l->addr), l->handle);
         break;
 
@@ -1632,6 +1638,21 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x0E:  /* Command Complete: credits, opcode, return parameters */
+        if (len >= 5 && le16(ev + 3) == 0x1405) {
+            if (len < 8 || ev[1] + 2 != len || !h->check_out ||
+                le16(ev + 6) != h->check_handle ||
+                !(l = link_by_handle(h, h->check_handle))) {
+                log_line("link check: reply not usable");
+            } else {
+                int gone = radio_rssi_reply_gone(ev, len, h->check_out, h->check_handle);
+                h->check_out = 0;
+                l->check_unanswered = radio_link_unanswered_after(l->check_unanswered, ev[5]);
+                if (gone) {
+                    log_line("pad %s: link is gone (the chip no longer knows it)", addr_str(l->addr));
+                    link_free(h, l);
+                }
+            }
+        }
         if (len < 6) break;
         h->cc_op = le16(ev + 3);
         h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
@@ -2027,6 +2048,16 @@ static int pairing_busy(const host_t *h, long now)
     return 0;
 }
 
+int host_radio_busy(const host_t *h)
+{
+    int i;
+
+    if (pairing_busy(h, now_ms()) || h->pair_pending_s) return 1;
+    for (i = 0; i < HOST_MAX_PADS; i++)
+        if (h->links[i].used) return 1;
+    return 0;
+}
+
 /* The radio is kept light while pairing and while pads of ours are connected:
  * with the system's heavy page scan, a connected pad gets few slots left and
  * lags (console, 9 Oct: the DS4 lagged badly until the page scan was made
@@ -2075,6 +2106,33 @@ void host_poll(host_t *h, int timeout_ms)
             if (h->ps_saved) page_scan_restore(h);
         }
         now = now_ms();
+        if (h->check_out && now - h->check_at >= 2000) {
+            link_t *l = link_by_handle(h, h->check_handle);
+            if (l) l->check_unanswered++;
+            h->check_out = 0;
+        }
+        for (i = 0; !h->check_out && i < HOST_MAX_PADS; i++) {
+            link_t *l = &h->links[i];
+            radio_link_action action;
+            unsigned char p[3];
+
+            if (!l->used || !l->connected) continue;
+            action = radio_link_check(now, l->last_acl, l->last_check, l->check_unanswered);
+            if (action == RADIO_LINK_NOTHING) continue;
+            put16(p, l->handle);
+            if (action == RADIO_LINK_GIVE_UP) {
+                log_line("pad %s: the chip gave no answer about this link, letting it go", addr_str(l->addr));
+                p[2] = 0x13;
+                if (!l->disconnecting) send_cmd(h, OP_DISCONNECT, p, 3);
+                link_free(h, l);
+            } else {
+                h->check_out = 1;
+                h->check_handle = l->handle;
+                h->check_at = l->last_check = now;
+                send_cmd(h, 0x1405, p, 2);
+            }
+            break;
+        }
     }
     for (i = 0; i < HOST_MAX_PADS; i++) {
         if (!h->links[i].used) continue;
@@ -2440,28 +2498,6 @@ static int setup(host_t *h)
     return 1;
 }
 
-/* Puts back what setup() changed and nobody has changed since. */
-static void restore(host_t *h)
-{
-    /* The mask every earlier version left, with Connection Request. */
-    static const unsigned char mask_all[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F };
-    unsigned char scan[1];
-
-    if (!yielding(h, now_ms())) {
-        page_scan_restore(h);
-        if (h->mask_set && hci_sync(h, OP_SET_EVENT_MASK, mask_all, 8)) h->mask_set = 0;
-    }
-    le_shutdown(h);
-    if (h->scan_set < 0) return;
-    if (hci_sync(h, OP_READ_SCAN_ENABLE, NULL, 0) && h->cc_len >= 7 && h->cc[6] == h->scan_set) {
-        scan[0] = (unsigned char)h->scan_orig;
-        hci_sync(h, OP_WRITE_SCAN_ENABLE, scan, 1);
-        log_line("controller: page scan put back to %#x", h->scan_orig);
-    } else {
-        log_line("controller: page scan changed by someone else, left as is");
-    }
-}
-
 host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
 {
     host_t *h = calloc(1, sizeof *h);
@@ -2496,24 +2532,39 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
 
 void host_close(host_t *h)
 {
-    int i;
+    radio_goodbye_in in = { 0 };
+    radio_cmd cmds[RADIO_CMD_MAX];
+    int i, n;
     long deadline;
 
     if (!h) return;
+    deadline = now_ms() + 1000;
+    if (h->hci.ops->stop_reads) h->hci.ops->stop_reads(h->hci.ctx);
+    in.dead = h->dead;
     for (i = 0; i < HOST_MAX_PADS; i++) {
-        if (!h->links[i].used) continue;
-        if (h->dead) link_free(h, &h->links[i]);    /* nothing to tell the pad */
-        else link_disconnect(h, &h->links[i], "closing");    /* the pad keeps its key: it reconnects next time */
+        if (h->links[i].used && h->links[i].connected)
+            in.handles[in.nhandles++] = h->links[i].handle;
     }
-    deadline = now_ms() + 2000;
-    for (;;) {
-        int any = 0;
-        for (i = 0; i < HOST_MAX_PADS; i++) any |= h->links[i].used;
-        if (!any || now_ms() >= deadline) break;
-        pump(h, 50);
+    in.inquiring = h->inquiring;
+    in.le_scanning = h->le_scanning;
+    in.le_create_pending = le_create_pending(h);
+    in.ps_saved = h->ps_saved;
+    in.ps_orig_iv = h->ps_orig_iv;
+    in.ps_orig_win = h->ps_orig_win;
+    in.mask_conn = g_tune.mask_conn;
+    n = radio_goodbye(&in, cmds, RADIO_CMD_MAX);
+    for (i = 0; i < n && now_ms() < deadline; i++) {
+        int ok;
+
+        if (i) usleep(30000);
+        if (now_ms() >= deadline) break;
+        ok = h->hci.ops->cmd(h->hci.ctx, cmds[i].op, cmds[i].p, cmds[i].len);
+        log_line("goodbye %04x -> %d", cmds[i].op, ok);
+        if (!ok) break;
     }
-    if (!h->dead && h->inquiring) send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);    /* leave no search running */
-    if (!h->dead) restore(h);
+    if (h->scan_set >= 0) log_line("controller: page scan left on");
+    for (i = 0; i < HOST_MAX_PADS; i++)
+        if (h->links[i].used) link_free(h, &h->links[i]);
     if (h->hci.ops->close) h->hci.ops->close(h->hci.ctx);
     free(h);
 }

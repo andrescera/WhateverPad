@@ -430,6 +430,24 @@ static int op_next_acl(void *ctx, unsigned char *out, int max)
     return ring_get(&((usb_ctx *)ctx)->acl, out, max);
 }
 
+static void op_stop_reads(void *ctx)
+{
+    usb_ctx *c = ctx;
+    int i, stopped = 0, failed = 0;
+
+    for (i = 0; i < N_EVENT_RD + N_ACL_RD; i++) {
+        struct usb_fs_stop st;
+
+        if (!c->busy[i]) continue;
+        memset(&st, 0, sizeof st);
+        st.ep_index = (uint8_t)i;
+        if (ioctl(c->fd, USB_FS_STOP, &st) == 0) stopped++;
+        else failed++;
+        c->busy[i] = 0;
+    }
+    log_line("usb: reads released (%d stopped, %d failed)", stopped, failed);
+}
+
 static void op_close(void *ctx)
 {
     usb_ctx *c = ctx;
@@ -583,7 +601,7 @@ static int op_chip_vendor(void *ctx);
 
 static const hci_ops k_usb_ops = {
     op_cmd, op_acl_send, op_pump, op_next_event, op_next_acl, op_close, op_diag, op_yield, op_missing_reads,
-    op_event_reads, op_event_len, op_chip_vendor,
+    op_event_reads, op_event_len, op_chip_vendor, op_stop_reads,
 };
 
 /* Opens one device node and reads its device descriptor. */

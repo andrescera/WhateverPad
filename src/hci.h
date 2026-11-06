@@ -45,6 +45,8 @@ typedef struct hci_ops {
     /* Optional: the chip's USB vendor id (0x0E8D MediaTek, 0x1286
      * Marvell/NXP), 0 if not known. NULL: not known. */
     int  (*chip_vendor)(void *ctx);
+    /* Optional: releases pending event and ACL reads before goodbye commands. */
+    void (*stop_reads)(void *ctx);
 } hci_ops;
 
 typedef struct {

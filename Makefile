@@ -7,7 +7,7 @@
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
 
-CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c
+CORE   := src/util.c src/log.c src/crc32.c src/smp_crypto.c src/profiles.c src/generic.c src/host.c src/le.c src/radio.c
 HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 ifeq ($(shell uname -s),Linux)
 LOCK_CFLAGS := -Itests/host
@@ -62,7 +62,16 @@ $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 $(BUILD)/test_fuzz: $(CORE) tests/test_fuzz.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz
+$(BUILD)/test_radio: $(CORE) tests/test_radio.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+# Actual opening callback; unused console entry points are discarded by the linker.
+$(BUILD)/test_main_flags: tests/test_main_flags.c src/ps5_main.c src/web.c src/web_page.c $(CORE) | $(BUILD)
+	clang $(HOST_CFLAGS) -DSYS_thr_set_name=0 -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(filter-out src/ps5_main.c,$^)
+
+test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_launcher $(BUILD)/test_fuzz $(BUILD)/test_radio $(BUILD)/test_main_flags
+	./$(BUILD)/test_main_flags
+	./$(BUILD)/test_radio
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config

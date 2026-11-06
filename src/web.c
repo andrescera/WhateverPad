@@ -178,7 +178,7 @@ static void api_state(web_t *w, int fd)
                       if (k_ > 0) n += (size_t)k_ < sizeof out - n ? (size_t)k_ : sizeof out - n - 1; } while (0)
 
     {
-        static const char *const bt[] = { "trying", "ok", "failed" };
+        static const char *const bt[] = { "trying", "ok", "failed", "off" };
         char reason[200], combo[100];
         uint32_t pb = 0;
         int perr = 0, readable = w->cfg.physical ? w->cfg.physical(&pb, &perr) : 0;
@@ -188,11 +188,11 @@ static void api_state(web_t *w, int fd)
 
         json_text(reason, sizeof reason, w->cfg.bt_reason);
         json_text(combo, sizeof combo, w->cfg.combo_text);
-        PUT("{\"version\":\"%s\",\"lang\":\"%s\",\"running\":%s,\"pairing\":%d,\"pairwait\":%d,\"pause\":%d,\"chip\":\"%s\",\"bluetooth\":\"%s\","
+        PUT("{\"version\":\"%s\",\"lang\":\"%s\",\"running\":%s,\"saved\":%d,\"pairing\":%d,\"pairwait\":%d,\"pause\":%d,\"chip\":\"%s\",\"bluetooth\":\"%s\","
             "\"reason\":\"%s\",\"combo\":\"%s\",\"physical\":{\"readable\":%s,\"error\":\"%08x\",\"buttons\":[",
-            w->cfg.version, w->cfg.lang ? w->cfg.lang : "es", h ? "true" : "false", h ? host_pairing_left(h) : 0,
+            w->cfg.version, w->cfg.lang ? w->cfg.lang : "es", h ? "true" : "false", *w->cfg.saved_pads, h ? host_pairing_left(h) : 0,
             h ? host_pair_wait_left(h) : 0, h ? host_pause_left(h) : 0, w->cfg.chip ? w->cfg.chip : "",
-            bt[st >= 0 && st <= 2 ? st : 0], reason, combo, readable ? "true" : "false",
+            bt[st >= 0 && st <= 3 ? st : 0], reason, combo, readable ? "true" : "false",
             (unsigned)perr);
         for (b = 0; readable && b < sizeof names / sizeof names[0]; b++)
             if (pb & names[b].bit) {
@@ -368,9 +368,9 @@ static void handle(web_t *w, int fd, char *req)
         api_state(w, fd);
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/log") == 0) {
         api_log(w, fd);
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/pair") == 0 && h) {
-        host_pair(h, 60);
-        log_line("web: pairing started");
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/pair") == 0) {
+        *w->cfg.pair_request = 1;
+        log_line("web: pair requested");
         respond_text(fd, 200, "{\"ok\":true}");
     } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/forget?addr=", 17) == 0 && h) {
         unsigned char a[6];
@@ -397,7 +397,7 @@ static void handle(web_t *w, int fd, char *req)
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/retry") == 0) {
         if (*w->cfg.bt_state == WEB_BT_FAILED) {
             log_line("web: Bluetooth retry requested");
-            *w->cfg.retry = 1;
+            *w->cfg.pair_request = 1;
             respond_text(fd, 200, "{\"ok\":true}");
         } else {
             respond_text(fd, 400, "{\"error\":\"not failed\"}");

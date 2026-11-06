@@ -203,6 +203,8 @@ typedef struct {
     unsigned handle;
     int pairing;            /* we found it in pairing mode */
     long t_create, t_conn;
+    long last_acl, last_check;
+    int check_unanswered;
 
     int auth_sent, auth_ok, enc_sent, enc_on;
     int ssp_stage;                  /* pairing steps we answered: 1 key refused, 2 capabilities given, 3 confirmed */
@@ -330,6 +332,9 @@ struct host {
     int ps_restore_tries;
     long last_rx, probe_at; /* liveness: anything heard, last probe */
     int probes;
+    int check_out;
+    unsigned check_handle;
+    long check_at;
 };
 
 
@@ -372,7 +377,7 @@ void le_on_frame(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int
 void le_on_encryption(host_t *h, link_t *l, int status, int on);
 void le_step(host_t *h, link_t *l, long now);
 void le_poll(host_t *h, long now);
-void le_shutdown(host_t *h);
+int le_create_pending(const host_t *h);
 void le_on_create_status(host_t *h, int status);
 int  le_send_report(host_t *h, link_t *l, const unsigned char *rep, int len);
 

@@ -14,21 +14,21 @@
  *
  * ALPHA: see PRUEBAS.md for what has been tried on a console.
  *
- * Stability comes first. It only touches what it created: its own Bluetooth
- * links, its own virtual pads, its own files under /data/whateverpad. When
- * something it depends on fails, it says so (log, notification, the menu)
- * and stays out of the way instead of retrying forever.
+ * Bluetooth stays closed until Pair is pressed, including for a saved pad.
+ * It closes again after 30 s with no pad and no search, keeping this session's
+ * saved pads on disk for the next Pair request. Releasing Bluetooth is not
+ * proof that the DualSense can reconnect on every console.
  *
  * The menu is started first, before anything that can fail, so that it is
  * there to explain a failure. It is a web page: from a phone or a PC at the
- * address the start-up notification gives, or on the console itself by
- * holding a button combination on the DualSense (L2 + R2 + OPTIONS for 1.5
- * seconds unless /data/whateverpad/config.ini says otherwise).
+ * address the start-up notification gives, or on the console itself from
+ * the WhateverPad entry in the media row.
  *
  * Stopping: the menu's button, or create /data/whateverpad/stop. It disconnects
- * its pads, removes its virtual pads, puts back the controller setting it
- * changed, and exits. It does the same by itself when the console starts
- * going to rest mode (read from SceSystemStateMgrInfo), so nothing of it is left half-way across a sleep.
+ * its pads and removes its virtual pads without waiting for replies, releases
+ * Bluetooth before closing the menu, and exits. Page scan stays on for the
+ * DualSense. It does the same by itself when the console starts
+ * going to rest mode (read from SceSystemStateMgrInfo).
  * Pairing: the menu's button, or create /data/whateverpad/pair.
  */
 #include "config.h"
@@ -42,6 +42,7 @@
 #include "ps5_apps.h"
 #include "ps5_sysinfo.h"
 #include "ps5_vpad.h"
+#include "radio.h"
 #include "util.h"
 #include "version.h"
 #include "web.h"
@@ -59,7 +60,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef STATE_DIR
 #define STATE_DIR    "/data/whateverpad"
+#endif
 #define LOG_PATH     STATE_DIR "/whateverpad.log"
 #define DB_PATH      STATE_DIR "/pads.db"
 #define LOCK_PATH    STATE_DIR "/whateverpad.lock"
@@ -89,8 +92,9 @@ static const char g_version_tag[] __attribute__((used)) = "whateverpad-version "
 
 static volatile sig_atomic_t g_stop;
 static volatile int g_web_stop;         /* the menu's stop button */
-static volatile int g_retry;            /* the menu's retry button */
-static volatile int g_bt_state = WEB_BT_TRYING;
+static volatile int g_pair_request;
+static volatile int g_saved_pads;
+static volatile int g_bt_state = WEB_BT_OFF;
 static char g_bt_reason[200];
 
 static host_t *g_host;                  /* NULL until Bluetooth is up */
@@ -98,6 +102,7 @@ static web_t *g_web;
 static int g_vpad_ok;                   /* virtual pads are possible */
 static int g_bt_attempt;                /* Bluetooth tries made in this round */
 static long g_bt_next;                  /* when the next one is due */
+static long g_last_busy;
 static int g_bt_plain_creds;            /* the chip answered only without raised credentials */
 
 /* Stopping must never hang: while this process lives it holds reads on the
@@ -109,6 +114,16 @@ static void on_stop_timeout(int sig)
     (void)sig;
     unlink(DB_PATH);                    /* nothing of this session is kept */
     _exit(0);
+}
+
+static void arm_stop_watchdog(void)
+{
+    static int armed;
+
+    if (armed) return;
+    armed = 1;
+    signal(SIGALRM, on_stop_timeout);
+    alarm(T_STOP_MAX_S);
 }
 
 /* The console's language decides the texts: Spanish, or English for any other. */
@@ -198,6 +213,8 @@ static void on_disconnect(void *ud, int slot)
 
 /* ---- Bluetooth, one try at a time ------------------------------------------ */
 
+static void check_flags(long now);
+
 /* The host calls this whenever it waits for the chip, so the menu answers
  * even while a Bluetooth try is in progress (it used to freeze for ~5 s each
  * time, and the browser's pile-up of connections got "busy"). */
@@ -205,11 +222,14 @@ static void on_idle(void *ud)
 {
     (void)ud;
     web_poll(g_web);
+    check_flags(now_ms());
+    if (g_web_stop || g_stop) arm_stop_watchdog();
 }
 
 static void bt_begin(void)
 {
     g_bt_attempt = 0;
+    g_bt_plain_creds = 0;
     g_bt_next = 0;
     g_bt_reason[0] = '\0';
     g_bt_state = WEB_BT_TRYING;
@@ -234,14 +254,15 @@ static void bt_try(long now)
         g_host = host_open(hci, DB_PATH, &ev);
         if (g_host) {
             g_bt_state = WEB_BT_OK;
+            g_last_busy = now_ms();
             log_line("Bluetooth ready after %d tr%s%s", attempt, attempt == 1 ? "y" : "ies",
                      g_bt_plain_creds ? ", answering only with the original credentials" : "");
             if (hci.ops->missing_reads && hci.ops->missing_reads(hci.ctx) > 0)
                 notify(TR("WhateverPad PS5: otro programa usa el Bluetooth (otro payload sigue en marcha?). Paralo desde su menu: WhateverPad se recupera solo",
                           "WhateverPad PS5: another program is using Bluetooth (is another payload still running?). Stop it from its menu: WhateverPad recovers by itself"));
-            if (host_paired_count(g_host))      /* opened again in this session (after rest mode) */
+            if (host_paired_count(g_host))      /* opened again in this session */
                 notify(TR("WhateverPad PS5: Bluetooth listo (%d mandos de esta sesion)", "WhateverPad PS5: Bluetooth ready (%d controllers of this session)"), host_paired_count(g_host));
-            else
+            else if (!g_pair_request)
                 notify(TR("WhateverPad PS5: Bluetooth listo. Empareja los mandos desde el menu", "WhateverPad PS5: Bluetooth ready. Pair the controllers from the menu"));
             return;
         }
@@ -250,6 +271,7 @@ static void bt_try(long now)
     log_line("Bluetooth not ready (try %d of %d)", attempt, OPEN_TRIES);
     if (attempt >= OPEN_TRIES) {
         g_bt_state = WEB_BT_FAILED;
+        g_pair_request = 0;
         snprintf(g_bt_reason, sizeof g_bt_reason,
                  "El chip Bluetooth no responde (%d intentos, con y sin credenciales elevadas). "
                  "Detalle en el log, lineas 'diag'.%s", attempt,
@@ -285,10 +307,9 @@ static void check_flags(long now)
         unlink(STOP_FLAG);
         g_stop = 1;
     }
-    if (g_host && access(PAIR_FLAG, F_OK) == 0) {
+    if (access(PAIR_FLAG, F_OK) == 0) {
         unlink(PAIR_FLAG);
-        host_pair(g_host, PAIR_SECONDS);
-        notify(TR("WhateverPad PS5: emparejando %d s. Pon el mando en modo emparejamiento", "WhateverPad PS5: pairing for %d s. Put the controller in pairing mode"), PAIR_SECONDS);
+        g_pair_request = 1;
     }
 }
 
@@ -297,7 +318,7 @@ int main(void)
     web_cfg wc;
     char ip[16], url[64];
     const char *why = "stop requested";
-    long last_power = 0, last_net = 0;
+    long last_power = 0, last_net = 0, t0;
 
     mkdir(STATE_DIR, 0755);
     log_open(LOG_PATH);
@@ -313,9 +334,10 @@ int main(void)
         return 1;
     }
     unlink(STOP_FLAG);                  /* an old request is not for us */
+    unlink(PAIR_FLAG);
     /* One session per run: pads are paired anew each time WhateverPad starts, and
      * nothing is kept once it stops or the console restarts. The store lives
-     * only while this run does (so pads still reconnect after rest mode). */
+     * only while this run does, including while Bluetooth is closed. */
     if (unlink(DB_PATH) == 0) log_line("session: pads of an earlier run discarded");
     log_line("session: pads are paired for this run only");
     syscall(SYS_thr_set_name, -1, "whateverpad");    /* how others find us */
@@ -329,7 +351,8 @@ int main(void)
     memset(&wc, 0, sizeof wc);
     wc.host = &g_host;
     wc.stop = &g_web_stop;
-    wc.retry = &g_retry;
+    wc.pair_request = &g_pair_request;
+    wc.saved_pads = &g_saved_pads;
     wc.bt_state = &g_bt_state;
     wc.bt_reason = g_bt_reason;
     wc.log_path = LOG_PATH;
@@ -371,7 +394,8 @@ int main(void)
                  "No se pueden crear mandos virtuales en este sistema (ver el log). No se ha tocado el Bluetooth.");
         notify(TR("WhateverPad PS5: no se pueden crear mandos virtuales.\nVer el menu o el log. El Bluetooth no se ha tocado", "WhateverPad PS5: cannot create virtual controllers.\nSee the menu or the log. Bluetooth was not touched"));
     } else {
-        bt_begin();
+        g_bt_state = WEB_BT_OFF;
+        log_line("radio: off until Pair is pressed");
     }
 
     while (!g_stop && !g_web_stop) {
@@ -419,32 +443,63 @@ int main(void)
             }
         }
 
-        /* The Bluetooth: tries, loss, and the menu's retry button. */
+        check_flags(now);
+        if (g_stop || g_web_stop) break;
+
+        /* Bluetooth opens only for a Pair request and closes when unused. */
         if (g_bt_state == WEB_BT_TRYING && now >= g_bt_next) bt_try(now);
         if (g_host && host_transport_lost(g_host)) bt_lost("sin respuesta del chip");
-        if (g_retry) {
-            g_retry = 0;
-            if (g_vpad_ok && g_bt_state == WEB_BT_FAILED) {
-                log_line("retrying Bluetooth at the user's request");
+        {
+            radio_input in = {
+                .vpad_ok = g_vpad_ok,
+                .open = g_host != NULL,
+                .trying = g_bt_state == WEB_BT_TRYING,
+                .pair_requested = g_pair_request,
+                .busy = g_host && host_radio_busy(g_host),
+                .now = now_ms(),
+            };
+            radio_action action;
+
+            if (in.busy) g_last_busy = in.now;
+            in.last_busy = g_last_busy;
+            action = radio_decide(in);
+            if (action == RADIO_OPEN) {
+                log_line("radio: opening (Pair pressed)");
                 bt_begin();
-            } else {
-                log_line("retry ignored (virtual pads not available, or not failed)");
+            } else if (action == RADIO_CLOSE) {
+                t0 = now_ms();
+                signal(SIGALRM, on_stop_timeout);
+                alarm(T_STOP_MAX_S);
+                host_close(g_host);
+                alarm(0);
+                g_host = NULL;
+                g_bt_state = WEB_BT_OFF;
+                log_line("radio: closed after %d s with no pad, released in %ld ms",
+                         (int)(RADIO_LINGER_MS / 1000), now_ms() - t0);
+                notify(TR("WhateverPad PS5: Bluetooth liberado. Pulsa Emparejar para volver a conectar un mando",
+                          "WhateverPad PS5: Bluetooth released. Press Pair to reconnect a controller"));
             }
         }
-
-        check_flags(now);
+        if (g_pair_request && g_host) {
+            g_pair_request = 0;
+            host_pair(g_host, PAIR_SECONDS);
+            log_line("web: pairing started");
+            notify(TR("WhateverPad PS5: emparejando %d s. Pon el mando en modo emparejamiento", "WhateverPad PS5: pairing for %d s. Put the controller in pairing mode"), PAIR_SECONDS);
+        }
+        if (g_host) g_saved_pads = host_paired_count(g_host);
     }
+    arm_stop_watchdog();
     if (g_web_stop) why = "stop from the menu";
     else if (g_stop && strcmp(why, "stop requested") == 0) why = "stop requested (flag or signal)";
 
     log_line("stopping: %s", why);
-    signal(SIGALRM, on_stop_timeout);
-    alarm(T_STOP_MAX_S);
-    web_stop(g_web);
+    t0 = now_ms();
     host_close(g_host);                 /* our links; removes our virtual pads */
     g_host = NULL;
+    web_stop(g_web);
+    g_web = NULL;
     unlink(DB_PATH);                    /* the session ends: nothing is kept */
-    log_line("stopping: Bluetooth released, pads of this session discarded");
+    log_line("stopping: Bluetooth released in %ld ms, pads of this session discarded", now_ms() - t0);
     if (g_vpad_ok) {
         vpad_creds_restore();           /* leave the credentials as found */
     }
