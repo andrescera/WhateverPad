@@ -102,15 +102,16 @@ his real PS5 and answers a yes/no question. A log line is evidence for the next
 hypothesis, never a yes. No simulator, fixture radio, host stand-in, probe kit or
 generated page counts as proof.
 
-### 2. Fresh work, and only the two fixes
+### 2. Fresh work, and only what the plan allows
 
 Every fix is written fresh on the reset `main`. Never port code, tests or designs
 from the discarded branches or worktrees (ownership ledger, session lifecycle,
 attrib, probes, RSSI inquiry build, traffic tolerance, bond-store rewrite, S3
 kit, old foundation plan); research may inform a new design, but the code is
-written here. The current plan allows exactly two fixes: third-party pad pairing
-on firmware 13.60, and the native DualSense reconnect. Anything else needs the
-owner's decision.
+written here. The current plan (`.omo/plans/whateverpad-rearchitecture.md`)
+allows four things: Bluetooth closed until it's needed, a bounded Stop that
+waits for no reply, third-party pad pairing, and one recovery experiment.
+Anything else needs the owner's decision.
 
 ### 3. The fix loop, in this order
 
@@ -142,16 +143,17 @@ dependency for a few lines.
 
 ### 5. Console work
 
-One step at a time, each with the owner's go for that step. Before any load that
-can search for pads, the owner answers these, and the answers are recorded. A
-vague "done" or "ok" is not enough.
+One step at a time, each with the owner's go for that step. Before any load, the
+owner answers these, and the answers are recorded. A vague "done" or "ok" is not
+enough.
 
-- "DualSense is off and not pairing", in those exact words.
+- "the DualSense is on, controls the home screen and is not in pairing mode",
+  in those exact words. Loading no longer opens Bluetooth, so it stays on.
 - The third-party pad is off.
 - For a baseline run, the PS5 was fully restarted (not Rest Mode) and the
   jailbreak was run again.
 
-Every console step has a run sheet in `.omo/evidence/whateverpad-baseline-reset/`
+Every console step has a run record in `.omo/evidence/whateverpad-rearchitecture/`
 (`task-<N>-<name>.md`) holding: the exact ELF path on the PC and its identity
 (commit, tree, size in bytes, SHA-256, banner); the rollback copy path; the
 SHA-256 read back from the console; the log lines the run must show (the banner
@@ -159,11 +161,37 @@ with its build id, and what the step under test prints); the yes/no questions pu
 to the owner word for word; each answer copied verbatim with its UTC time; and
 the log interval from `/data/whateverpad/whateverpad.log`.
 
-To install: copy the installed ELF and its `meta.json` into a new
-`~/ps5/backup/whateverpad-before-<sha12>/`, delete then write the new ELF under
-the same filename, read it back and compare SHA-256. One `/loadpayload` per test;
-the rollback is loading the saved ELF back. Never change the autoload list, never
-edit the system's bonds, never ask for a hypervisor, no console IP in the repo.
+The run sheet, in order. `<console ip>` is the console's IP; FTP is port 2121
+(anonymous), the payload manager 8084, the page 8095.
+
+1. Only the orchestrator talks to the owner and records his answers.
+2. Before every load, stop a running WhateverPad (the owner's Stop, or the
+   agent's `POST /api/stop` where the plan allows it): `lock_take` in
+   `src/ps5_main.c` refuses a second copy. Then
+   `curl -s http://<console ip>:8084/processes_list` shows no WhateverPad and
+   port 8095 refuses. FTP that connects but never greets means the console is
+   suspended: stop and tell the owner.
+3. Back up the installed ELF and `meta.json` to a new
+   `~/ps5/backup/whateverpad-before-<sha12>/`: two downloads, same SHA-256.
+4. STOR the new ELF as
+   `/data/pldmgr/payloads/local/whateverpad/WhateverPad-PS5-<version>.elf`, RETR
+   it and compare SHA-256. Set `filename`, `installed_at` and `origin_detail`
+   (commit, sha256) in `meta.json` and read it back. DELE every other ELF there
+   so one entry remains (ftpsrv's 226 is success even if ftplib raises; DELE a
+   busy file before the STOR).
+5. `curl -s http://<console ip>:8084/list_payloads` lists exactly one
+   WhateverPad or AnyPad entry, the new file.
+6. Load once: `curl -s -X POST -H 'X-PLDMGR-Request: 1'
+   'http://<console ip>:8084/loadpayload:WhateverPad-PS5-<version>.elf'`.
+7. The log from its last banner names the expected build.
+8. `curl -s -X POST -H 'X-WhateverPad: 1'
+   'http://<console ip>:8095/api/tune?trace=1'`; `GET /api/tune` shows `"trace":1`.
+9. After each part, copy `whateverpad.log.1`, then `whateverpad.log`, into the
+   evidence.
+10. Rollback: the same steps with the saved copy. Loading reboots nothing.
+
+Never change the autoload list, never edit the system's bonds, never ask for a
+hypervisor, no console IP in the repo.
 
 An ELF the owner accepted from a pull request head stays the released ELF after
 the regular merge only when `git diff --quiet <PR head> <merge commit>` holds;
@@ -179,7 +207,7 @@ otherwise rebuild from `main` and ask that todo's questions again.
   and the owner's WhateverPad name and icon.
 - Never alter or delete existing files under `~/ps5/updates/bisect/`,
   `~/ps5/backup/` or `.omo/evidence/`. New evidence goes to
-  `.omo/evidence/whateverpad-baseline-reset/`, new backups to new
+  `.omo/evidence/whateverpad-rearchitecture/`, new backups to new
   `~/ps5/backup/whateverpad-before-<sha12>/` folders.
 - Never run `git clean -x` or `git clean -X`, and never delete
   `/home/andres/ps5/build/whateverpad-wt/` as a whole.
