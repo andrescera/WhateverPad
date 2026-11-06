@@ -189,24 +189,14 @@ void le_setup(host_t *h)
     send_cmd(h, OP_LE_READ_LOCAL_P256, NULL, 0);
 }
 
-/* Stops scanning if we started it. */
-void le_shutdown(host_t *h)
+/* A successful command status clears create_out before the link comes up. */
+int le_create_pending(const host_t *h)
 {
-    static const uint8_t off[2] = { 0, 0 };
-
     int i;
 
-    if (h->le_ok && h->le_scanning) {
-        hci_sync(h, OP_LE_SET_SCAN_ENABLE, off, 2);
-        h->le_scanning = 0;
-    }
-    /* An attempt of ours left pending would refuse the next run's (0x0c). */
     for (i = 0; i < HOST_MAX_PADS; i++)
-        if (h->links[i].used && h->links[i].le && !h->links[i].connected &&
-            (h->links[i].le_s.create_out || h->links[i].le_s.retry_at)) {
-            hci_sync(h, OP_LE_CREATE_CONN_CANCEL, NULL, 0);
-            break;
-        }
+        if (h->links[i].used && h->links[i].le && !h->links[i].connected) return 1;
+    return 0;
 }
 
 /* ---- sending -------------------------------------------------------------------- */

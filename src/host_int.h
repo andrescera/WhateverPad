@@ -372,7 +372,7 @@ void le_on_frame(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int
 void le_on_encryption(host_t *h, link_t *l, int status, int on);
 void le_step(host_t *h, link_t *l, long now);
 void le_poll(host_t *h, long now);
-void le_shutdown(host_t *h);
+int le_create_pending(const host_t *h);
 void le_on_create_status(host_t *h, int status);
 int  le_send_report(host_t *h, link_t *l, const unsigned char *rep, int len);
 

@@ -1,11 +1,13 @@
 #include "host_int.h"
 #include "log.h"
+#include "radio.h"
 #include "util.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const pad_output k_player_colours[HOST_MAX_PADS] = {
     { 0, 0, 0x00, 0x00, 0x40, 1 },      /* blue */
@@ -2440,28 +2442,6 @@ static int setup(host_t *h)
     return 1;
 }
 
-/* Puts back what setup() changed and nobody has changed since. */
-static void restore(host_t *h)
-{
-    /* The mask every earlier version left, with Connection Request. */
-    static const unsigned char mask_all[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F };
-    unsigned char scan[1];
-
-    if (!yielding(h, now_ms())) {
-        page_scan_restore(h);
-        if (h->mask_set && hci_sync(h, OP_SET_EVENT_MASK, mask_all, 8)) h->mask_set = 0;
-    }
-    le_shutdown(h);
-    if (h->scan_set < 0) return;
-    if (hci_sync(h, OP_READ_SCAN_ENABLE, NULL, 0) && h->cc_len >= 7 && h->cc[6] == h->scan_set) {
-        scan[0] = (unsigned char)h->scan_orig;
-        hci_sync(h, OP_WRITE_SCAN_ENABLE, scan, 1);
-        log_line("controller: page scan put back to %#x", h->scan_orig);
-    } else {
-        log_line("controller: page scan changed by someone else, left as is");
-    }
-}
-
 host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
 {
     host_t *h = calloc(1, sizeof *h);
@@ -2496,24 +2476,39 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
 
 void host_close(host_t *h)
 {
-    int i;
+    radio_goodbye_in in = { 0 };
+    radio_cmd cmds[RADIO_CMD_MAX];
+    int i, n;
     long deadline;
 
     if (!h) return;
+    deadline = now_ms() + 1000;
+    if (h->hci.ops->stop_reads) h->hci.ops->stop_reads(h->hci.ctx);
+    in.dead = h->dead;
     for (i = 0; i < HOST_MAX_PADS; i++) {
-        if (!h->links[i].used) continue;
-        if (h->dead) link_free(h, &h->links[i]);    /* nothing to tell the pad */
-        else link_disconnect(h, &h->links[i], "closing");    /* the pad keeps its key: it reconnects next time */
+        if (h->links[i].used && h->links[i].connected)
+            in.handles[in.nhandles++] = h->links[i].handle;
     }
-    deadline = now_ms() + 2000;
-    for (;;) {
-        int any = 0;
-        for (i = 0; i < HOST_MAX_PADS; i++) any |= h->links[i].used;
-        if (!any || now_ms() >= deadline) break;
-        pump(h, 50);
+    in.inquiring = h->inquiring;
+    in.le_scanning = h->le_scanning;
+    in.le_create_pending = le_create_pending(h);
+    in.ps_saved = h->ps_saved;
+    in.ps_orig_iv = h->ps_orig_iv;
+    in.ps_orig_win = h->ps_orig_win;
+    in.mask_conn = g_tune.mask_conn;
+    n = radio_goodbye(&in, cmds, RADIO_CMD_MAX);
+    for (i = 0; i < n && now_ms() < deadline; i++) {
+        int ok;
+
+        if (i) usleep(30000);
+        if (now_ms() >= deadline) break;
+        ok = h->hci.ops->cmd(h->hci.ctx, cmds[i].op, cmds[i].p, cmds[i].len);
+        log_line("goodbye %04x -> %d", cmds[i].op, ok);
+        if (!ok) break;
     }
-    if (!h->dead && h->inquiring) send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);    /* leave no search running */
-    if (!h->dead) restore(h);
+    if (h->scan_set >= 0) log_line("controller: page scan left on");
+    for (i = 0; i < HOST_MAX_PADS; i++)
+        if (h->links[i].used) link_free(h, &h->links[i]);
     if (h->hci.ops->close) h->hci.ops->close(h->hci.ctx);
     free(h);
 }

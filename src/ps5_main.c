@@ -26,8 +26,9 @@
  * seconds unless /data/whateverpad/config.ini says otherwise).
  *
  * Stopping: the menu's button, or create /data/whateverpad/stop. It disconnects
- * its pads, removes its virtual pads, puts back the controller setting it
- * changed, and exits. It does the same by itself when the console starts
+ * its pads and removes its virtual pads without waiting for replies, releases
+ * Bluetooth before closing the menu, and exits. Page scan stays on for the
+ * DualSense. It does the same by itself when the console starts
  * going to rest mode (read from SceSystemStateMgrInfo), so nothing of it is left half-way across a sleep.
  * Pairing: the menu's button, or create /data/whateverpad/pair.
  */
@@ -109,6 +110,16 @@ static void on_stop_timeout(int sig)
     (void)sig;
     unlink(DB_PATH);                    /* nothing of this session is kept */
     _exit(0);
+}
+
+static void arm_stop_watchdog(void)
+{
+    static int armed;
+
+    if (armed) return;
+    armed = 1;
+    signal(SIGALRM, on_stop_timeout);
+    alarm(T_STOP_MAX_S);
 }
 
 /* The console's language decides the texts: Spanish, or English for any other. */
@@ -205,6 +216,7 @@ static void on_idle(void *ud)
 {
     (void)ud;
     web_poll(g_web);
+    if (g_web_stop || g_stop) arm_stop_watchdog();
 }
 
 static void bt_begin(void)
@@ -297,7 +309,7 @@ int main(void)
     web_cfg wc;
     char ip[16], url[64];
     const char *why = "stop requested";
-    long last_power = 0, last_net = 0;
+    long last_power = 0, last_net = 0, t0;
 
     mkdir(STATE_DIR, 0755);
     log_open(LOG_PATH);
@@ -434,17 +446,18 @@ int main(void)
 
         check_flags(now);
     }
+    arm_stop_watchdog();
     if (g_web_stop) why = "stop from the menu";
     else if (g_stop && strcmp(why, "stop requested") == 0) why = "stop requested (flag or signal)";
 
     log_line("stopping: %s", why);
-    signal(SIGALRM, on_stop_timeout);
-    alarm(T_STOP_MAX_S);
-    web_stop(g_web);
+    t0 = now_ms();
     host_close(g_host);                 /* our links; removes our virtual pads */
     g_host = NULL;
+    web_stop(g_web);
+    g_web = NULL;
     unlink(DB_PATH);                    /* the session ends: nothing is kept */
-    log_line("stopping: Bluetooth released, pads of this session discarded");
+    log_line("stopping: Bluetooth released in %ld ms, pads of this session discarded", now_ms() - t0);
     if (g_vpad_ok) {
         vpad_creds_restore();           /* leave the credentials as found */
     }
