@@ -15,6 +15,18 @@ the start-up notification, on the web page, and in the binary
 - README en inglés y en español (`README.md` y `README.es.md`), cada uno con un enlace al otro.
 - Se eliminan la guía de trabajo con una IA y las README de los demás idiomas.
 
+## 0.9.6-beta (6 November 2026 / 6 noviembre 2026)
+
+- Bluetooth stays closed until Pair is pressed and closes by itself after 30 s with no controller connected and no Pair search running.
+- Stop releases Bluetooth first and waits for no reply, keeping normal shutdown within a few seconds.
+- A lost-link check lets go of a silent link when the chip reports it gone or after three unanswered checks with no controller data.
+- The page shows when Bluetooth is off and explains the DualSense rule: switch it on before Pair and leave it on while a controller is connected; if it gets stuck after Bluetooth closes, restart the console.
+
+- El Bluetooth permanece cerrado hasta pulsar Emparejar y se cierra solo tras 30 s sin ningún mando conectado ni búsqueda de Emparejar en marcha.
+- Apagar libera primero el Bluetooth y no espera ninguna respuesta, para terminar normalmente en unos segundos.
+- Una comprobación de enlaces perdidos suelta un enlace silencioso cuando el chip indica que ya no existe o tras tres comprobaciones sin respuesta ni datos del mando.
+- La página muestra cuándo está apagado el Bluetooth y explica la regla del DualSense: encenderlo antes de Emparejar y dejarlo encendido mientras haya un mando conectado; si se queda colgado después de cerrar el Bluetooth, reiniciar la consola.
+
 ## 0.9.5-beta (14 October 2026 / 14 octubre 2026)
 
 The same program as 0.9.1-beta; only the version number changes. What is new is that **the whole source code is public** (GPL-3.0-or-later), with `tools/live.sh` (the commands to talk to WhateverPad over the local network) and an issue template for controller reports. Not in the source tree: the internal notes, the old ELFs and the icon tools.
